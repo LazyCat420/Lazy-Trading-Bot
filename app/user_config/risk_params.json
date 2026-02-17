@@ -1,0 +1,8 @@
+{
+    "max_risk_per_trade_pct": 2.0,
+    "max_position_size_pct": 10.0,
+    "max_portfolio_allocation_pct": 30.0,
+    "preferred_risk_reward_min": 2.0,
+    "stop_loss_atr_multiplier": 2.0,
+    "account_size_usd": 10000
+}

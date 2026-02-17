@@ -1,0 +1,393 @@
+/* ═══════════════════════════════════════════════════════
+   Lazy Trading Bot — Terminal Stylesheet
+   Extends Tailwind with custom CSS for the Onyx theme
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+    --color-primary: #13ec99;
+    --color-primary-dark: #0ea66c;
+    --color-primary-dim: #087d51;
+    --color-primary-blue: #137fec;
+
+    --color-onyx-black: #0f1115;
+    --color-onyx-panel: #14181c;
+    --color-onyx-surface: #1a1f24;
+
+    --color-text-white: #ffffff;
+    --color-text-muted: #5f746b;
+    --color-text-secondary: #9db9ae;
+    --color-border: #283932;
+
+    --font-display: "Space Grotesk", "Inter", sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+}
+
+/* ── Base ────────────────────────────────────────────── */
+body {
+    margin: 0;
+    padding: 0;
+    background: var(--color-onyx-black);
+    color: #e0e0e0;
+    font-family: var(--font-display);
+    overflow: hidden;
+}
+
+/* ── Icon Buttons ────────────────────────────────────── */
+.icon-btn {
+    padding: 0.25rem;
+    color: var(--color-text-muted);
+    transition: color 0.2s;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-btn:hover {
+    color: var(--color-primary);
+}
+
+.icon-btn.danger:hover {
+    color: #ef4444;
+}
+
+/* ── Sentiment Indicators ────────────────────────────── */
+.signal-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    transition: all 0.3s;
+}
+
+.signal-dot.bullish {
+    background: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+}
+
+.signal-dot.bearish {
+    background: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+}
+
+.signal-dot.neutral {
+    background: #6b7280;
+}
+
+/* ── Glassmorphism Cards ─────────────────────────────── */
+.glass-card {
+    background: rgba(20, 24, 28, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.glass-card:hover {
+    border-color: rgba(19, 236, 153, 0.3);
+    box-shadow: 0 0 20px rgba(19, 236, 153, 0.08);
+}
+
+.glass-card.bullish-glow {
+    border-color: rgba(34, 197, 94, 0.4);
+    box-shadow: 0 0 15px rgba(34, 197, 94, 0.12);
+}
+
+.glass-card.bearish-glow {
+    border-color: rgba(239, 68, 68, 0.4);
+    box-shadow: 0 0 15px rgba(239, 68, 68, 0.12);
+}
+
+/* ── Decision Banner ─────────────────────────────────── */
+.decision-banner {
+    position: relative;
+    padding: 1.5rem 2rem;
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+
+.decision-banner::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    background: linear-gradient(135deg, var(--color-primary), var(--color-primary-blue));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+}
+
+.decision-banner.buy {
+    --color-primary: #22c55e;
+    --color-primary-blue: #10b981;
+}
+
+.decision-banner.sell {
+    --color-primary: #ef4444;
+    --color-primary-blue: #dc2626;
+}
+
+.decision-banner.hold {
+    --color-primary: #f59e0b;
+    --color-primary-blue: #d97706;
+}
+
+/* ── Agent Cards ─────────────────────────────────────── */
+.agent-card {
+    background: linear-gradient(135deg, rgba(20, 24, 28, 0.9) 0%, rgba(26, 31, 36, 0.9) 100%);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--color-border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    transition: all 0.3s;
+}
+
+.agent-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.agent-card .agent-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+
+/* ── Animations ──────────────────────────────────────── */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes pulse-glow {
+
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(19, 236, 153, 0.4);
+    }
+
+    50% {
+        box-shadow: 0 0 12px 4px rgba(19, 236, 153, 0.15);
+    }
+}
+
+.animate-fadeIn {
+    animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slideIn {
+    animation: slideIn 0.3s ease-out;
+}
+
+.animate-pulse-glow {
+    animation: pulse-glow 2s infinite;
+}
+
+/* Stagger children */
+.stagger-children>* {
+    animation: fadeIn 0.3s ease-out both;
+}
+
+.stagger-children>*:nth-child(1) {
+    animation-delay: 0ms;
+}
+
+.stagger-children>*:nth-child(2) {
+    animation-delay: 75ms;
+}
+
+.stagger-children>*:nth-child(3) {
+    animation-delay: 150ms;
+}
+
+.stagger-children>*:nth-child(4) {
+    animation-delay: 225ms;
+}
+
+/* ── Progress Bar ────────────────────────────────────── */
+.progress-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(40, 57, 50, 0.5);
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+}
+
+/* ── Chart Grid Background ───────────────────────────── */
+.chart-grid {
+    background-image:
+        linear-gradient(rgba(40, 57, 50, 0.3) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(40, 57, 50, 0.3) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+/* ── Tab Buttons ─────────────────────────────────────── */
+.tab-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.tab-btn:hover {
+    color: var(--color-text-secondary);
+}
+
+.tab-btn.active {
+    color: var(--color-text-white);
+    border-bottom-color: var(--color-primary);
+}
+
+/* ── Metric Pill ─────────────────────────────────────── */
+.metric-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.metric-pill.green {
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.1);
+}
+
+.metric-pill.red {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.metric-pill.yellow {
+    color: #facc15;
+    background: rgba(250, 204, 21, 0.1);
+}
+
+/* ── Loading Skeleton ────────────────────────────────── */
+.skeleton {
+    background: linear-gradient(90deg,
+            rgba(40, 57, 50, 0.3) 25%,
+            rgba(40, 57, 50, 0.5) 50%,
+            rgba(40, 57, 50, 0.3) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 0.25rem;
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* ── Textarea / Code Editor ──────────────────────────── */
+.code-editor {
+    background: var(--color-onyx-black);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    resize: vertical;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.code-editor:focus {
+    border-color: var(--color-primary);
+}
+
+/* ── Step Tracker Dots ──────────────────────────────── */
+.step-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    transition: all 0.3s ease;
+}
+
+.step-dot-pending {
+    color: var(--color-text-muted);
+    border-color: rgba(40, 57, 50, 0.5);
+    background: rgba(40, 57, 50, 0.2);
+}
+
+.step-dot-running {
+    color: var(--color-primary);
+    border-color: rgba(19, 236, 153, 0.3);
+    background: rgba(19, 236, 153, 0.08);
+    animation: pulse-glow 1.5s infinite;
+}
+
+.step-dot-ok {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.3);
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.step-dot-error {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+}
+
+/* ── Shimmer Lines (Agent Skeleton) ─────────────────── */
+.shimmer-line {
+    background: linear-gradient(90deg,
+            rgba(40, 57, 50, 0.3) 25%,
+            rgba(40, 57, 50, 0.5) 50%,
+            rgba(40, 57, 50, 0.3) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+}

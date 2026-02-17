@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Lazy Trading Bot — Terminal</title>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+        rel="stylesheet">
+
+    <!-- React Dependencies -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/history@5/umd/history.development.js"></script>
+    <script src="https://unpkg.com/react-router@6.3.0/umd/react-router.development.js"></script>
+    <script src="https://unpkg.com/react-router-dom@6.3.0/umd/react-router-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+
+    <!-- Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Theme Configuration -->
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#13ec99",
+                        "primary-dark": "#0ea66c",
+                        "primary-dim": "#087d51",
+                        "primary-blue": "#137fec",
+
+                        "onyx-black": "#0f1115",
+                        "onyx-panel": "#14181c",
+                        "onyx-surface": "#1a1f24",
+
+                        "accent-red": "#ff4d4d",
+                        "accent-orange": "#ff9f1c",
+                        "accent-green": "#00ff9d",
+                        "accent-yellow": "#facc15",
+
+                        "text-muted": "#5f746b",
+                        "text-secondary": "#9db9ae",
+                        "border-dark": "#283932",
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk", "Inter", "sans-serif"],
+                        "mono": ["JetBrains Mono", "monospace"],
+                    },
+                    borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem" },
+                },
+            },
+        }
+    </script>
+
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f1115; }
+        ::-webkit-scrollbar-thumb { background: #283932; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3b544a; }
+
+        .dense-grid { display: grid; grid-template-rows: auto 1fr; }
+        .zebra-row:nth-child(even) { background-color: rgba(255, 255, 255, 0.02); }
+        .glow-green { box-shadow: 0 0 12px rgba(0, 255, 157, 0.15); border-color: rgba(0, 255, 157, 0.4) !important; }
+        .glow-red { box-shadow: 0 0 12px rgba(255, 77, 77, 0.15); border-color: rgba(255, 77, 77, 0.4) !important; }
+    </style>
+</head>
+
+<body>
+    <div id="root" class="h-screen w-screen overflow-hidden"></div>
+
+    <script type="text/babel" src="/static/terminal_app.js"></script>
+</body>
+
+</html>
