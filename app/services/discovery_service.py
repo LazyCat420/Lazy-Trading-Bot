@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app.collectors.reddit_collector import RedditCollector
 from app.collectors.ticker_scanner import TickerScanner
+from app.collectors.youtube_collector import YouTubeCollector
 from app.database import get_db
 from app.models.discovery import DiscoveryResult, ScoredTicker
 from app.utils.logger import logger
@@ -21,6 +22,9 @@ class DiscoveryService:
     def __init__(self) -> None:
         self.reddit = RedditCollector()
         self.youtube = TickerScanner()
+        self.yt_collector = YouTubeCollector()
+        self._running: bool = False
+        self._last_run_at: datetime | None = None
 
     async def run_discovery(
         self,
@@ -30,6 +34,7 @@ class DiscoveryService:
         youtube_hours: int = 24,
     ) -> DiscoveryResult:
         """Run full discovery pipeline and return merged results."""
+        self._running = True
         start = time.time()
         logger.info("=" * 70)
         logger.info("[Discovery] Starting full discovery run")
@@ -66,11 +71,15 @@ class DiscoveryService:
         # Persist to DuckDB
         self._save_to_db(merged)
 
+        # NEW: Scrape one YouTube transcript per discovered ticker
+        transcript_count = await self._collect_transcripts(merged)
+
         elapsed = time.time() - start
         result = DiscoveryResult(
             tickers=merged,
             reddit_count=len(reddit_tickers),
             youtube_count=len(youtube_tickers),
+            transcript_count=transcript_count,
             run_at=datetime.now(),
             duration_seconds=elapsed,
         )
@@ -81,8 +90,8 @@ class DiscoveryService:
             len(merged), elapsed,
         )
         logger.info(
-            "[Discovery]   Reddit: %d, YouTube: %d",
-            result.reddit_count, result.youtube_count,
+            "[Discovery]   Reddit: %d, YouTube: %d, Transcripts scraped: %d",
+            result.reddit_count, result.youtube_count, transcript_count,
         )
         for t in merged[:10]:
             logger.info(
@@ -91,7 +100,52 @@ class DiscoveryService:
             )
         logger.info("=" * 70)
 
+        self._running = False
+        self._last_run_at = datetime.now()
         return result
+
+    def status(self) -> dict:
+        """Return bot vitals: running state, last run, aggregate stats."""
+        db = get_db()
+
+        # Total unique tickers
+        total_row = db.execute(
+            "SELECT COUNT(*) FROM ticker_scores"
+        ).fetchone()
+        total_discovered = total_row[0] if total_row else 0
+
+        # Source counts from discovered_tickers
+        reddit_row = db.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM discovered_tickers WHERE source = 'reddit'"
+        ).fetchone()
+        youtube_row = db.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM discovered_tickers WHERE source = 'youtube'"
+        ).fetchone()
+
+        # Top ticker
+        top_row = db.execute(
+            "SELECT ticker, total_score FROM ticker_scores ORDER BY total_score DESC LIMIT 1"
+        ).fetchone()
+
+        # Last discovered_at
+        last_row = db.execute(
+            "SELECT MAX(discovered_at) FROM discovered_tickers"
+        ).fetchone()
+
+        return {
+            "is_running": self._running,
+            "last_run_at": (
+                self._last_run_at.isoformat() if self._last_run_at
+                else (str(last_row[0]) if last_row and last_row[0] else None)
+            ),
+            "total_discovered": total_discovered,
+            "reddit_total": reddit_row[0] if reddit_row else 0,
+            "youtube_total": youtube_row[0] if youtube_row else 0,
+            "top_ticker": {
+                "ticker": top_row[0],
+                "score": top_row[1],
+            } if top_row else None,
+        }
 
     def get_latest_scores(self, limit: int = 20) -> list[dict]:
         """Get latest aggregated scores from DuckDB."""
@@ -147,6 +201,57 @@ class DiscoveryService:
             }
             for r in rows
         ]
+
+    # ── Private: transcript collection ───────────────────────────────
+
+    async def _collect_transcripts(
+        self, tickers: list[ScoredTicker],
+    ) -> int:
+        """Search YouTube and grab one transcript per discovered ticker.
+
+        Uses YouTubeCollector in discovery_mode (no daily guard, no 24h filter)
+        so we pick up ANY related video, not just today's.
+
+        Returns the total number of transcripts successfully collected.
+        """
+        if not tickers:
+            return 0
+
+        logger.info(
+            "[Discovery] Collecting YouTube transcripts for %d tickers...",
+            len(tickers),
+        )
+
+        total_collected = 0
+        for scored in tickers:
+            ticker = scored.ticker
+            try:
+                transcripts = await self.yt_collector.collect(
+                    ticker, max_videos=1, discovery_mode=True,
+                )
+                count = len(transcripts)
+                total_collected += count
+                if count:
+                    logger.info(
+                        "[Discovery]   $%s: collected %d transcript(s) — '%s'",
+                        ticker, count,
+                        transcripts[0].title[:60] if transcripts else "",
+                    )
+                else:
+                    logger.info(
+                        "[Discovery]   $%s: no transcript found", ticker,
+                    )
+            except Exception as e:
+                logger.error(
+                    "[Discovery]   $%s: transcript collection failed: %s",
+                    ticker, e,
+                )
+
+        logger.info(
+            "[Discovery] Transcript collection done: %d/%d tickers got transcripts",
+            total_collected, len(tickers),
+        )
+        return total_collected
 
     # ── Private: merge + persist ────────────────────────────────────
 

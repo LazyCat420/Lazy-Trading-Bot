@@ -65,7 +65,7 @@ class YouTubeCollector:
     # ──────────────────────────────────────────────────────────────
 
     async def collect(
-        self, ticker: str, max_videos: int = 3
+        self, ticker: str, max_videos: int = 3, *, discovery_mode: bool = False
     ) -> list[YouTubeTranscript]:
         """Scrape YouTube for NEW videos from the last 24 hours only.
 
@@ -79,24 +79,26 @@ class YouTubeCollector:
         Returns only the newly collected transcripts (not historical).
         Use get_all_historical() to retrieve the full accumulated dataset.
         """
-        # Daily guard — skip if already scraped today
+        # Daily guard — skip if already scraped today (skipped in discovery mode)
         db = get_db()
-        today_start = datetime.now(tz=timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
-        )
-        existing = db.execute(
-            "SELECT COUNT(*) FROM youtube_transcripts "
-            "WHERE ticker = ? AND collected_at >= ?",
-            [ticker, today_start],
-        ).fetchone()
-        if existing and existing[0] > 0:
-            logger.info(
-                "YouTube for %s already scraped today (%d transcripts), skipping",
-                ticker, existing[0],
+        if not discovery_mode:
+            today_start = datetime.now(tz=timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0,
             )
-            return []
+            existing = db.execute(
+                "SELECT COUNT(*) FROM youtube_transcripts "
+                "WHERE ticker = ? AND collected_at >= ?",
+                [ticker, today_start],
+            ).fetchone()
+            if existing and existing[0] > 0:
+                logger.info(
+                    "YouTube for %s already scraped today (%d transcripts), skipping",
+                    ticker, existing[0],
+                )
+                return []
 
-        logger.info("Collecting YouTube transcripts for %s (24h filter)", ticker)
+        mode_label = "discovery" if discovery_mode else "24h filter"
+        logger.info("Collecting YouTube transcripts for %s (%s)", ticker, mode_label)
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
 
         # Step 1: Multi-query search
@@ -119,29 +121,36 @@ class YouTubeCollector:
             ticker,
         )
 
-        # Step 2: Apply 24-hour recency filter
-        recent_videos = []
-        for vid in all_videos:
-            pub = vid.get("published_at")
-            if pub is None:
-                # No publish date → include it (can't verify age)
-                recent_videos.append(vid)
-            elif pub >= cutoff:
-                recent_videos.append(vid)
-            else:
-                logger.debug(
-                    "Skipping old video %s (published %s, cutoff %s)",
-                    vid["id"],
-                    pub.isoformat(),
-                    cutoff.isoformat(),
-                )
+        # Step 2: Apply recency filter (skipped in discovery mode)
+        if discovery_mode:
+            recent_videos = all_videos
+            logger.info(
+                "Discovery mode: accepting all %d videos for %s",
+                len(all_videos), ticker,
+            )
+        else:
+            recent_videos = []
+            for vid in all_videos:
+                pub = vid.get("published_at")
+                if pub is None:
+                    # No publish date → include it (can't verify age)
+                    recent_videos.append(vid)
+                elif pub >= cutoff:
+                    recent_videos.append(vid)
+                else:
+                    logger.debug(
+                        "Skipping old video %s (published %s, cutoff %s)",
+                        vid["id"],
+                        pub.isoformat(),
+                        cutoff.isoformat(),
+                    )
 
-        logger.info(
-            "%d of %d videos are within 24h window for %s",
-            len(recent_videos),
-            len(all_videos),
-            ticker,
-        )
+            logger.info(
+                "%d of %d videos are within 24h window for %s",
+                len(recent_videos),
+                len(all_videos),
+                ticker,
+            )
 
         if not recent_videos:
             logger.info("No recent YouTube videos found for %s", ticker)

@@ -27,5 +27,6 @@ class DiscoveryResult(BaseModel):
     tickers: list[ScoredTicker] = Field(default_factory=list)
     reddit_count: int = 0
     youtube_count: int = 0
+    transcript_count: int = 0
     run_at: datetime = Field(default_factory=datetime.now)
     duration_seconds: float = 0.0

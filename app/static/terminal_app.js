@@ -1089,6 +1089,7 @@ const SidebarLayout = ({ children, active = "" }) => {
                 <div className="flex-1 overflow-y-auto py-4 px-2 flex flex-col gap-1">
                     <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Navigation</h3>
                     <NavLink to="/" icon="monitoring" label="Watchlist" id="watchlist" />
+                    <NavLink to="/monitor" icon="precision_manufacturing" label="Autobot Monitor" id="monitor" />
                     <NavLink to="/settings" icon="tune" label="Settings" id="settings" />
                     <NavLink to="/diagnostics" icon="bug_report" label="Diagnostics" id="diagnostics" />
                 </div>
@@ -2334,6 +2335,502 @@ const SettingsPage = () => {
 };
 
 // ***************************************************************
+// AUTOBOT MONITOR PAGE — Phase 1 Discovery Dashboard
+// ***************************************************************
+
+const AutobotMonitorPage = () => {
+    const [status, setStatus] = useState(null);
+    const [scores, setScores] = useState([]);
+    const [history, setHistory] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [scanning, setScanning] = useState(false);
+    const [enableReddit, setEnableReddit] = useState(true);
+    const [enableYoutube, setEnableYoutube] = useState(true);
+    const [sortBy, setSortBy] = useState("total_score");
+    const [expandedTicker, setExpandedTicker] = useState(null);
+    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity"
+    const navigate = useNavigate();
+
+    const fetchAll = useCallback(async () => {
+        try {
+            const [statusRes, scoresRes, historyRes] = await Promise.all([
+                fetch("/api/discovery/status").then(r => r.json()),
+                fetch("/api/discovery/results?limit=50").then(r => r.json()),
+                fetch("/api/discovery/history?limit=200").then(r => r.json()),
+            ]);
+            setStatus(statusRes);
+            setScores(scoresRes.scores || []);
+            setHistory(historyRes.history || []);
+        } catch (e) {
+            console.error("Monitor fetch error:", e);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchAll();
+        const interval = setInterval(fetchAll, 30000);
+        return () => clearInterval(interval);
+    }, [fetchAll]);
+
+    const runScan = async () => {
+        setScanning(true);
+        try {
+            await fetch(`/api/discovery/run?reddit=${enableReddit}&youtube=${enableYoutube}`);
+            await fetchAll();
+        } catch (e) {
+            console.error("Discovery scan error:", e);
+        } finally {
+            setScanning(false);
+        }
+    };
+
+    const addToWatchlist = async (ticker) => {
+        try {
+            const wlRes = await fetch("/api/watchlist").then(r => r.json());
+            const current = wlRes.tickers || [];
+            if (!current.includes(ticker)) {
+                await fetch("/api/watchlist", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tickers: [...current, ticker] }),
+                });
+            }
+        } catch (e) {
+            console.error("Add to watchlist error:", e);
+        }
+    };
+
+    const sortedScores = [...scores].sort((a, b) => {
+        const va = a[sortBy] ?? 0, vb = b[sortBy] ?? 0;
+        return vb - va;
+    });
+
+    // Group history entries by ticker for the expanded card view
+    const historyByTicker = {};
+    history.forEach(h => {
+        if (!historyByTicker[h.ticker]) historyByTicker[h.ticker] = [];
+        historyByTicker[h.ticker].push(h);
+    });
+
+    const sentimentBadge = (hint) => {
+        const cls = hint === "bullish" ? "bg-green-500/20 text-green-400 border-green-500/30"
+            : hint === "bearish" ? "bg-red-500/20 text-red-400 border-red-500/30"
+                : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+        return React.createElement("span", {
+            className: `px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase border ${cls}`
+        }, hint || "neutral");
+    };
+
+    const sourceIcon = (src) => {
+        if (src === "reddit") return React.createElement("span", {
+            className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-bold border border-orange-500/20"
+        }, "REDDIT");
+        if (src === "youtube") return React.createElement("span", {
+            className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 text-[10px] font-bold border border-red-500/20"
+        }, "YOUTUBE");
+        return React.createElement("span", {
+            className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-bold border border-primary/20"
+        }, src?.toUpperCase() || "MIXED");
+    };
+
+    // Score bar visual
+    const maxScore = sortedScores.length > 0 ? Math.max(...sortedScores.map(s => s.total_score || 0), 1) : 1;
+
+    const ScoreBar = ({ value, max, color = "bg-primary" }) => {
+        const pct = Math.min((value / max) * 100, 100);
+        return React.createElement("div", { className: "h-1.5 rounded-full bg-onyx-black/60 overflow-hidden flex-1" },
+            React.createElement("div", {
+                className: `h-full rounded-full ${color} transition-all duration-500`,
+                style: { width: `${pct}%` }
+            })
+        );
+    };
+
+    if (loading) return React.createElement(SidebarLayout, { active: "monitor" },
+        React.createElement("div", { className: "flex-1 flex items-center justify-center" },
+            React.createElement("span", { className: "material-symbols-outlined text-primary animate-spin text-4xl" }, "progress_activity")
+        )
+    );
+
+    const isRunning = status?.is_running || scanning;
+    const stateLabel = isRunning ? "SCANNING" : status?.total_discovered > 0 ? "IDLE" : "NO DATA";
+
+    // ── Ticker Discovery Card Component
+    const TickerCard = ({ s, rank }) => {
+        const isExpanded = expandedTicker === s.ticker;
+        const tickerHistory = historyByTicker[s.ticker] || [];
+        const redditEntries = tickerHistory.filter(h => h.source === "reddit");
+        const youtubeEntries = tickerHistory.filter(h => h.source === "youtube");
+        const [transcripts, setTranscripts] = useState(null);
+
+        // Fetch transcript data when card is expanded
+        useEffect(() => {
+            if (!isExpanded) { setTranscripts(null); return; }
+            fetch(`/api/discovery/transcripts/${s.ticker}`)
+                .then(r => r.json())
+                .then(data => setTranscripts(data.transcripts || []))
+                .catch(() => setTranscripts([]));
+        }, [isExpanded, s.ticker]);
+
+        const fmtDuration = (secs) => {
+            if (!secs) return "";
+            const m = Math.floor(secs / 60);
+            const s2 = secs % 60;
+            return `${m}:${String(s2).padStart(2, "0")}`;
+        };
+
+        return React.createElement("div", {
+            className: `glass-card overflow-hidden transition-all duration-200 ${isExpanded ? "ring-1 ring-primary/40" : ""}`,
+        },
+            // ── Card header (always visible)
+            React.createElement("div", {
+                className: "flex items-center gap-4 p-4 cursor-pointer hover:bg-white/[0.02] transition",
+                onClick: () => setExpandedTicker(isExpanded ? null : s.ticker),
+            },
+                // Rank badge
+                React.createElement("div", {
+                    className: "w-8 h-8 rounded-lg bg-onyx-black flex items-center justify-center text-text-muted text-xs font-mono font-bold shrink-0 border border-border-dark"
+                }, `#${rank}`),
+
+                // Ticker name + sentiment
+                React.createElement("div", { className: "flex items-center gap-3 w-32 shrink-0" },
+                    React.createElement("span", { className: "text-white font-bold font-mono text-lg" }, `$${s.ticker}`),
+                    sentimentBadge(s.sentiment_hint)
+                ),
+
+                // Score bars
+                React.createElement("div", { className: "flex-1 flex items-center gap-4" },
+                    // Total score
+                    React.createElement("div", { className: "flex items-center gap-2 flex-1" },
+                        React.createElement("span", { className: "text-primary font-bold font-mono text-sm w-12 text-right" },
+                            (s.total_score ?? 0).toFixed(1)
+                        ),
+                        React.createElement(ScoreBar, { value: s.total_score ?? 0, max: maxScore })
+                    ),
+                    // Source breakdown mini
+                    React.createElement("div", { className: "flex items-center gap-3 text-[10px] font-mono shrink-0" },
+                        React.createElement("span", { className: "text-orange-400" },
+                            `R:${(s.reddit_score ?? 0).toFixed(0)}`
+                        ),
+                        React.createElement("span", { className: "text-red-400" },
+                            `Y:${(s.youtube_score ?? 0).toFixed(0)}`
+                        ),
+                        React.createElement("span", { className: "text-text-muted" },
+                            `${s.mention_count ?? 0}×`
+                        )
+                    )
+                ),
+
+                // First seen
+                React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0 w-16 text-right" },
+                    s.first_seen ? fmt.ago(s.first_seen) : "—"
+                ),
+
+                // Actions
+                React.createElement("div", { className: "flex items-center gap-1 shrink-0 ml-2" },
+                    React.createElement("button", {
+                        onClick: (e) => { e.stopPropagation(); addToWatchlist(s.ticker); },
+                        className: "icon-btn", title: "Add to Watchlist",
+                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "playlist_add")),
+                    React.createElement("button", {
+                        onClick: (e) => { e.stopPropagation(); navigate(`/analysis/${s.ticker}`); },
+                        className: "icon-btn", title: "Analyze",
+                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "play_circle")),
+                    React.createElement("span", {
+                        className: `material-symbols-outlined text-text-muted text-lg transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`
+                    }, "expand_more")
+                )
+            ),
+
+            // ── Expanded detail panel
+            isExpanded && React.createElement("div", { className: "border-t border-border-dark bg-onyx-black/30" },
+                // Reddit context snippets
+                redditEntries.length > 0 && React.createElement("div", { className: "p-4 pb-2" },
+                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
+                        React.createElement("span", { className: "text-orange-400 text-[10px] font-bold uppercase tracking-wider" }, "Reddit Sources"),
+                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${redditEntries.length} mentions`)
+                    ),
+                    React.createElement("div", { className: "space-y-2" },
+                        ...redditEntries.map((h, i) => React.createElement("div", {
+                            key: `r-${i}`,
+                            className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-orange-400/30",
+                        },
+                            React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
+                                `+${(h.discovery_score ?? 0).toFixed(1)}`
+                            ),
+                            React.createElement("div", { className: "flex-1 min-w-0" },
+                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
+                                    h.context_snippet || "No context available"
+                                ),
+                                h.source_detail && React.createElement("span", { className: "text-[10px] text-text-muted mt-1 block" },
+                                    `r/${h.source_detail}`
+                                )
+                            ),
+                            React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
+                                h.discovered_at ? fmt.ago(h.discovered_at) : ""
+                            )
+                        ))
+                    )
+                ),
+
+                // YouTube context snippets
+                youtubeEntries.length > 0 && React.createElement("div", { className: "p-4 pt-2" },
+                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
+                        React.createElement("span", { className: "text-red-400 text-[10px] font-bold uppercase tracking-wider" }, "YouTube Sources"),
+                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${youtubeEntries.length} mentions`)
+                    ),
+                    React.createElement("div", { className: "space-y-2" },
+                        ...youtubeEntries.map((h, i) => React.createElement("div", {
+                            key: `y-${i}`,
+                            className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-red-400/30",
+                        },
+                            React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
+                                `+${(h.discovery_score ?? 0).toFixed(1)}`
+                            ),
+                            React.createElement("div", { className: "flex-1 min-w-0" },
+                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
+                                    h.context_snippet || "No context available"
+                                ),
+                                h.source_detail && React.createElement("span", { className: "text-[10px] text-text-muted mt-1 block" },
+                                    h.source_detail
+                                )
+                            ),
+                            React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
+                                h.discovered_at ? fmt.ago(h.discovered_at) : ""
+                            )
+                        ))
+                    )
+                ),
+
+                // ── YouTube Transcripts (fetched from youtube_transcripts table)
+                transcripts && transcripts.length > 0 && React.createElement("div", { className: "p-4 pt-2" },
+                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
+                        React.createElement("span", { className: "text-red-400 text-[10px] font-bold uppercase tracking-wider" }, "YouTube Transcripts"),
+                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${transcripts.length} video${transcripts.length !== 1 ? "s" : ""}`)
+                    ),
+                    React.createElement("div", { className: "space-y-2" },
+                        ...transcripts.map((t, i) => React.createElement("div", {
+                            key: `t-${i}`,
+                            className: "p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-red-500/40",
+                        },
+                            React.createElement("div", { className: "flex items-center gap-2 mb-1.5" },
+                                React.createElement("span", { className: "material-symbols-outlined text-red-400 text-[14px]" }, "play_circle"),
+                                React.createElement("a", {
+                                    href: `https://youtube.com/watch?v=${t.video_id}`,
+                                    target: "_blank",
+                                    rel: "noopener",
+                                    className: "text-xs text-white font-bold truncate flex-1 hover:text-primary transition cursor-pointer",
+                                    title: "Watch on YouTube"
+                                }, t.title || "Untitled Video"),
+                                t.duration_seconds && React.createElement("span", {
+                                    className: "text-[10px] text-text-muted font-mono shrink-0"
+                                }, fmtDuration(t.duration_seconds)),
+                                t.transcript_length && React.createElement("span", {
+                                    className: "text-[10px] text-text-muted font-mono shrink-0"
+                                }, `${Math.round(t.transcript_length / 1000)}k chars`)
+                            ),
+                            React.createElement("div", { className: "flex items-center gap-2 mb-1" },
+                                React.createElement("span", { className: "text-[10px] text-text-muted" }, t.channel || "Unknown channel")
+                            ),
+                            t.preview && React.createElement("p", {
+                                className: "text-[11px] text-text-secondary/80 leading-relaxed mt-1 italic"
+                            }, `"${t.preview}${t.transcript_length > 200 ? "..." : ""}"`)
+                        ))
+                    )
+                ),
+
+                // Loading transcripts indicator
+                isExpanded && transcripts === null && React.createElement("div", {
+                    className: "p-4 flex items-center gap-2 text-text-muted text-xs"
+                },
+                    React.createElement("span", { className: "material-symbols-outlined animate-spin text-sm" }, "progress_activity"),
+                    "Loading transcripts..."
+                ),
+
+                // Empty state
+                tickerHistory.length === 0 && (!transcripts || transcripts.length === 0) && React.createElement("div", {
+                    className: "p-6 text-center text-text-muted text-xs"
+                }, "No detailed context available for this ticker")
+            )
+        );
+    };
+
+    return React.createElement(SidebarLayout, { active: "monitor" },
+        React.createElement("div", { className: "flex flex-col h-full" },
+
+            // ── Header
+            React.createElement("div", { className: "h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0" },
+                React.createElement("div", { className: "flex items-center gap-3" },
+                    React.createElement("span", { className: "material-symbols-outlined text-primary text-2xl" }, "precision_manufacturing"),
+                    React.createElement("h2", { className: "text-white font-bold text-lg" }, "Autobot Monitor"),
+                    React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` }, stateLabel)
+                ),
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    React.createElement("button", {
+                        onClick: fetchAll,
+                        className: "icon-btn", title: "Refresh",
+                    }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh")),
+                )
+            ),
+
+            // ── Scrollable content
+            React.createElement("div", { className: "flex-1 overflow-y-auto p-6 space-y-5" },
+
+                // ── Status Cards
+                React.createElement("div", { className: "grid grid-cols-5 gap-3" },
+                    React.createElement("div", { className: "glass-card p-4 flex items-center gap-3" },
+                        React.createElement("div", { className: isRunning ? "status-indicator active" : status?.total_discovered > 0 ? "status-indicator idle" : "status-indicator error" }),
+                        React.createElement("div", null,
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase" }, "Status"),
+                            React.createElement("div", { className: "text-white font-bold text-sm" }, stateLabel)
+                        )
+                    ),
+                    React.createElement("div", { className: "glass-card p-4 text-center" },
+                        React.createElement("div", { className: "text-2xl font-bold font-mono text-primary" }, status?.total_discovered ?? 0),
+                        React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Tickers Found")
+                    ),
+                    React.createElement("div", { className: "glass-card p-4 text-center" },
+                        React.createElement("div", { className: "text-2xl font-bold font-mono text-orange-400" }, status?.reddit_total ?? 0),
+                        React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "From Reddit")
+                    ),
+                    React.createElement("div", { className: "glass-card p-4 text-center" },
+                        React.createElement("div", { className: "text-2xl font-bold font-mono text-red-400" }, status?.youtube_total ?? 0),
+                        React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "From YouTube")
+                    ),
+                    React.createElement("div", { className: "glass-card p-4 text-center" },
+                        React.createElement("div", { className: "text-sm font-bold font-mono text-white" },
+                            status?.top_ticker ? `$${status.top_ticker.ticker}` : "—"
+                        ),
+                        React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Top Ticker"),
+                        status?.top_ticker && React.createElement("div", { className: "text-[10px] text-primary font-mono mt-0.5" },
+                            `${status.top_ticker.score?.toFixed(1)} pts`
+                        )
+                    )
+                ),
+
+                // ── Last Scan + Controls
+                React.createElement("div", { className: "glass-card p-4 flex items-center gap-4 flex-wrap" },
+                    React.createElement("button", {
+                        onClick: runScan,
+                        disabled: scanning,
+                        className: `px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${scanning ? "bg-primary/10 text-primary/50 cursor-wait" : "bg-primary/20 hover:bg-primary/30 text-primary hover:shadow-lg hover:shadow-primary/10"}`,
+                    },
+                        scanning
+                            ? React.createElement("span", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: "material-symbols-outlined animate-spin text-sm" }, "progress_activity"),
+                                "Scanning...")
+                            : React.createElement("span", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: "material-symbols-outlined text-sm" }, "radar"),
+                                "Run Discovery Scan")
+                    ),
+                    React.createElement("div", { className: "flex items-center gap-4 border-l border-border-dark pl-4" },
+                        React.createElement("label", { className: "flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer" },
+                            React.createElement("input", {
+                                type: "checkbox", checked: enableReddit,
+                                onChange: () => setEnableReddit(!enableReddit),
+                                className: "accent-orange-400 w-3.5 h-3.5",
+                            }),
+                            "Reddit"
+                        ),
+                        React.createElement("label", { className: "flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer" },
+                            React.createElement("input", {
+                                type: "checkbox", checked: enableYoutube,
+                                onChange: () => setEnableYoutube(!enableYoutube),
+                                className: "accent-red-400 w-3.5 h-3.5",
+                            }),
+                            "YouTube"
+                        )
+                    ),
+                    status?.last_run_at && React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-auto" },
+                        "Last scan: ", fmt.ago(status.last_run_at)
+                    )
+                ),
+
+                // ── Tab Switcher
+                React.createElement("div", { className: "flex items-center gap-1 bg-onyx-panel rounded-lg p-1 w-fit" },
+                    React.createElement("button", {
+                        onClick: () => setActiveTab("scoreboard"),
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "scoreboard" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "leaderboard"),
+                            `Scoreboard (${scores.length})`
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: () => setActiveTab("activity"),
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "activity" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "history"),
+                            `Activity Log (${history.length})`
+                        )
+                    )
+                ),
+
+                // ── SCOREBOARD TAB: Card list
+                activeTab === "scoreboard" && React.createElement("div", null,
+
+                    // Ticker cards
+                    scores.length === 0
+                        ? React.createElement("div", { className: "glass-card text-center py-16" },
+                            React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "search_off"),
+                            React.createElement("p", { className: "text-sm text-text-muted" }, "No discovery data yet"),
+                            React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Run a discovery scan to find trending tickers")
+                        )
+                        : React.createElement("div", { className: "space-y-2" },
+                            ...sortedScores.map((s, i) => React.createElement(TickerCard, { key: s.ticker, s, rank: i + 1 }))
+                        )
+                ),
+
+                // ── ACTIVITY TAB: Full-width log
+                activeTab === "activity" && React.createElement("div", null,
+                    history.length === 0
+                        ? React.createElement("div", { className: "glass-card text-center py-16 text-text-muted text-sm" }, "No discovery events yet")
+                        : React.createElement("div", { className: "space-y-2" },
+                            ...history.map((h, i) => React.createElement("div", {
+                                key: i,
+                                className: `glass-card p-4 border-l-2 transition-colors hover:border-l-primary/60 ${h.source === "reddit" ? "border-l-orange-400/40" : "border-l-red-400/40"}`,
+                            },
+                                React.createElement("div", { className: "flex items-start gap-3" },
+                                    // Source + Ticker
+                                    React.createElement("div", { className: "flex items-center gap-2 shrink-0 w-40" },
+                                        sourceIcon(h.source),
+                                        React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${h.ticker}`),
+                                        React.createElement("span", { className: "text-primary font-mono text-xs font-bold" },
+                                            `+${(h.discovery_score ?? 0).toFixed(1)}`
+                                        )
+                                    ),
+                                    // Context snippet — FULL WIDTH, no truncation
+                                    React.createElement("div", { className: "flex-1 min-w-0" },
+                                        React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
+                                            h.context_snippet || h.source_detail || "No context"
+                                        ),
+                                        h.source_detail && h.context_snippet && React.createElement("span", {
+                                            className: "text-[10px] text-text-muted mt-1 block"
+                                        }, h.source === "reddit" ? `r/${h.source_detail}` : h.source_detail)
+                                    ),
+                                    // Sentiment + time
+                                    React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
+                                        sentimentBadge(h.sentiment_hint),
+                                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono w-14 text-right" },
+                                            h.discovered_at ? fmt.ago(h.discovered_at) : ""
+                                        )
+                                    )
+                                )
+                            ))
+                        )
+                )
+            )
+        )
+    );
+};
+
+
+
+// ***************************************************************
 // DIAGNOSTICS PAGE  DB stats + collector health
 // ***************************************************************
 
@@ -2418,6 +2915,7 @@ const App = () => {
                 <Route path="/" element={<WatchlistPage {...terminalData} />} />
                 <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
 
+                <Route path="/monitor" element={<AutobotMonitorPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/diagnostics" element={<DiagnosticsPage />} />
             </Routes>

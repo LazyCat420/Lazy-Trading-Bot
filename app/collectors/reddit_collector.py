@@ -284,7 +284,9 @@ If none are relevant, output: []"""
                         )
                     ),
                     sentiment_hint="neutral",  # Could enhance with LLM later
-                    context_snippets=ticker_contexts.get(ticker, [])[:3],
+                    context_snippets=list(
+                    dict.fromkeys(ticker_contexts.get(ticker, []))
+                )[:3],
                     first_seen=now,
                     last_seen=now,
                 )

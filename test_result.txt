@@ -1,0 +1,48 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- d:\Github\Lazy-Trading-Bot\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: d:\Github\Lazy-Trading-Bot
+configfile: pytest.ini
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 31 items
+
+tests/test_discovery.py::TestTickerValidator::test_exclusion_list_rejects_jargon PASSED [  3%]
+tests/test_discovery.py::TestTickerValidator::test_exclusion_list_rejects_common_words PASSED [  6%]
+tests/test_discovery.py::TestTickerValidator::test_length_validation PASSED [  9%]
+tests/test_discovery.py::TestTickerValidator::test_yfinance_valid_ticker PASSED [ 12%]
+tests/test_discovery.py::TestTickerValidator::test_yfinance_no_price PASSED [ 16%]
+tests/test_discovery.py::TestTickerValidator::test_caching PASSED        [ 19%]
+tests/test_discovery.py::TestTickerValidator::test_batch_validate PASSED [ 22%]
+tests/test_discovery.py::TestRedditCollector::test_extract_tickers_basic PASSED [ 25%]
+tests/test_discovery.py::TestRedditCollector::test_extract_tickers_dollar_sign PASSED [ 29%]
+tests/test_discovery.py::TestRedditCollector::test_extract_tickers_empty PASSED [ 32%]
+tests/test_discovery.py::TestRedditCollector::test_extract_tickers_deduplicates PASSED [ 35%]
+tests/test_discovery.py::TestRedditCollector::test_fetch_subreddit_success PASSED [ 38%]
+tests/test_discovery.py::TestRedditCollector::test_fetch_subreddit_rate_limit PASSED [ 41%]
+tests/test_discovery.py::TestRedditCollector::test_get_thread_data PASSED [ 45%]
+tests/test_discovery.py::TestTickerScanner::test_extract_tickers PASSED  [ 48%]
+tests/test_discovery.py::TestTickerScanner::test_extract_tickers_filters_noise PASSED [ 51%]
+tests/test_discovery.py::TestTickerScanner::test_context_snippet PASSED  [ 54%]
+tests/test_discovery.py::TestTickerScanner::test_scan_no_transcripts PASSED [ 58%]
+tests/test_discovery.py::TestTickerScanner::test_scan_with_transcript PASSED [ 61%]
+tests/test_discovery.py::TestDiscoveryService::test_merge_scores_basic PASSED [ 64%]
+tests/test_discovery.py::TestDiscoveryService::test_merge_sorted_by_score PASSED [ 67%]
+tests/test_discovery.py::TestDiscoveryService::test_save_to_db_inserts PASSED [ 70%]
+tests/test_discovery.py::TestDiscoveryModels::test_scored_ticker_defaults PASSED [ 74%]
+tests/test_discovery.py::TestDiscoveryModels::test_discovery_result_defaults PASSED [ 77%]
+tests/test_discovery.py::TestDiscoveryModels::test_scored_ticker_serialization PASSED [ 80%]
+tests/test_discovery.py::TestDiscoveryModels::test_discovery_result_transcript_count PASSED [ 83%]
+tests/test_discovery.py::TestDiscoveryModels::test_discovery_result_transcript_count_default PASSED [ 87%]
+tests/test_discovery.py::TestTranscriptCollection::test_collect_transcripts_calls_youtube_collector FAILED [ 90%]
+
+================================== FAILURES ===================================
+__ TestTranscriptCollection.test_collect_transcripts_calls_youtube_collector __
+tests\test_discovery.py:477: in test_collect_transcripts_calls_youtube_collector
+    return_value=asyncio.coroutine(lambda *a, **kw: [])()
+                 ^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'asyncio' has no attribute 'coroutine'. Did you mean: 'coroutines'?
+=========================== short test summary info ===========================
+FAILED tests/test_discovery.py::TestTranscriptCollection::test_collect_transcripts_calls_youtube_collector
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+======================== 1 failed, 27 passed in 6.45s =========================

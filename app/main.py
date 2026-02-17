@@ -687,6 +687,7 @@ async def run_discovery(
         "tickers": [t.model_dump() for t in result.tickers],
         "reddit_count": result.reddit_count,
         "youtube_count": result.youtube_count,
+        "transcript_count": result.transcript_count,
         "duration_seconds": round(result.duration_seconds, 1),
     }
 
@@ -707,3 +708,37 @@ async def get_discovery_history(
     """Get raw discovery history with timestamps."""
     history = _discovery.get_discovery_history(limit=limit)
     return {"history": history}
+
+
+@app.get("/api/discovery/status")
+async def get_discovery_status() -> dict:
+    """Bot vitals: running state, last run, aggregate stats."""
+    return _discovery.status()
+
+
+@app.get("/api/discovery/transcripts/{ticker}")
+async def get_discovery_transcripts(ticker: str) -> dict:
+    """Lightweight transcript metadata for a specific ticker.
+
+    Returns title, channel, duration, and a preview snippet
+    (first 200 chars) — NOT the full raw transcript.
+    """
+    ticker = ticker.upper().strip()
+    try:
+        rows = _query_to_dicts(
+            """
+            SELECT video_id, title, channel, published_at,
+                   duration_seconds,
+                   SUBSTRING(raw_transcript, 1, 200) AS preview,
+                   LENGTH(raw_transcript) AS transcript_length
+            FROM youtube_transcripts
+            WHERE ticker = ?
+            ORDER BY collected_at DESC
+            LIMIT 10
+            """,
+            [ticker],
+        )
+        return {"ticker": ticker, "count": len(rows), "transcripts": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+

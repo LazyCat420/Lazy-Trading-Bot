@@ -444,3 +444,128 @@ class TestDiscoveryModels:
         assert d["ticker"] == "NVDA"
         assert d["discovery_score"] == 15.5
         assert d["sentiment_hint"] == "bullish"
+
+    def test_discovery_result_transcript_count(self) -> None:
+        """DiscoveryResult should have transcript_count field."""
+        r = DiscoveryResult(transcript_count=5)
+        log.info("DiscoveryResult transcript_count: %d", r.transcript_count)
+        assert r.transcript_count == 5
+
+    def test_discovery_result_transcript_count_default(self) -> None:
+        """DiscoveryResult transcript_count should default to 0."""
+        r = DiscoveryResult()
+        assert r.transcript_count == 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# 6. TRANSCRIPT COLLECTION TESTS
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestTranscriptCollection:
+    """Tests for YouTube transcript collection during discovery."""
+
+    @patch("app.services.discovery_service.YouTubeCollector")
+    def test_collect_transcripts_calls_youtube_collector(
+        self, mock_yt_cls: MagicMock
+    ) -> None:
+        """Should call YouTubeCollector.collect for each discovered ticker."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        mock_collector = MagicMock()
+        mock_collector.collect = AsyncMock(return_value=[])
+        mock_yt_cls.return_value = mock_collector
+
+        service = DiscoveryService()
+        tickers = [
+            ScoredTicker(ticker="NVDA", discovery_score=10.0, source="reddit"),
+            ScoredTicker(ticker="TSLA", discovery_score=5.0, source="youtube"),
+        ]
+
+        result = asyncio.get_event_loop().run_until_complete(
+            service._collect_transcripts(tickers)
+        )
+
+        log.info("Transcript collection calls: %d, result: %d", mock_collector.collect.call_count, result)
+        assert result == 0  # Both returned empty lists
+        assert mock_collector.collect.call_count == 2
+
+        # Verify discovery_mode=True was passed
+        for call in mock_collector.collect.call_args_list:
+            log.info("  Call args: %s, kwargs: %s", call.args, call.kwargs)
+            assert call.kwargs.get("discovery_mode") is True
+            assert call.kwargs.get("max_videos") == 1 or call.args[1] == 1
+
+    def test_collect_transcripts_empty_list(self) -> None:
+        """No tickers should return 0 without any calls."""
+        import asyncio
+
+        service = DiscoveryService()
+        result = asyncio.get_event_loop().run_until_complete(
+            service._collect_transcripts([])
+        )
+        log.info("Empty ticker list result: %d", result)
+        assert result == 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# 7. YOUTUBE COLLECTOR DISCOVERY MODE TESTS
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestYouTubeCollectorDiscoveryMode:
+    """Tests for YouTubeCollector discovery_mode parameter."""
+
+    @patch("app.collectors.youtube_collector.get_db")
+    def test_discovery_mode_skips_daily_guard(
+        self, mock_get_db: MagicMock
+    ) -> None:
+        """discovery_mode=True should NOT check daily guard."""
+        import asyncio
+        from app.collectors.youtube_collector import YouTubeCollector
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        # Simulate "already scraped today" — but discovery_mode should skip it
+        mock_db.execute.return_value.fetchone.return_value = (5,)
+
+        collector = YouTubeCollector()
+        # Patch _search_videos to return empty so we don't hit real YouTube
+        collector._search_videos = MagicMock(return_value=[])
+
+        result = asyncio.get_event_loop().run_until_complete(
+            collector.collect("NVDA", max_videos=1, discovery_mode=True)
+        )
+
+        log.info("Discovery mode result with 'already scraped': %s", result)
+        # Should not have returned early — no "already scraped" check
+        # The execute calls should NOT contain the daily guard query
+        calls = [str(c) for c in mock_db.execute.call_args_list]
+        daily_guard_calls = [c for c in calls if "collected_at" in c]
+        log.info("Daily guard queries: %d", len(daily_guard_calls))
+        assert len(daily_guard_calls) == 0, "Discovery mode should skip daily guard"
+
+    @patch("app.collectors.youtube_collector.get_db")
+    def test_normal_mode_uses_daily_guard(
+        self, mock_get_db: MagicMock
+    ) -> None:
+        """Normal mode (discovery_mode=False) should check daily guard."""
+        import asyncio
+        from app.collectors.youtube_collector import YouTubeCollector
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        # Simulate "already scraped today" — should return early
+        mock_db.execute.return_value.fetchone.return_value = (3,)
+
+        collector = YouTubeCollector()
+        result = asyncio.get_event_loop().run_until_complete(
+            collector.collect("NVDA", max_videos=1, discovery_mode=False)
+        )
+
+        log.info("Normal mode result with 'already scraped': %s", result)
+        assert result == [], "Should return empty when already scraped today"
+
