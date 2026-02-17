@@ -1,0 +1,23 @@
+﻿app\models\decision.py:64: error: Argument 1 to "float" has incompatible type "object"; expected "str | Buffer | SupportsFloat | SupportsIndex"  [arg-type]
+app\collectors\youtube_collector.py:379: error: "type[YouTubeTranscriptApi]" has no attribute "get_transcript"  [attr-defined]
+app\collectors\yfinance_collector.py:198: error: Argument 2 to "zip" has incompatible type "tuple[Any, ...] | None"; expected "Iterable[Any]"  [arg-type]
+app\collectors\news_collector.py:230: error: "datetime" gets multiple values for keyword argument "tzinfo"  [misc]
+app\collectors\news_collector.py:264: error: Library stubs not installed for "requests"  [import-untyped]
+app\collectors\news_collector.py:264: note: Hint: "python3 -m pip install types-requests"
+app\collectors\news_collector.py:264: note: (or run "mypy --install-types" to install all missing stub packages)
+app\collectors\news_collector.py:264: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+app\agents\base_agent.py:29: error: Type variable "app.agents.base_agent.T" is unbound  [valid-type]
+app\agents\base_agent.py:29: note: Error code "valid-type" not covered by "type: ignore" comment
+app\agents\base_agent.py:29: note: (Hint: Use "Generic[T]" or "Protocol[T]" base class to bind "T" inside a class)
+app\agents\base_agent.py:29: note: (Hint: Use "T" in function signature to bind "T" inside a function)
+app\agents\base_agent.py:59: error: "type[T?]" has no attribute "model_json_schema"  [attr-defined]
+app\agents\base_agent.py:74: error: "type[T?]" has no attribute "model_json_schema"  [attr-defined]
+app\agents\base_agent.py:124: error: "type[T?]" has no attribute "model_json_schema"  [attr-defined]
+app\agents\base_agent.py:208: error: "type[T?]" has no attribute "model_json_schema"  [attr-defined]
+app\agents\base_agent.py:253: error: "type[T?]" has no attribute "model_validate"  [attr-defined]
+app\agents\base_agent.py:318: error: "type[T?]" has no attribute "model_validate_json"  [attr-defined]
+app\agents\base_agent.py:338: error: "type[T?]" has no attribute "model_validate"  [attr-defined]
+app\agents\base_agent.py:360: error: "type[T?]" has no attribute "model_json_schema"  [attr-defined]
+app\agents\base_agent.py:379: error: "type[T?]" has no attribute "model_validate_json"  [attr-defined]
+app\collectors\technical_computer.py:98: error: Module has no attribute "AllStudy"  [attr-defined]
+app\main.py:99: error: Argument 1 to "float" has incompatible type "object"; expected "str | Buffer | SupportsFloat | SupportsIndex"  [arg-type]

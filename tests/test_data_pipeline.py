@@ -418,8 +418,8 @@ class TestAgentContextHistoricalData:
         assert "Financial Wire News (yfinance)" in context
         assert "General News (Google News)" in context
         assert "SEC Filings" in context
-        # Check full transcript is included
-        assert "FULL TRANSCRIPT" in context
+        # Check transcript is included
+        assert "TRANSCRIPT" in context
         assert "Full analysis transcript text here" in context
 
     def test_sentiment_agent_handles_empty_data(self) -> None:

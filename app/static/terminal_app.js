@@ -113,13 +113,23 @@ const useTerminalData = () => {
 
     // Fetch overview for each ticker
     const fetchOverview = useCallback(async (ticker) => {
-        // Use a ref-like check via setState to avoid stale closure reads
         try {
             const res = await fetch(`/api/dashboard/overview/${ticker}`);
             const data = await res.json();
             setOverviewCache(prev => {
-                if (prev[ticker]) return prev; // already cached, skip
-                return { ...prev, [ticker]: data };
+                const existing = prev[ticker] || {};
+                // Deep merge: DuckDB overview data overrides live quotes
+                // but we keep live quote fields if DuckDB doesn't have them
+                return {
+                    ...prev,
+                    [ticker]: {
+                        ...existing,
+                        ...data,
+                        price: { ...(existing.price || {}), ...(data.price || {}) },
+                        prev_price: { ...(existing.prev_price || {}), ...(data.prev_price || {}) },
+                        fundamentals: { ...(existing.fundamentals || {}), ...(data.fundamentals || {}) },
+                    },
+                };
             });
             return data;
         } catch (e) {
@@ -128,9 +138,43 @@ const useTerminalData = () => {
         }
     }, []);
 
-    // Fetch all overviews for watchlist
+    // Fetch all overviews for watchlist + live quotes
     useEffect(() => {
         if (watchlist.length === 0) return;
+
+        // 1. Fetch live quotes in one batch (fast, no pipeline needed)
+        const fetchQuotes = async () => {
+            try {
+                const res = await fetch(`/api/quotes?tickers=${watchlist.join(",")}`);
+                const data = await res.json();
+                const quotes = data.quotes || {};
+                setOverviewCache(prev => {
+                    const next = { ...prev };
+                    for (const [sym, q] of Object.entries(quotes)) {
+                        // Merge live quote into cache — keep existing deep data if present
+                        const existing = next[sym] || {};
+                        next[sym] = {
+                            ...existing,
+                            ticker: sym,
+                            // Map quote fields to the shape the table expects
+                            price: { close: q.price, ...(existing.price || {}) },
+                            prev_price: { close: q.prev_close, ...(existing.prev_price || {}) },
+                            fundamentals: {
+                                market_cap: q.market_cap,
+                                ...(existing.fundamentals || {}),
+                            },
+                            _live: true,
+                        };
+                    }
+                    return next;
+                });
+            } catch (e) {
+                console.error("Quotes fetch error:", e);
+            }
+        };
+        fetchQuotes();
+
+        // 2. Also kick off per-ticker DuckDB overview calls (for deeper data)
         watchlist.forEach(t => fetchOverview(t));
     }, [watchlist]);
 

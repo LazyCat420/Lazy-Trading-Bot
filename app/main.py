@@ -299,6 +299,79 @@ async def get_llm_models(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# LIVE QUOTES — fast price via yfinance.fast_info (no pipeline needed)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _fetch_one_quote(symbol: str) -> dict:
+    """Fetch live quote for a single ticker via yfinance.Ticker.fast_info.
+
+    fast_info is a lightweight call — no full .info download required.
+    Returns a dict with price, change, change_pct, market_cap, volume.
+    """
+    import yfinance as yf  # lazy import to keep startup fast
+
+    try:
+        t = yf.Ticker(symbol)
+        fi = t.fast_info
+        price = getattr(fi, "last_price", None)
+        prev = getattr(fi, "previous_close", None)
+        mcap = getattr(fi, "market_cap", None)
+        vol = getattr(fi, "last_volume", None)
+
+        change = None
+        change_pct = None
+        if price is not None and prev is not None and prev != 0:
+            change = round(price - prev, 4)
+            change_pct = round((change / prev) * 100, 4)
+
+        return {
+            "ticker": symbol,
+            "price": round(price, 2) if price is not None else None,
+            "prev_close": round(prev, 2) if prev is not None else None,
+            "change": change,
+            "change_pct": change_pct,
+            "market_cap": mcap,
+            "volume": vol,
+        }
+    except Exception as e:
+        logger.warning("Quote fetch failed for %s: %s", symbol, e)
+        return {"ticker": symbol, "price": None, "error": str(e)}
+
+
+@app.get("/api/quotes")
+async def get_quotes(tickers: str = Query(..., description="Comma-separated ticker symbols")) -> dict:
+    """Batch live-price endpoint — fetches current prices from Yahoo Finance.
+
+    Uses yfinance.Ticker.fast_info for each ticker in parallel.
+    Much faster than running the full pipeline, designed for watchlist display.
+    """
+    symbols = [s.strip().upper() for s in tickers.split(",") if s.strip()]
+    if not symbols:
+        return {"quotes": {}}
+
+    # Cap at 20 tickers to avoid abuse
+    symbols = symbols[:20]
+
+    import concurrent.futures
+
+    # Run yfinance calls in thread pool (they're synchronous I/O)
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
+        futures = [loop.run_in_executor(pool, _fetch_one_quote, s) for s in symbols]
+        results = await asyncio.gather(*futures, return_exceptions=True)
+
+    quotes = {}
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        if isinstance(result, dict) and "ticker" in result:
+            quotes[result["ticker"]] = result
+
+    return {"quotes": quotes}
+
+
+# ══════════════════════════════════════════════════════════════════════
 # DASHBOARD DATA API — DuckDB queries for frontend
 # ══════════════════════════════════════════════════════════════════════
 

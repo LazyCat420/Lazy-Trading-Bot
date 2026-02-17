@@ -1,0 +1,93 @@
+﻿Collecting pip-audit
+  Using cached pip_audit-2.10.0-py3-none-any.whl.metadata (28 kB)
+Collecting CacheControl>=0.13.0 (from CacheControl[filecache]>=0.13.0->pip-audit)
+  Using cached cachecontrol-0.14.4-py3-none-any.whl.metadata (3.1 kB)
+Collecting cyclonedx-python-lib<12,>=5 (from pip-audit)
+  Using cached cyclonedx_python_lib-11.6.0-py3-none-any.whl.metadata (6.8 kB)
+Requirement already satisfied: packaging>=23.0.0 in d:\github\lazy-trading-bot\venv\lib\site-packages (from pip-audit) (26.0)
+Collecting pip-api>=0.0.28 (from pip-audit)
+  Using cached pip_api-0.0.34-py3-none-any.whl.metadata (6.6 kB)
+Collecting pip-requirements-parser>=32.0.0 (from pip-audit)
+  Using cached pip_requirements_parser-32.0.1-py3-none-any.whl.metadata (9.3 kB)
+Requirement already satisfied: requests>=2.31.0 in d:\github\lazy-trading-bot\venv\lib\site-packages (from pip-audit) (2.32.5)
+Collecting rich>=12.4 (from pip-audit)
+  Using cached rich-14.3.2-py3-none-any.whl.metadata (18 kB)
+Collecting tomli>=2.2.1 (from pip-audit)
+  Using cached tomli-2.4.0-cp313-cp313-win_amd64.whl.metadata (10 kB)
+Collecting tomli-w>=1.2.0 (from pip-audit)
+  Using cached tomli_w-1.2.0-py3-none-any.whl.metadata (5.7 kB)
+Requirement already satisfied: platformdirs>=4.2.0 in d:\github\lazy-trading-bot\venv\lib\site-packages (from pip-audit) (4.9.2)
+Collecting license-expression<31,>=30 (from cyclonedx-python-lib<12,>=5->pip-audit)
+  Using cached license_expression-30.4.4-py3-none-any.whl.metadata (11 kB)
+Collecting packageurl-python<2,>=0.11 (from cyclonedx-python-lib<12,>=5->pip-audit)
+  Using cached packageurl_python-0.17.6-py3-none-any.whl.metadata (5.1 kB)
+Collecting py-serializable<3.0.0,>=2.1.0 (from cyclonedx-python-lib<12,>=5->pip-audit)
+  Using cached py_serializable-2.1.0-py3-none-any.whl.metadata (4.3 kB)
+Collecting sortedcontainers<3.0.0,>=2.4.0 (from cyclonedx-python-lib<12,>=5->pip-audit)
+  Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl.metadata (10 kB)
+Collecting boolean.py>=4.0 (from license-expression<31,>=30->cyclonedx-python-lib<12,>=5->pip-audit)
+  Using cached boolean_py-5.0-py3-none-any.whl.metadata (2.3 kB)
+Requirement already satisfied: defusedxml<0.8.0,>=0.7.1 in d:\github\lazy-trading-bot\venv\lib\site-packages (from py-serializable<3.0.0,>=2.1.0->cyclonedx-python-lib<12,>=5->pip-audit) (0.7.1)
+Collecting msgpack<2.0.0,>=0.5.2 (from CacheControl>=0.13.0->CacheControl[filecache]>=0.13.0->pip-audit)
+  Using cached msgpack-1.1.2-cp313-cp313-win_amd64.whl.metadata (8.4 kB)
+Collecting filelock>=3.8.0 (from CacheControl[filecache]>=0.13.0->pip-audit)
+  Downloading filelock-3.24.2-py3-none-any.whl.metadata (2.0 kB)
+Requirement already satisfied: pip in d:\github\lazy-trading-bot\venv\lib\site-packages (from pip-api>=0.0.28->pip-audit) (25.1.1)
+Collecting pyparsing (from pip-requirements-parser>=32.0.0->pip-audit)
+  Using cached pyparsing-3.3.2-py3-none-any.whl.metadata (5.8 kB)
+Requirement already satisfied: charset_normalizer<4,>=2 in d:\github\lazy-trading-bot\venv\lib\site-packages (from requests>=2.31.0->pip-audit) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in d:\github\lazy-trading-bot\venv\lib\site-packages (from requests>=2.31.0->pip-audit) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in d:\github\lazy-trading-bot\venv\lib\site-packages (from requests>=2.31.0->pip-audit) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in d:\github\lazy-trading-bot\venv\lib\site-packages (from requests>=2.31.0->pip-audit) (2026.1.4)
+Collecting markdown-it-py>=2.2.0 (from rich>=12.4->pip-audit)
+  Using cached markdown_it_py-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in d:\github\lazy-trading-bot\venv\lib\site-packages (from rich>=12.4->pip-audit) (2.19.2)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=12.4->pip-audit)
+  Using cached mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Using cached pip_audit-2.10.0-py3-none-any.whl (61 kB)
+Using cached cyclonedx_python_lib-11.6.0-py3-none-any.whl (511 kB)
+Using cached license_expression-30.4.4-py3-none-any.whl (120 kB)
+Using cached packageurl_python-0.17.6-py3-none-any.whl (36 kB)
+Using cached py_serializable-2.1.0-py3-none-any.whl (23 kB)
+Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl (29 kB)
+Using cached boolean_py-5.0-py3-none-any.whl (26 kB)
+Using cached cachecontrol-0.14.4-py3-none-any.whl (22 kB)
+Using cached msgpack-1.1.2-cp313-cp313-win_amd64.whl (72 kB)
+Downloading filelock-3.24.2-py3-none-any.whl (24 kB)
+Using cached pip_api-0.0.34-py3-none-any.whl (120 kB)
+Using cached pip_requirements_parser-32.0.1-py3-none-any.whl (35 kB)
+Using cached rich-14.3.2-py3-none-any.whl (309 kB)
+Using cached markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+Using cached mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Using cached tomli-2.4.0-cp313-cp313-win_amd64.whl (108 kB)
+Using cached tomli_w-1.2.0-py3-none-any.whl (6.7 kB)
+Using cached pyparsing-3.3.2-py3-none-any.whl (122 kB)
+Installing collected packages: sortedcontainers, boolean.py, tomli-w, tomli, pyparsing, py-serializable, pip-api, packageurl-python, msgpack, mdurl, license-expression, filelock, pip-requirements-parser, markdown-it-py, cyclonedx-python-lib, CacheControl, rich, pip-audit
+
+Successfully installed CacheControl-0.14.4 boolean.py-5.0 cyclonedx-python-lib-11.6.0 filelock-3.24.2 license-expression-30.4.4 markdown-it-py-4.0.0 mdurl-0.1.2 msgpack-1.1.2 packageurl-python-0.17.6 pip-api-0.0.34 pip-audit-2.10.0 pip-requirements-parser-32.0.1 py-serializable-2.1.0 pyparsing-3.3.2 rich-14.3.2 sortedcontainers-2.4.0 tomli-2.4.0 tomli-w-1.2.0
+pip : 
+At line:1 char:26
++ .\venv\Scripts\activ
+ate; pip install 
+pip-audit 2>&1 | 
+Out-File -Encod ...
++                     
+     ~~~~~~~~~~~~~~~~~
+~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (:String) [   
+ ], RemoteExceptio    
+n
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+[notice] A new 
+release of pip is 
+available: 25.1.1 -> 
+26.0.1
+[notice] To update, 
+run: python.exe -m 
+pip install --upgrade 
+pip

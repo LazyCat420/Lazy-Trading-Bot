@@ -1,0 +1,27 @@
+﻿pip-audit : Found 2 
+known vulnerabilities 
+in 1 package
+At line:1 char:98
++ ... 1 | Out-File 
+-Encoding utf8 
+install_audit.txt; 
+pip-audit 2>&1 | 
+Out-F ...
++                     
+                      
+         
+~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (Found 2 kn   
+ own v...es in 1 p    
+ackage:String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+Name Version ID            Fix Versions
+---- ------- ------------- ------------
+pip  25.1.1  CVE-2025-8869 25.3
+pip  25.1.1  CVE-2026-1703 26.0

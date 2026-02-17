@@ -63,6 +63,46 @@ class BaseAgent:
         prompt = prompt.replace("{schema_json}", schema_json)
         return prompt
 
+    def _schema_reminder(self, ticker: str) -> str:
+        """Compact reminder of required JSON keys — appended to user message.
+
+        Smaller LLMs lose track of system-prompt format instructions when the
+        data context is long.  Placing a reminder at the *end* of the user
+        message (recency bias) dramatically improves schema compliance.
+        """
+        required = sorted(self._get_required_keys())
+        schema = self.output_model.model_json_schema()
+        props = schema.get("properties", {})
+
+        # Build concise example object with placeholder values
+        example: dict[str, Any] = {}
+        for key in required:
+            prop = props.get(key, {})
+            if key == "ticker":
+                example[key] = ticker
+            elif "enum" in prop:
+                example[key] = prop["enum"][0]
+            elif prop.get("type") == "number":
+                example[key] = 0.5
+            elif prop.get("type") == "string":
+                example[key] = "..."
+            elif prop.get("type") == "array":
+                example[key] = ["..."]
+            elif prop.get("type") == "object":
+                example[key] = {}
+            else:
+                example[key] = "..."
+
+        example_json = json.dumps(example, indent=2)
+        return (
+            f"\n\n--- REQUIRED OUTPUT FORMAT (IMPORTANT) ---\n"
+            f"You MUST respond with ONLY a flat JSON object.\n"
+            f"Required keys: {required}\n"
+            f"Example structure:\n{example_json}\n"
+            f"Do NOT wrap your response in any extra key. "
+            f"Return ONLY the JSON object above (with real values).\n"
+        )
+
     def format_context(self, ticker: str, context: dict) -> str:
         """Subclasses override to format their specific data into a user message.
 
@@ -138,25 +178,25 @@ class BaseAgent:
     def _build_rescue_prompt(
         self, ticker: str, bad_response: dict[str, Any], user_context: str,
     ) -> str:
-        """Build a focused retry prompt that tells the LLM exactly what it did wrong."""
-        schema_json = json.dumps(
-            self.output_model.model_json_schema(), indent=2
-        )
-        # Truncate the bad response to avoid wasting tokens
-        bad_preview = json.dumps(bad_response, indent=2)[:800]
+        """Build a focused retry prompt that tells the LLM exactly what it did wrong.
+
+        Uses a COMPACT format — avoids dumping the full schema (too many
+        tokens for small models).  Instead, shows a concrete minimal example
+        of what the correct output looks like.
+        """
+        required = sorted(self._get_required_keys())
+        bad_keys = list(bad_response.keys())[:5]  # keep compact
+
+        # Build a concrete example using the schema reminder helper
+        reminder = self._schema_reminder(ticker)
 
         return (
-            f"Your previous response had the WRONG structure. "
-            f"You returned keys like {list(bad_response.keys())}, but the "
-            f"required output must be a FLAT JSON object with these fields:\n\n"
-            f"```json\n{schema_json}\n```\n\n"
-            f"Your bad response (truncated):\n```json\n{bad_preview}\n```\n\n"
-            f"CRITICAL RULES:\n"
-            f"- Output ONLY a single flat JSON object with ALL required fields.\n"
-            f"- The 'ticker' field MUST be \"{ticker}\".\n"
-            f"- Do NOT nest your analysis inside 'Summary' or any wrapper key.\n"
-            f"- Do NOT include markdown, commentary, or text outside the JSON.\n\n"
-            f"Analyze this data and return the correct JSON:\n\n{user_context}"
+            f"STOP. Your previous response was WRONG.\n"
+            f"You returned keys {bad_keys} but I need keys {required}.\n\n"
+            f"{reminder}\n\n"
+            f"Do NOT summarize the data. Do NOT create your own keys.\n"
+            f"Output ONLY the flat JSON object shown above with real values.\n\n"
+            f"Here is the data to analyze:\n\n{user_context}"
         )
 
     def _build_fallback_report(self, ticker: str) -> T | None:
@@ -260,6 +300,11 @@ class BaseAgent:
 
         system = self._build_system_prompt(ticker)
         user = self.format_context(ticker, context)
+
+        # Append a schema reminder to the END of the user message.
+        # Smaller LLMs attend to the tail of the prompt more than the system
+        # prompt, so this dramatically improves schema compliance.
+        user += self._schema_reminder(ticker)
 
         # --- Attempt 1: standard call ---
         raw_response = await self.llm.chat(

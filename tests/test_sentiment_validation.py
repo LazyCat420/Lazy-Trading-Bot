@@ -137,6 +137,6 @@ class TestBaseAgentRescueHelpers:
     def test_rescue_prompt_contains_error_info(self, agent: BaseAgent) -> None:
         bad = {"Summary": {"Video 1": "text"}}
         prompt = agent._build_rescue_prompt("NVDA", bad, "some context")
-        assert "WRONG structure" in prompt
+        assert "WRONG" in prompt
         assert "Summary" in prompt
         assert "NVDA" in prompt

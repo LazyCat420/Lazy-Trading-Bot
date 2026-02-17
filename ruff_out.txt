@@ -1,0 +1,23 @@
+﻿E701 Multiple statements on one line (colon)
+  --> app\models\agent_reports.py:65:21
+   |
+63 |     def _clamp_score(cls, v: float) -> float:
+64 |         """Clamp sentiment score to [-1.0, 1.0]."""
+65 |         if v is None: return 0.0
+   |                     ^
+66 |         try:
+67 |             val = float(v)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> app\models\agent_reports.py:76:21
+   |
+74 |     def _clamp_confidence(cls, v: float) -> float:
+75 |         """Clamp confidence to [0.0, 1.0]."""
+76 |         if v is None: return 0.0
+   |                     ^
+77 |         try:
+78 |             val = float(v)
+   |
+
+Found 2 errors.

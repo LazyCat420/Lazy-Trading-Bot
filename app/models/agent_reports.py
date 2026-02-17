@@ -62,7 +62,8 @@ class SentimentReport(BaseModel):
     @classmethod
     def _clamp_score(cls, v: float) -> float:
         """Clamp sentiment score to [-1.0, 1.0]."""
-        if v is None: return 0.0
+        if v is None:
+            return 0.0
         try:
             val = float(v)
             return max(-1.0, min(1.0, val))
@@ -73,7 +74,8 @@ class SentimentReport(BaseModel):
     @classmethod
     def _clamp_confidence(cls, v: float) -> float:
         """Clamp confidence to [0.0, 1.0]."""
-        if v is None: return 0.0
+        if v is None:
+            return 0.0
         try:
             val = float(v)
             return max(0.0, min(1.0, val))
