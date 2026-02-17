@@ -5,7 +5,9 @@ and SEC EDGAR filings.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
+from html import unescape
 from urllib.parse import quote_plus
 
 import feedparser
@@ -206,6 +208,19 @@ class NewsCollector:
     # ------------------------------------------------------------------
     # Source 2: Google News RSS
     # ------------------------------------------------------------------
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        """Remove HTML tags and decode entities from a string."""
+        if not text:
+            return ""
+        # Remove HTML tags
+        clean = re.sub(r"<[^>]+>", "", text)
+        # Decode HTML entities (&nbsp; &amp; etc.)
+        clean = unescape(clean)
+        # Collapse whitespace
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean
+
     async def _fetch_google_news(self, ticker: str, limit: int) -> list[NewsArticle]:
         """Fetch financial news from Google News RSS feed."""
         articles: list[NewsArticle] = []
@@ -220,7 +235,9 @@ class NewsCollector:
                     continue
                 link = entry.get("link", "")
                 publisher = entry.get("source", {}).get("title", "Google News")
-                summary = entry.get("summary", "")
+                raw_summary = entry.get("summary", "")
+                # Google News RSS summary contains HTML — strip it
+                summary = self._strip_html(raw_summary)
 
                 # Parse publish time
                 published_at = None

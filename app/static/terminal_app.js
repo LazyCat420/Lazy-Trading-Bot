@@ -504,12 +504,18 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
     const [news, setNews] = useState([]);
     const [technicals, setTechnicals] = useState(null);
     const [financials, setFinancials] = useState(null);
+    const [videos, setVideos] = useState([]);
+    const [riskData, setRiskData] = useState({});
+    const [analystData, setAnalystData] = useState({});
 
     // Track loading states individually
     const [loadingOv, setLoadingOv] = useState(true);
     const [loadingNews, setLoadingNews] = useState(true);
     const [loadingTech, setLoadingTech] = useState(true);
     const [loadingFin, setLoadingFin] = useState(true);
+    const [loadingYt, setLoadingYt] = useState(true);
+    const [loadingRisk, setLoadingRisk] = useState(true);
+    const [loadingAnalyst, setLoadingAnalyst] = useState(true);
 
     // Serialize streamSignals to a stable string to avoid re-render loops
     // (object reference changes every render even if contents are the same)
@@ -529,6 +535,8 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         if (streamSignals.technicals === "ok") fetchTechnicals();
         if (streamSignals.financial_history === "ok" || streamSignals.balance_sheet === "ok") fetchFinancials();
         if (streamSignals.fundamentals === "ok") fetchOverview(); // Fundamentals are in overview
+        if (streamSignals.youtube === "ok" || streamSignals.youtube_scrape === "ok") fetchYouTube();
+        if (streamSignals.risk_metrics === "ok") fetchRisk();
     }, [signalsKey, ticker]);
 
     const fetchAll = () => {
@@ -536,6 +544,9 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         fetchNews();
         fetchTechnicals();
         fetchFinancials();
+        fetchYouTube();
+        fetchRisk();
+        fetchAnalyst();
     };
 
     const fetchOverview = async () => {
@@ -558,6 +569,16 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         } catch (e) { console.error(e); } finally { setLoadingNews(false); }
     };
 
+    const fetchYouTube = async () => {
+        try {
+            const res = await fetch(`/api/dashboard/youtube/${ticker}`);
+            if (res.ok) {
+                const data = await res.json();
+                setVideos(data.videos || []);
+            }
+        } catch (e) { console.error(e); } finally { setLoadingYt(false); }
+    };
+
     const fetchTechnicals = async () => {
         try {
             const res = await fetch(`/api/dashboard/technicals/${ticker}`);
@@ -577,6 +598,25 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         } catch (e) { console.error(e); } finally { setLoadingFin(false); }
     };
 
+    const fetchRisk = async () => {
+        try {
+            const res = await fetch(`/api/dashboard/risk/${ticker}`);
+            if (res.ok) {
+                const data = await res.json();
+                setRiskData(data.metrics || {});
+            }
+        } catch (e) { console.error(e); } finally { setLoadingRisk(false); }
+    };
+
+    const fetchAnalyst = async () => {
+        try {
+            const res = await fetch(`/api/dashboard/analyst/${ticker}`);
+            if (res.ok) {
+                setAnalystData(await res.json());
+            }
+        } catch (e) { console.error(e); } finally { setLoadingAnalyst(false); }
+    };
+
     const TabBtn = ({ id, label, icon }) => (
         <button onClick={() => setTab(id)}
             className={`tab-btn flex items-center gap-1.5 ${tab === id ? "active" : ""}`}>
@@ -593,8 +633,11 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
             <div className="flex border-b border-border-dark px-6 bg-onyx-surface shrink-0">
                 <TabBtn id="OV" label="Overview" icon="dashboard" />
                 <TabBtn id="NEWS" label="News" icon="newspaper" />
+                <TabBtn id="YT" label="YouTube" icon="play_circle" />
                 <TabBtn id="FUND" label="Fundamentals" icon="account_balance" />
                 <TabBtn id="TECH" label="Technicals" icon="show_chart" />
+                <TabBtn id="RISK" label="Risk" icon="shield" />
+                <TabBtn id="ANALYST" label="Analyst" icon="groups" />
             </div>
 
             <div className="p-6 flex-1 overflow-y-auto">
@@ -659,24 +702,58 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
                                 <p>Fetching news...</p>
                             </div>
                         )}
-                        {news.map((item, i) => (
-                            <div key={i} className="glass-card p-3 flex gap-3 hover:bg-white/5 transition">
-                                <div className="flex-1">
-                                    <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-sm font-bold text-white hover:text-primary mb-1 block">
-                                        {item.title}
-                                    </a>
-                                    <div className="flex items-center gap-2 text-[10px] text-text-muted mb-2">
-                                        <span className="font-mono">{item.source || item.publisher}</span>
-                                        <span>•</span>
-                                        <span>{new Date(item.published_at).toLocaleString()}</span>
+                        {news.map((item, i) => {
+                            // Strip HTML tags from summary (Google News RSS stores raw HTML)
+                            const stripHtml = (str) => {
+                                if (!str) return "";
+                                const tmp = document.createElement("div");
+                                tmp.innerHTML = str;
+                                return tmp.textContent || tmp.innerText || "";
+                            };
+                            const cleanSummary = stripHtml(item.summary);
+                            const cleanTitle = stripHtml(item.title);
+                            // Try to extract a real URL from HTML summary if main url is missing
+                            let articleUrl = item.url;
+                            if (!articleUrl && item.summary) {
+                                const m = item.summary.match(/href="([^"]+)"/);
+                                if (m) articleUrl = m[1];
+                            }
+                            return (
+                                <div key={i} className="glass-card p-3 flex gap-3 hover:bg-white/5 transition">
+                                    <div className="flex-1">
+                                        {articleUrl ? (
+                                            <a href={articleUrl} target="_blank" rel="noopener noreferrer" className="text-sm font-bold text-white hover:text-primary mb-1 block">
+                                                {cleanTitle || item.title}
+                                            </a>
+                                        ) : (
+                                            <span className="text-sm font-bold text-white mb-1 block">{cleanTitle || item.title}</span>
+                                        )}
+                                        <div className="flex items-center gap-2 text-[10px] text-text-muted mb-2">
+                                            <span className="font-mono">{item.source || item.publisher}</span>
+                                            <span>•</span>
+                                            <span>{new Date(item.published_at).toLocaleString()}</span>
+                                        </div>
+                                        {cleanSummary && <p className="text-xs text-text-secondary line-clamp-2">{cleanSummary}</p>}
                                     </div>
-                                    <p className="text-xs text-text-secondary line-clamp-2">{item.summary}</p>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
 
+                {tab === "YT" && (
+                    <div>
+                        {loadingYt && videos.length === 0 && (
+                            <div className="text-center py-8 text-text-muted">
+                                <span className="material-symbols-outlined animate-spin text-2xl mb-2">progress_activity</span>
+                                <p>Fetching YouTube videos...</p>
+                            </div>
+                        )}
+                        {videos.length > 0 ? <YouTubeTab videos={videos} /> : !loadingYt && (
+                            <div className="text-center py-12 text-text-muted">No YouTube videos in database</div>
+                        )}
+                    </div>
+                )}
 
                 {tab === "FUND" && financials && (
                     <div className="grid grid-cols-2 gap-8">
@@ -739,6 +816,60 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
                                 ))}
                             </div>
                         </div>
+                    </div>
+                )}
+
+                {tab === "RISK" && (
+                    <div>
+                        {loadingRisk && Object.keys(riskData).length === 0 && (
+                            <div className="text-center py-8 text-text-muted">
+                                <span className="material-symbols-outlined animate-spin text-2xl mb-2">progress_activity</span>
+                                <p>Fetching risk metrics...</p>
+                            </div>
+                        )}
+                        {Object.keys(riskData).length > 0 ? (
+                            <div className="grid grid-cols-3 gap-4">
+                                {Object.entries(riskData).filter(([k]) => k !== "ticker" && k !== "computed_date").map(([key, val]) => (
+                                    <div key={key} className="glass-card p-4 text-center">
+                                        <div className="text-xl font-bold font-mono text-white mb-1">{fmt.num(val, 4)}</div>
+                                        <div className="text-[10px] text-text-muted uppercase">{key.replace(/_/g, " ")}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : !loadingRisk && (
+                            <div className="text-center py-12 text-text-muted">No risk metrics in database</div>
+                        )}
+                    </div>
+                )}
+
+                {tab === "ANALYST" && (
+                    <div>
+                        {loadingAnalyst && !analystData.analyst && !analystData.insider && (
+                            <div className="text-center py-8 text-text-muted">
+                                <span className="material-symbols-outlined animate-spin text-2xl mb-2">progress_activity</span>
+                                <p>Fetching analyst data...</p>
+                            </div>
+                        )}
+                        {(analystData.analyst || analystData.insider) ? (
+                            <div className="grid grid-cols-2 gap-6">
+                                <div className="glass-card p-4">
+                                    <h4 className="text-xs text-text-muted uppercase mb-3">Analyst Targets</h4>
+                                    {analystData.analyst && Object.entries(analystData.analyst).filter(([k]) => !["ticker", "snapshot_date"].includes(k)).map(([k, v]) => (
+                                        <MetricRow key={k} label={k.replace(/_/g, " ")} value={typeof v === "number" ? fmt.num(v) : String(v ?? "N/A")} />
+                                    ))}
+                                    {!analystData.analyst && <div className="text-text-muted text-xs">No analyst data</div>}
+                                </div>
+                                <div className="glass-card p-4">
+                                    <h4 className="text-xs text-text-muted uppercase mb-3">Insider Activity</h4>
+                                    {analystData.insider && Object.entries(analystData.insider).filter(([k]) => !["ticker", "snapshot_date"].includes(k)).map(([k, v]) => (
+                                        <MetricRow key={k} label={k.replace(/_/g, " ")} value={typeof v === "number" ? fmt.num(v) : String(v ?? "N/A")} />
+                                    ))}
+                                    {!analystData.insider && <div className="text-text-muted text-xs">No insider data</div>}
+                                </div>
+                            </div>
+                        ) : !loadingAnalyst && (
+                            <div className="text-center py-12 text-text-muted">No analyst data in database</div>
+                        )}
                     </div>
                 )}
             </div>
@@ -897,10 +1028,6 @@ const WatchlistPage = ({
                                                     <button onClick={(e) => { e.stopPropagation(); navigate(`/analysis/${ticker}`); }}
                                                         className="icon-btn" title="Run Analysis">
                                                         <span className="material-symbols-outlined text-[18px]">play_circle</span>
-                                                    </button>
-                                                    <button onClick={(e) => { e.stopPropagation(); navigate(`/data/${ticker}`); }}
-                                                        className="icon-btn" title="Data Explorer">
-                                                        <span className="material-symbols-outlined text-[18px]">query_stats</span>
                                                     </button>
                                                     <button onClick={(e) => { e.stopPropagation(); removeTicker(ticker); }}
                                                         className="icon-btn danger" title="Remove">
@@ -1731,7 +1858,7 @@ const AnalysisPage = ({
                             <button onClick={() => setActiveAgent("data")}
                                 className={`tab-btn flex items-center gap-1.5 ${activeAgent === "data" ? "active" : ""}`}>
                                 <span className="material-symbols-outlined text-sm">database</span>
-                                Data Explorer
+                                Analyze Data
                             </button>
 
                             {(streamPhase === "agents" || streamPhase === "decision" || streamPhase === "done") && agentTabs.map(tab => {
@@ -1878,113 +2005,6 @@ const YouTubeTab = ({ videos }) => {
 };
 
 
-// ***************************************************************
-// DATA EXPLORER PAGE  Deep view into a ticker's data
-// ***************************************************************
-
-const DataExplorerPage = () => {
-    const { ticker } = useParams();
-    const navigate = useNavigate();
-    const [tab, setTab] = useState("CHART");
-    const [news, setNews] = useState([]);
-    const [videos, setVideos] = useState([]);
-    const [risk, setRisk] = useState({});
-    const [analyst, setAnalyst] = useState({});
-
-    useEffect(() => {
-        const load = async () => {
-            const [newsRes, ytRes, riskRes, analystRes] = await Promise.all([
-                fetch(`/api/dashboard/news/${ticker}`),
-                fetch(`/api/dashboard/youtube/${ticker}`),
-                fetch(`/api/dashboard/risk/${ticker}`),
-                fetch(`/api/dashboard/analyst/${ticker}`),
-            ]);
-            const newsJson = await newsRes.json(); setNews(newsJson.articles || []);
-            const ytJson = await ytRes.json(); setVideos(ytJson.videos || []);
-            const riskJson = await riskRes.json(); setRisk(riskJson.metrics || {});
-            setAnalyst(await analystRes.json());
-        };
-        load();
-    }, [ticker]);
-
-    const TabBtn = ({ id, label, icon }) => (
-        <button onClick={() => setTab(id)}
-            className={`tab-btn flex items-center gap-1.5 ${tab === id ? "active" : ""}`}>
-            <span className="material-symbols-outlined text-sm">{icon}</span>{label}
-        </button>
-    );
-
-    return (
-        <SidebarLayout active="">
-            <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
-                <div className="flex items-center gap-3">
-                    <button onClick={() => navigate("/")} className="icon-btn">
-                        <span className="material-symbols-outlined text-xl">arrow_back</span>
-                    </button>
-                    <h2 className="text-white font-bold text-lg">Data Explorer: <span className="text-primary">{ticker}</span></h2>
-                </div>
-            </div>
-            <div className="flex border-b border-border-dark px-6 bg-onyx-surface">
-                <TabBtn id="CHART" label="Chart" icon="candlestick_chart" />
-                <TabBtn id="NEWS" label="News" icon="newspaper" />
-                <TabBtn id="YT" label="YouTube" icon="play_circle" />
-                <TabBtn id="RISK" label="Risk" icon="shield" />
-                <TabBtn id="ANALYST" label="Analyst" icon="groups" />
-            </div>
-            <div className="flex-1 overflow-y-auto p-6">
-                {tab === "CHART" && <ChartWidget symbol={ticker} height={500} />}
-                {tab === "NEWS" && (
-                    <div className="space-y-2">
-                        {news.map((item, i) => (
-                            <a key={i} href={item.url} target="_blank" rel="noopener"
-                                className="block glass-card p-4 hover:border-primary/30 transition group">
-                                <h5 className="text-sm text-white group-hover:text-primary mb-1">{item.title}</h5>
-                                <div className="flex gap-3 text-[10px] text-text-muted">
-                                    <span className="font-bold text-text-secondary">{item.publisher || item.source}</span>
-                                    <span>{fmt.date(item.published_at)}</span>
-                                </div>
-                                {item.summary && <p className="text-xs text-text-muted mt-2 line-clamp-2">{item.summary}</p>}
-                            </a>
-                        ))}
-                        {news.length === 0 && <div className="text-center py-12 text-text-muted">No news articles in database</div>}
-                    </div>
-                )}
-                {tab === "YT" && (
-                    <YouTubeTab videos={videos} />
-                )}
-                {tab === "RISK" && (
-                    <div className="grid grid-cols-3 gap-4">
-                        {Object.entries(risk).filter(([k]) => k !== "ticker" && k !== "computed_date").map(([key, val]) => (
-                            <div key={key} className="glass-card p-4 text-center">
-                                <div className="text-xl font-bold font-mono text-white mb-1">{fmt.num(val, 4)}</div>
-                                <div className="text-[10px] text-text-muted uppercase">{key.replace(/_/g, " ")}</div>
-                            </div>
-                        ))}
-                        {Object.keys(risk).length === 0 && <div className="col-span-3 text-center py-12 text-text-muted">No risk metrics in database</div>}
-                    </div>
-                )}
-                {tab === "ANALYST" && (
-                    <div className="grid grid-cols-2 gap-6">
-                        <div className="glass-card p-4">
-                            <h4 className="text-xs text-text-muted uppercase mb-3">Analyst Targets</h4>
-                            {analyst.analyst && Object.entries(analyst.analyst).filter(([k]) => !["ticker", "snapshot_date"].includes(k)).map(([k, v]) => (
-                                <MetricRow key={k} label={k.replace(/_/g, " ")} value={typeof v === "number" ? fmt.num(v) : String(v ?? "N/A")} />
-                            ))}
-                            {!analyst.analyst && <div className="text-text-muted text-xs">No analyst data</div>}
-                        </div>
-                        <div className="glass-card p-4">
-                            <h4 className="text-xs text-text-muted uppercase mb-3">Insider Activity</h4>
-                            {analyst.insider && Object.entries(analyst.insider).filter(([k]) => !["ticker", "snapshot_date"].includes(k)).map(([k, v]) => (
-                                <MetricRow key={k} label={k.replace(/_/g, " ")} value={typeof v === "number" ? fmt.num(v) : String(v ?? "N/A")} />
-                            ))}
-                            {!analyst.insider && <div className="text-text-muted text-xs">No insider data</div>}
-                        </div>
-                    </div>
-                )}
-            </div>
-        </SidebarLayout>
-    );
-};
 
 // ***************************************************************
 // SETTINGS PAGE
@@ -2397,7 +2417,7 @@ const App = () => {
             <Routes>
                 <Route path="/" element={<WatchlistPage {...terminalData} />} />
                 <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
-                <Route path="/data/:ticker" element={<DataExplorerPage />} />
+
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/diagnostics" element={<DiagnosticsPage />} />
             </Routes>

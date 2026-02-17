@@ -647,6 +647,7 @@ async def dashboard_db_stats() -> dict:
         "technicals", "news_articles", "youtube_transcripts",
         "risk_metrics", "balance_sheet", "cash_flows",
         "analyst_data", "insider_activity", "earnings_calendar",
+        "discovered_tickers", "ticker_scores",
     ]
     counts = {}
     db = get_db()
@@ -657,3 +658,52 @@ async def dashboard_db_stats() -> dict:
         except Exception:
             counts[table] = -1  # Table doesn't exist
     return {"counts": counts}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DISCOVERY API (Phase 12 — Ticker Discovery)
+# ══════════════════════════════════════════════════════════════════════
+
+from app.services.discovery_service import DiscoveryService  # noqa: E402
+
+_discovery = DiscoveryService()
+
+
+@app.get("/api/discovery/run")
+async def run_discovery(
+    reddit: bool = Query(default=True),
+    youtube: bool = Query(default=True),
+    hours: int = Query(default=24),
+) -> dict:
+    """Trigger a discovery scan (Reddit + YouTube)."""
+    logger.info("[API] /api/discovery/run called (reddit=%s, youtube=%s)", reddit, youtube)
+    result = await _discovery.run_discovery(
+        enable_reddit=reddit,
+        enable_youtube=youtube,
+        youtube_hours=hours,
+    )
+    return {
+        "status": "complete",
+        "tickers": [t.model_dump() for t in result.tickers],
+        "reddit_count": result.reddit_count,
+        "youtube_count": result.youtube_count,
+        "duration_seconds": round(result.duration_seconds, 1),
+    }
+
+
+@app.get("/api/discovery/results")
+async def get_discovery_results(
+    limit: int = Query(default=20),
+) -> dict:
+    """Get latest scored tickers from the aggregated table."""
+    scores = _discovery.get_latest_scores(limit=limit)
+    return {"scores": scores}
+
+
+@app.get("/api/discovery/history")
+async def get_discovery_history(
+    limit: int = Query(default=50),
+) -> dict:
+    """Get raw discovery history with timestamps."""
+    history = _discovery.get_discovery_history(limit=limit)
+    return {"history": history}

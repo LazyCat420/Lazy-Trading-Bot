@@ -314,6 +314,35 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ---- Phase 12: Ticker Discovery tables ----
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discovered_tickers (
+            ticker          VARCHAR NOT NULL,
+            source          VARCHAR NOT NULL,
+            source_detail   VARCHAR DEFAULT '',
+            discovery_score DOUBLE DEFAULT 0.0,
+            sentiment_hint  VARCHAR DEFAULT 'neutral',
+            context_snippet VARCHAR DEFAULT '',
+            discovered_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_scores (
+            ticker          VARCHAR PRIMARY KEY,
+            total_score     DOUBLE DEFAULT 0.0,
+            youtube_score   DOUBLE DEFAULT 0.0,
+            reddit_score    DOUBLE DEFAULT 0.0,
+            mention_count   INTEGER DEFAULT 0,
+            first_seen      TIMESTAMP,
+            last_seen       TIMESTAMP,
+            sentiment_hint  VARCHAR DEFAULT 'neutral',
+            is_validated    BOOLEAN DEFAULT FALSE,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
