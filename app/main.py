@@ -437,6 +437,63 @@ async def dashboard_youtube(ticker: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@app.get("/api/dashboard/analysis/{ticker}")
+async def dashboard_cached_analysis(ticker: str) -> dict:
+    """Load the most recent saved analysis reports from disk.
+
+    Returns cached agent reports + decision if they exist, so the frontend
+    can display them instantly without re-running the LLM pipeline.
+    """
+    ticker = ticker.upper().strip()
+    report_base = settings.REPORTS_DIR / ticker
+    if not report_base.exists():
+        return {"ticker": ticker, "cached": False}
+
+    # Find the most recent date folder
+    date_dirs = sorted(
+        [d for d in report_base.iterdir() if d.is_dir()],
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    if not date_dirs:
+        return {"ticker": ticker, "cached": False}
+
+    latest = date_dirs[0]
+    report_files = {
+        "technical": "technical_report.json",
+        "fundamental": "fundamental_report.json",
+        "sentiment": "sentiment_report.json",
+        "risk": "risk_report.json",
+        "decision": "final_decision.json",
+        "pooled": "pooled_analysis.json",
+    }
+
+    agents: dict = {}
+    decision = None
+    for key, filename in report_files.items():
+        fpath = latest / filename
+        if fpath.exists():
+            try:
+                data = json.loads(fpath.read_text(encoding="utf-8"))
+                if key == "decision":
+                    decision = data
+                elif key != "pooled":
+                    agents[key] = {"status": "ok", "report": data}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    if not agents and decision is None:
+        return {"ticker": ticker, "cached": False}
+
+    return {
+        "ticker": ticker,
+        "cached": True,
+        "date": latest.name,
+        "agents": agents,
+        "decision": decision,
+    }
+
+
 @app.get("/api/dashboard/financials/{ticker}")
 async def dashboard_financials(ticker: str) -> dict:
     """Financial history + balance sheet + cash flows."""

@@ -1,5 +1,11 @@
 {
-    "tickers": [
-        "NVDA"
-    ]
+  "tickers": [
+    "NVDA",
+    "MSFT",
+    "GOOG",
+    "PLTR",
+    "NBIS",
+    "CRWV",
+    "HOOD"
+  ]
 }

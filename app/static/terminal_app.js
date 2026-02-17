@@ -88,6 +88,7 @@ const useTerminalData = () => {
     const [streamErrors, setStreamErrors] = useState([]);
     const [streamPlan, setStreamPlan] = useState(null);    // {steps, agents, has_decision}
     const [streamPhase, setStreamPhase] = useState("");    // "data", "agents", "decision", "done"
+    const [cachedDate, setCachedDate] = useState(null);    // date string from cached reports
 
     // Load watchlist on mount
     useEffect(() => {
@@ -255,6 +256,24 @@ const useTerminalData = () => {
         }
     }, []);
 
+    // ── Load cached analysis from disk (instant, no LLM) ──
+    const loadCachedAnalysis = useCallback(async (ticker) => {
+        try {
+            const res = await fetch(`/api/dashboard/analysis/${encodeURIComponent(ticker)}`);
+            const data = await res.json();
+            if (data.cached && data.agents) {
+                setStreamAgents(data.agents);
+                if (data.decision) setStreamDecision(data.decision);
+                setStreamPhase("done");
+                setCachedDate(data.date || null);
+                return true; // had cached data
+            }
+        } catch (e) {
+            console.error("Cached analysis load error:", e);
+        }
+        return false;
+    }, []);
+
     // Watchlist management
     const addTicker = useCallback(async (ticker) => {
         const t = ticker.toUpperCase().trim();
@@ -287,6 +306,8 @@ const useTerminalData = () => {
         // Streaming state
         runAnalysisStream, streamSteps, streamAgents,
         streamDecision, streamErrors, streamPlan, streamPhase,
+        // Cached analysis
+        loadCachedAnalysis, cachedDate,
     };
 };
 
@@ -1541,12 +1562,29 @@ const AnalysisPage = ({
     runAnalysis, analyzing, analysisResult,
     runAnalysisStream, streamSteps, streamAgents,
     streamDecision, streamErrors, streamPlan, streamPhase,
+    loadCachedAnalysis, cachedDate,
 }) => {
     const { ticker } = useParams();
     const navigate = useNavigate();
     const [started, setStarted] = useState(false);
     const [mode, setMode] = useState("full");
     const [activeAgent, setActiveAgent] = useState("data");
+    const [cacheLoaded, setCacheLoaded] = useState(false);
+    const cacheAttempted = useRef(false);
+
+    // Auto-load cached analysis on mount
+    useEffect(() => {
+        if (cacheAttempted.current) return;
+        cacheAttempted.current = true;
+        (async () => {
+            const hadCache = await loadCachedAnalysis(ticker);
+            if (hadCache) {
+                setCacheLoaded(true);
+                setStarted(true); // Show the agent panels
+                setActiveAgent("decision"); // Jump to decision
+            }
+        })();
+    }, [ticker, loadCachedAnalysis]);
 
     // Automatically switch from Data to Decision ONLY when everything is done
     useEffect(() => {
@@ -1557,6 +1595,7 @@ const AnalysisPage = ({
     }, [streamPhase]);
 
     const handleStart = async () => {
+        setCacheLoaded(false); // Clear cached indicator when re-running
         setStarted(true);
         await runAnalysisStream(ticker, mode);
     };
@@ -1567,7 +1606,7 @@ const AnalysisPage = ({
         if (info.status === "ok" && info.report) reports[name] = info.report;
     });
     const decision = streamDecision || {};
-    const hasAnyData = started || Object.keys(streamSteps).length > 0;
+    const hasAnyData = started || Object.keys(streamSteps).length > 0 || Object.keys(streamAgents).length > 0;
 
     const agentTabs = [
         { id: "decision", icon: "gavel", label: "Decision", color: "#13ec99" },
@@ -1586,6 +1625,11 @@ const AnalysisPage = ({
                         <span className="material-symbols-outlined text-xl">arrow_back</span>
                     </button>
                     <h2 className="text-white font-bold text-lg">Analysis: <span className="text-primary">{ticker}</span></h2>
+                    {cacheLoaded && cachedDate && (
+                        <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full font-mono">
+                            Last analyzed: {cachedDate}
+                        </span>
+                    )}
                 </div>
                 <div className="flex items-center gap-2">
                     <select value={mode} onChange={e => setMode(e.target.value)}
@@ -1596,9 +1640,9 @@ const AnalysisPage = ({
                         <option value="data">Data Collection Only</option>
                     </select>
                     <button onClick={handleStart} disabled={analyzing}
-                        className={`px-4 py-1.5 text-xs font-bold rounded transition flex items-center gap-2 ${analyzing ? "bg-primary/10 text-primary/50 cursor-wait" : "bg-primary/20 hover:bg-primary/30 text-primary"}`}>
-                        <span className="material-symbols-outlined text-[16px]">{analyzing ? "progress_activity" : "play_arrow"}</span>
-                        {analyzing ? "Analyzing…" : "Run Analysis"}
+                        className={`px-4 py-1.5 text-xs font-bold rounded transition flex items-center gap-2 ${analyzing ? "bg-primary/10 text-primary/50 cursor-wait" : cacheLoaded ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-400" : "bg-primary/20 hover:bg-primary/30 text-primary"}`}>
+                        <span className="material-symbols-outlined text-[16px]">{analyzing ? "progress_activity" : cacheLoaded ? "refresh" : "play_arrow"}</span>
+                        {analyzing ? "Analyzing…" : cacheLoaded ? "Re-Analyze" : "Run Analysis"}
                     </button>
                 </div>
             </div>
@@ -1633,8 +1677,8 @@ const AnalysisPage = ({
                             </div>
                         )}
 
-                        {/* Step Tracker — always visible during/after analysis */}
-                        <StepTracker steps={streamSteps} phase={streamPhase} />
+                        {/* Step Tracker — only visible during/after live analysis (not cached) */}
+                        {Object.keys(streamSteps).length > 0 && <StepTracker steps={streamSteps} phase={streamPhase} />}
 
                         {/* Agent Phase: show tab bar + panels */}
                         {/* Agent Phase: show tab bar + panels */}

@@ -105,6 +105,36 @@ class BaseAgent:
             return data  # valid JSON but wrong shape
         return None
 
+    def _try_unwrap_nested(self, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Recursively search a nested dict for a sub-dict matching the schema.
+
+        LLMs sometimes wrap their JSON output in arbitrary keys like
+        ``{"Microsoft Earnings Analysis": {"Video 1": {<valid>}}}``.
+        This method walks the tree and returns the first sub-dict whose
+        keys are a superset of the required schema keys.
+
+        Returns None if no matching sub-dict is found.
+        """
+        required = self._get_required_keys()
+        if not required:
+            return None
+
+        def _search(node: Any, depth: int = 0) -> dict[str, Any] | None:
+            if depth > 5 or not isinstance(node, dict):
+                return None
+            # Check if this dict itself has the required keys
+            if required.issubset(node.keys()):
+                return node
+            # Recurse into dict-valued children
+            for value in node.values():
+                if isinstance(value, dict):
+                    result = _search(value, depth + 1)
+                    if result is not None:
+                        return result
+            return None
+
+        return _search(data)
+
     def _build_rescue_prompt(
         self, ticker: str, bad_response: dict[str, Any], user_context: str,
     ) -> str:
@@ -249,9 +279,30 @@ class BaseAgent:
                 agent_name, ticker, first_err,
             )
 
-        # --- Diagnose: is it valid JSON but wrong structure? ---
+        # --- Attempt 1b: try to unwrap nested JSON programmatically ---
         bad_dict = self._diagnose_response(cleaned)
         if bad_dict is not None:
+            unwrapped = self._try_unwrap_nested(bad_dict)
+            if unwrapped is not None:
+                logger.info(
+                    "[%s] Found valid sub-dict in nested response for %s — "
+                    "unwrapped keys: %s",
+                    agent_name, ticker, list(unwrapped.keys()),
+                )
+                try:
+                    report = self.output_model.model_validate(unwrapped)
+                    logger.info(
+                        "[%s] Analysis complete for %s (auto-unwrap succeeded)",
+                        agent_name, ticker,
+                    )
+                    return report
+                except (ValidationError, Exception) as unwrap_err:
+                    logger.warning(
+                        "[%s] Auto-unwrap validation failed for %s: %s",
+                        agent_name, ticker, unwrap_err,
+                    )
+
+            # Unwrap didn't work — send structural rescue prompt
             logger.warning(
                 "[%s] LLM returned wrong structure for %s — keys: %s. "
                 "Sending structural rescue prompt.",
