@@ -79,6 +79,23 @@ class YouTubeCollector:
         Returns only the newly collected transcripts (not historical).
         Use get_all_historical() to retrieve the full accumulated dataset.
         """
+        # Daily guard — skip if already scraped today
+        db = get_db()
+        today_start = datetime.now(tz=timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        existing = db.execute(
+            "SELECT COUNT(*) FROM youtube_transcripts "
+            "WHERE ticker = ? AND collected_at >= ?",
+            [ticker, today_start],
+        ).fetchone()
+        if existing and existing[0] > 0:
+            logger.info(
+                "YouTube for %s already scraped today (%d transcripts), skipping",
+                ticker, existing[0],
+            )
+            return []
+
         logger.info("Collecting YouTube transcripts for %s (24h filter)", ticker)
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
 

@@ -29,6 +29,23 @@ class NewsCollector:
 
         Sources: yfinance, Google News RSS, SEC EDGAR RSS.
         """
+        # Daily guard — skip if already scraped today
+        db = get_db()
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        existing = db.execute(
+            "SELECT COUNT(*) FROM news_articles "
+            "WHERE ticker = ? AND collected_at >= ?",
+            [ticker, today_start],
+        ).fetchone()
+        if existing and existing[0] > 0:
+            logger.info(
+                "News for %s already scraped today (%d articles), skipping",
+                ticker, existing[0],
+            )
+            return []
+
         logger.info("Collecting news for %s from all sources", ticker)
 
         articles: list[NewsArticle] = []

@@ -1702,6 +1702,95 @@ const AnalysisPage = ({
 
 
 // ***************************************************************
+// YOUTUBE TAB — Collapsible transcript cards
+// ***************************************************************
+
+const YouTubeTab = ({ videos }) => {
+    const [expanded, setExpanded] = useState(null); // video_id or null
+
+    const toggle = (videoId, e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setExpanded(prev => prev === videoId ? null : videoId);
+    };
+
+    const formatDuration = (secs) => {
+        if (!secs) return "";
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return `${m}:${String(s).padStart(2, "0")}`;
+    };
+
+    if (videos.length === 0) {
+        return React.createElement("div", { className: "text-center py-12 text-text-muted" }, "No YouTube transcripts in database");
+    }
+
+    return (
+        <div className="space-y-3">
+            {videos.map((v) => {
+                const isOpen = expanded === v.video_id;
+                return (
+                    <div key={v.video_id} className="glass-card overflow-hidden transition-all duration-200"
+                        style={{ borderColor: isOpen ? "var(--color-primary)" : undefined, borderWidth: isOpen ? "1px" : undefined }}>
+                        {/* Header row */}
+                        <div className="flex items-center gap-3 p-4 cursor-pointer hover:bg-white/[0.02] transition"
+                            onClick={(e) => toggle(v.video_id, e)}>
+                            {/* Play icon */}
+                            <span className="material-symbols-outlined text-red-400 text-2xl shrink-0">play_circle</span>
+                            {/* Video info */}
+                            <div className="flex-1 min-w-0">
+                                <a href={`https://youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noopener"
+                                    className="text-sm text-white hover:text-primary transition truncate block"
+                                    onClick={(e) => e.stopPropagation()}>
+                                    {v.title}
+                                </a>
+                                <div className="flex flex-wrap gap-3 text-[10px] text-text-muted mt-1">
+                                    <span className="font-bold text-text-secondary">{v.channel}</span>
+                                    <span>{fmt.date(v.published_at)}</span>
+                                    {v.duration_seconds > 0 && <span>{formatDuration(v.duration_seconds)}</span>}
+                                    {v.transcript_length > 0 && (
+                                        <span className="text-emerald-400/70">
+                                            <span className="material-symbols-outlined text-[10px] align-middle mr-0.5">description</span>
+                                            {(v.transcript_length / 1000).toFixed(1)}k chars
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            {/* Expand/collapse chevron */}
+                            {v.raw_transcript && (
+                                <span className={`material-symbols-outlined text-text-muted text-lg transition-transform duration-200 shrink-0 ${isOpen ? "rotate-180" : ""}`}>
+                                    expand_more
+                                </span>
+                            )}
+                        </div>
+                        {/* Collapsible transcript body */}
+                        {isOpen && v.raw_transcript && (
+                            <div className="border-t border-border-dark">
+                                <div className="p-4 max-h-[400px] overflow-y-auto"
+                                    style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border-dark) transparent" }}>
+                                    <div className="flex items-center justify-between mb-3">
+                                        <span className="text-[10px] uppercase tracking-widest text-text-muted font-bold">Transcript</span>
+                                        <button className="text-[10px] text-primary/60 hover:text-primary transition flex items-center gap-1"
+                                            onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.raw_transcript); }}>
+                                            <span className="material-symbols-outlined text-xs">content_copy</span> Copy
+                                        </button>
+                                    </div>
+                                    <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap font-mono"
+                                        style={{ fontSize: "11px", lineHeight: "1.7" }}>
+                                        {v.raw_transcript}
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+
+// ***************************************************************
 // DATA EXPLORER PAGE  Deep view into a ticker's data
 // ***************************************************************
 
@@ -1773,25 +1862,7 @@ const DataExplorerPage = () => {
                     </div>
                 )}
                 {tab === "YT" && (
-                    <div className="space-y-2">
-                        {videos.map((v, i) => (
-                            <a key={i} href={`https://youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noopener"
-                                className="block glass-card p-4 hover:border-primary/30 transition group">
-                                <div className="flex items-center gap-3">
-                                    <span className="material-symbols-outlined text-red-400 text-2xl">play_circle</span>
-                                    <div className="flex-1">
-                                        <h5 className="text-sm text-white group-hover:text-primary">{v.title}</h5>
-                                        <div className="flex gap-3 text-[10px] text-text-muted mt-1">
-                                            <span className="font-bold text-text-secondary">{v.channel}</span>
-                                            <span>{fmt.date(v.published_at)}</span>
-                                            <span>{v.transcript_length ? `${v.transcript_length} chars` : ""}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </a>
-                        ))}
-                        {videos.length === 0 && <div className="text-center py-12 text-text-muted">No YouTube transcripts in database</div>}
-                    </div>
+                    <YouTubeTab videos={videos} />
                 )}
                 {tab === "RISK" && (
                     <div className="grid grid-cols-3 gap-4">

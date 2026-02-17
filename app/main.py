@@ -426,6 +426,7 @@ async def dashboard_youtube(ticker: str) -> dict:
     try:
         rows = _query_to_dicts(
             "SELECT video_id, title, channel, published_at, "
+            "duration_seconds, raw_transcript, "
             "LENGTH(raw_transcript) as transcript_length "
             "FROM youtube_transcripts WHERE ticker = ? "
             "ORDER BY published_at DESC LIMIT 20",
