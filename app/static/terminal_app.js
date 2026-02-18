@@ -1016,9 +1016,11 @@ const WatchlistPage = ({
 // ***************************************************************
 const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
     const navigate = useNavigate();
+    const [sfxMuted, setSfxMuted] = useState(RetroSFX.isMuted());
 
     const NavLink = ({ to, icon, label, id }) => (
         <Link to={to}
+            onClick={() => RetroSFX.click()}
             className={`flex items-center gap-3 px-3 py-2 rounded transition-colors ${active === id ? "bg-border-dark/50 border-l-2 border-primary" : "hover:bg-border-dark/50 border-l-2 border-transparent"
                 }`}>
             <span className={`material-symbols-outlined text-[20px] ${active === id ? "text-primary" : "text-text-secondary"}`}>{icon}</span>
@@ -1063,6 +1065,17 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                             ))}
                         </div>
                     )}
+                </div>
+                {/* Sound mute toggle */}
+                <div className="px-2 py-3 border-t border-border-dark">
+                    <button
+                        onClick={() => { const m = RetroSFX.toggleMute(); setSfxMuted(m); }}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded text-xs text-text-muted hover:text-white transition-colors w-full"
+                        title="Toggle sound effects"
+                    >
+                        <span className="material-symbols-outlined text-[16px]">{sfxMuted ? "volume_off" : "volume_up"}</span>
+                        <span>{sfxMuted ? "Sound: OFF" : "Sound: ON"}</span>
+                    </button>
                 </div>
             </aside>
             <main className="flex-1 flex flex-col overflow-hidden">{children}</main>
@@ -1738,9 +1751,13 @@ const AnalysisPage = ({
     }, [streamPhase]);
 
     const handleStart = async () => {
+        RetroSFX.click();
         setCacheLoaded(false); // Clear cached indicator when re-running
         setStarted(true);
+        const stopBlips = RetroSFX.computeStart();
         await runAnalysisStream(ticker, mode);
+        stopBlips();
+        RetroSFX.successChime();
     };
 
     // Build reports from streaming agents
@@ -2057,6 +2074,7 @@ const SettingsPage = () => {
     };
 
     const saveLlmConfig = async () => {
+        RetroSFX.click();
         setSaveStatus("saving");
         try {
             await fetch("/api/llm-config", {
@@ -2065,6 +2083,7 @@ const SettingsPage = () => {
                 body: JSON.stringify(llmConfig),
             });
             setSaveStatus("saved");
+            RetroSFX.successChime();
         } catch (e) {
             setSaveStatus("error");
         }
@@ -2072,6 +2091,7 @@ const SettingsPage = () => {
     };
 
     const saveStrategy = async () => {
+        RetroSFX.click();
         setSaveStatus("saving");
         await fetch("/api/strategy", {
             method: "PUT",
@@ -2079,10 +2099,12 @@ const SettingsPage = () => {
             body: JSON.stringify({ strategy_text: strategy }),
         });
         setSaveStatus("saved");
+        RetroSFX.successChime();
         setTimeout(() => setSaveStatus(null), 2000);
     };
 
     const saveRisk = async () => {
+        RetroSFX.click();
         setSaveStatus("saving");
         try {
             const parsed = JSON.parse(riskParams);
@@ -2092,6 +2114,7 @@ const SettingsPage = () => {
                 body: JSON.stringify({ params: parsed }),
             });
             setSaveStatus("saved");
+            RetroSFX.successChime();
         } catch (e) {
             setSaveStatus("error");
         }
@@ -2306,10 +2329,10 @@ const SettingsPage = () => {
 };
 
 // ***************************************************************
-// AUTOBOT MONITOR PAGE — Phase 1 Discovery Dashboard
+// AUTOBOT MONITOR DATA HOOK — Persistent state across navigation
 // ***************************************************************
 
-const AutobotMonitorPage = () => {
+const useMonitorData = () => {
     const [status, setStatus] = useState(null);
     const [scores, setScores] = useState([]);
     const [history, setHistory] = useState([]);
@@ -2317,11 +2340,7 @@ const AutobotMonitorPage = () => {
     const [scanning, setScanning] = useState(false);
     const [enableReddit, setEnableReddit] = useState(true);
     const [enableYoutube, setEnableYoutube] = useState(true);
-    const [sortBy, setSortBy] = useState("total_score");
-    const [expandedTicker, setExpandedTicker] = useState(null);
-    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist"
     const [maxTickers, setMaxTickers] = useState(5);
-    const navigate = useNavigate();
 
     // ── Watchlist state (DuckDB-backed) ──
     const [wlEntries, setWlEntries] = useState([]);
@@ -2331,13 +2350,15 @@ const AutobotMonitorPage = () => {
     const [wlAnalyzingTicker, setWlAnalyzingTicker] = useState(null);
 
     // ── Deep Analysis state ──
-    const [expandedWlTicker, setExpandedWlTicker] = useState(null);
     const [dossierData, setDossierData] = useState(null);
     const [dossierLoading, setDossierLoading] = useState(false);
 
     // ── Autonomous Loop state ──
     const [loopRunning, setLoopRunning] = useState(false);
     const [loopStatus, setLoopStatus] = useState(null);
+
+    // Ref for loop poll interval so we can manage it across renders
+    const loopPollRef = useRef(null);
 
     const fetchWatchlist = useCallback(async () => {
         try {
@@ -2371,27 +2392,71 @@ const AutobotMonitorPage = () => {
         fetchWatchlist();
     }, [fetchWatchlist]);
 
+    // Start polling for loop status
+    const startLoopPoll = useCallback(() => {
+        // Clear any existing poll
+        if (loopPollRef.current) clearInterval(loopPollRef.current);
+        loopPollRef.current = setInterval(async () => {
+            try {
+                const sr = await fetch("/api/bot/loop-status");
+                const st = await sr.json();
+                setLoopStatus(st);
+                if (!st.running) {
+                    clearInterval(loopPollRef.current);
+                    loopPollRef.current = null;
+                    setLoopRunning(false);
+                    RetroSFX.successChime();
+                    fetchAll();  // refresh everything when done
+                }
+            } catch (e) {
+                console.error("Loop poll error:", e);
+            }
+        }, 2000);
+    }, [fetchAll]);
+
+    // On mount: fetch data + check if a loop is already running
     useEffect(() => {
         fetchAll();
         const interval = setInterval(fetchAll, 30000);
-        return () => clearInterval(interval);
-    }, [fetchAll]);
+
+        // Check if loop was already running before we mounted
+        fetch("/api/bot/loop-status").then(r => r.json()).then(st => {
+            if (st.running) {
+                console.log("[MonitorData] Loop already running, resuming poll...");
+                setLoopRunning(true);
+                setLoopStatus(st);
+                startLoopPoll();
+            }
+        }).catch(() => { });
+
+        return () => {
+            clearInterval(interval);
+            if (loopPollRef.current) clearInterval(loopPollRef.current);
+        };
+    }, [fetchAll, startLoopPoll]);
+
+    // ── Action handlers ──
 
     const runScan = async () => {
+        RetroSFX.click();
         setScanning(true);
+        const stopBlips = RetroSFX.computeStart();
         try {
             const limitParam = maxTickers > 0 ? `&max_tickers=${maxTickers}` : "";
             await fetch(`/api/discovery/run?reddit=${enableReddit}&youtube=${enableYoutube}${limitParam}`);
             await fetchAll();
+            RetroSFX.successChime();
         } catch (e) {
             console.error("Discovery scan error:", e);
         } finally {
+            stopBlips();
             setScanning(false);
         }
     };
 
     const clearData = async () => {
         if (!confirm("Clear all discovery data? This cannot be undone.")) return;
+        RetroSFX.alertBuzz();
         try {
             console.log("[ClearData] Sending POST /api/discovery/clear...");
             const res = await fetch("/api/discovery/clear", { method: "POST" });
@@ -2410,13 +2475,9 @@ const AutobotMonitorPage = () => {
                 return;
             }
 
-            // Success — reset ALL local state immediately.
-            // Do NOT call fetchAll() here; it would race against the DB
-            // flush and potentially re-read stale data.
             console.log("[ClearData] Success — resetting local state");
             setScores([]);
             setHistory([]);
-            setExpandedTicker(null);
             setStatus({
                 is_running: false,
                 last_run_at: null,
@@ -2454,7 +2515,9 @@ const AutobotMonitorPage = () => {
     };
 
     const importFromDiscovery = async () => {
+        RetroSFX.click();
         setWlImporting(true);
+        const stopBlips = RetroSFX.computeStart();
         try {
             const res = await fetch("/api/watchlist/import-discovery", {
                 method: "POST",
@@ -2464,44 +2527,50 @@ const AutobotMonitorPage = () => {
             const data = await res.json();
             console.log("Import result:", data);
             fetchWatchlist();
+            RetroSFX.successChime();
         } catch (e) {
             console.error("Import from discovery error:", e);
         } finally {
+            stopBlips();
             setWlImporting(false);
         }
     };
 
     const deepAnalyzeTicker = async (ticker) => {
+        RetroSFX.click();
         setWlAnalyzingTicker(ticker);
+        const stopBlips = RetroSFX.computeStart();
         try {
             console.log(`[DeepAnalysis] Running 4-layer funnel for ${ticker}...`);
             const res = await fetch(`/api/analysis/deep/${ticker}`, { method: "POST" });
             const body = await res.json();
             console.log(`[DeepAnalysis] ${ticker} result:`, body);
-            if (body.status === "complete") {
-                // Fetch the full dossier (includes quant_scorecard, qa_pairs, etc.)
-                setExpandedWlTicker(ticker);
-                await fetchDossier(ticker);
-            }
             fetchWatchlist();
+            RetroSFX.successChime();
+            return body;  // Return result so component can handle expansion
         } catch (e) {
             console.error("Deep analysis error:", e);
         } finally {
+            stopBlips();
             setWlAnalyzingTicker(null);
         }
     };
 
     const deepAnalyzeAll = async () => {
+        RetroSFX.modemHandshake();
         setWlAnalyzing(true);
+        const stopBlips = RetroSFX.computeStart();
         try {
             console.log("[DeepAnalysis] Running batch deep analysis...");
             const res = await fetch("/api/analysis/deep-batch", { method: "POST" });
             const body = await res.json();
             console.log("[DeepAnalysis] Batch result:", body);
             fetchWatchlist();
+            RetroSFX.successChime();
         } catch (e) {
             console.error("Deep analyze all error:", e);
         } finally {
+            stopBlips();
             setWlAnalyzing(false);
         }
     };
@@ -2524,18 +2593,9 @@ const AutobotMonitorPage = () => {
         }
     };
 
-    const toggleWlExpand = (ticker) => {
-        if (expandedWlTicker === ticker) {
-            setExpandedWlTicker(null);
-            setDossierData(null);
-        } else {
-            setExpandedWlTicker(ticker);
-            fetchDossier(ticker);
-        }
-    };
-
     const clearWatchlist = async () => {
         if (!confirm("Clear all watchlist entries?")) return;
+        RetroSFX.alertBuzz();
         try {
             await fetch("/api/watchlist/clear", { method: "POST" });
             fetchWatchlist();
@@ -2544,9 +2604,9 @@ const AutobotMonitorPage = () => {
         }
     };
 
-    // ── Autonomous Full Loop ──
     const runFullLoop = async () => {
         if (loopRunning) return;
+        RetroSFX.modemHandshake();
         setLoopRunning(true);
         setLoopStatus(null);
         try {
@@ -2557,24 +2617,78 @@ const AutobotMonitorPage = () => {
                 setLoopRunning(false);
                 return;
             }
-            // Poll status every 2 seconds
-            const poll = setInterval(async () => {
-                try {
-                    const sr = await fetch("/api/bot/loop-status");
-                    const st = await sr.json();
-                    setLoopStatus(st);
-                    if (!st.running) {
-                        clearInterval(poll);
-                        setLoopRunning(false);
-                        fetchAll();  // refresh everything when done
-                    }
-                } catch (e) {
-                    console.error("Loop poll error:", e);
-                }
-            }, 2000);
+            // Start polling
+            startLoopPoll();
         } catch (e) {
             console.error("Run full loop error:", e);
             setLoopRunning(false);
+        }
+    };
+
+    return {
+        // Data state
+        status, scores, history, loading,
+        scanning, enableReddit, setEnableReddit,
+        enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
+        // Watchlist state
+        wlEntries, wlSummary, wlImporting, wlAnalyzing, wlAnalyzingTicker,
+        // Dossier state
+        dossierData, setDossierData, dossierLoading,
+        // Loop state
+        loopRunning, loopStatus, setLoopStatus,
+        // Actions
+        fetchAll, runScan, clearData,
+        addToWatchlist, removeFromWatchlist,
+        importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
+        fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
+    };
+};
+
+
+// ***************************************************************
+// AUTOBOT MONITOR PAGE — Phase 1 Discovery Dashboard
+// ***************************************************************
+
+const AutobotMonitorPage = ({ monitorData }) => {
+    // UI-only state (safe to reset on navigation)
+    const [sortBy, setSortBy] = useState("total_score");
+    const [expandedTicker, setExpandedTicker] = useState(null);
+    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist"
+    const [expandedWlTicker, setExpandedWlTicker] = useState(null);
+    const navigate = useNavigate();
+
+    // Destructure all data from the persistent hook
+    const {
+        status, scores, history, loading,
+        scanning, enableReddit, setEnableReddit,
+        enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
+        wlEntries, wlSummary, wlImporting, wlAnalyzing, wlAnalyzingTicker,
+        dossierData, setDossierData, dossierLoading,
+        loopRunning, loopStatus, setLoopStatus,
+        fetchAll, runScan, clearData,
+        addToWatchlist, removeFromWatchlist,
+        importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
+        fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
+    } = monitorData;
+
+    // ── Local UI wrappers (use local expandedWlTicker state) ──
+
+    const toggleWlExpand = (ticker) => {
+        RetroSFX.click();
+        if (expandedWlTicker === ticker) {
+            setExpandedWlTicker(null);
+            setDossierData(null);
+        } else {
+            setExpandedWlTicker(ticker);
+            fetchDossier(ticker);
+        }
+    };
+
+    const handleDeepAnalyzeTicker = async (ticker) => {
+        const body = await deepAnalyzeTicker(ticker);
+        if (body?.status === "complete") {
+            setExpandedWlTicker(ticker);
+            await fetchDossier(ticker);
         }
     };
 
@@ -2939,7 +3053,7 @@ const AutobotMonitorPage = () => {
                 ),
                 // Dismiss button when done
                 !loopRunning && loopStatus?.phase === "done" && React.createElement("button", {
-                    onClick: () => setLoopStatus(null),
+                    onClick: () => { RetroSFX.click(); setLoopStatus(null); },
                     className: "mt-2 text-xs text-text-muted hover:text-white transition"
                 }, "Dismiss")
             ),
@@ -3039,7 +3153,7 @@ const AutobotMonitorPage = () => {
                 // ── Tab Switcher
                 React.createElement("div", { className: "flex items-center gap-1 bg-onyx-panel rounded-lg p-1 w-fit" },
                     React.createElement("button", {
-                        onClick: () => setActiveTab("scoreboard"),
+                        onClick: () => { RetroSFX.click(); setActiveTab("scoreboard"); },
                         className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "scoreboard" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
                     },
                         React.createElement("span", { className: "flex items-center gap-1.5" },
@@ -3048,7 +3162,7 @@ const AutobotMonitorPage = () => {
                         )
                     ),
                     React.createElement("button", {
-                        onClick: () => setActiveTab("watchlist"),
+                        onClick: () => { RetroSFX.click(); setActiveTab("watchlist"); },
                         className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "watchlist" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
                     },
                         React.createElement("span", { className: "flex items-center gap-1.5" },
@@ -3057,7 +3171,7 @@ const AutobotMonitorPage = () => {
                         )
                     ),
                     React.createElement("button", {
-                        onClick: () => setActiveTab("activity"),
+                        onClick: () => { RetroSFX.click(); setActiveTab("activity"); },
                         className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "activity" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
                     },
                         React.createElement("span", { className: "flex items-center gap-1.5" },
@@ -3218,7 +3332,7 @@ const AutobotMonitorPage = () => {
                                             React.createElement("td", { className: "text-center px-4 py-3" },
                                                 React.createElement("div", { className: "flex items-center justify-center gap-1" },
                                                     React.createElement("button", {
-                                                        onClick: (e) => { e.stopPropagation(); deepAnalyzeTicker(entry.ticker); },
+                                                        onClick: (e) => { e.stopPropagation(); handleDeepAnalyzeTicker(entry.ticker); },
                                                         disabled: isAnalyzingThis || wlAnalyzing,
                                                         className: "icon-btn", title: "Deep Analyze (4-layer funnel)",
                                                     }, React.createElement("span", { className: `material-symbols-outlined text-[16px] ${isAnalyzingThis ? "animate-spin" : ""}` }, isAnalyzingThis ? "progress_activity" : "neurology")),
@@ -3252,7 +3366,7 @@ const AutobotMonitorPage = () => {
                                                         React.createElement("p", { className: "text-sm text-text-muted" }, "No deep analysis yet"),
                                                         React.createElement("p", { className: "text-xs text-text-muted mt-1 mb-3" }, "Run Deep Analysis to generate a full dossier with 4-layer quant + AI analysis"),
                                                         React.createElement("button", {
-                                                            onClick: () => deepAnalyzeTicker(entry.ticker),
+                                                            onClick: () => handleDeepAnalyzeTicker(entry.ticker),
                                                             disabled: isAnalyzingThis,
                                                             className: "px-4 py-2 rounded-lg font-bold text-sm bg-primary/20 hover:bg-primary/30 text-primary transition-all",
                                                         }, React.createElement("span", { className: "flex items-center gap-2" },
@@ -3668,6 +3782,7 @@ const DiagnosticsPage = () => {
 
 const App = () => {
     const terminalData = useTerminalData();
+    const monitorData = useMonitorData();
     const { loading, error } = terminalData;
 
     if (loading) return (
@@ -3692,7 +3807,7 @@ const App = () => {
                 <Route path="/" element={<WatchlistPage {...terminalData} />} />
                 <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
 
-                <Route path="/monitor" element={<AutobotMonitorPage />} />
+                <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/diagnostics" element={<DiagnosticsPage />} />
             </Routes>
