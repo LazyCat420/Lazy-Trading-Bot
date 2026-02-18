@@ -2885,8 +2885,8 @@ const AutobotMonitorPage = () => {
                         onClick: runFullLoop,
                         disabled: loopRunning,
                         className: `flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${loopRunning
-                                ? "bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed"
-                                : "bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-400 hover:to-emerald-500 shadow-lg shadow-green-500/20"
+                            ? "bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed"
+                            : "bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-400 hover:to-emerald-500 shadow-lg shadow-green-500/20"
                             }`,
                     },
                         React.createElement("span", { className: `material-symbols-outlined text-[18px] ${loopRunning ? "animate-spin" : ""}` },
@@ -3371,39 +3371,179 @@ const AutobotMonitorPage = () => {
                                                             )
                                                         ),
 
-                                                        // ── Quant Scorecard metrics
-                                                        d.scorecard && React.createElement("div", null,
-                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
-                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-primary" }, "analytics"),
-                                                                "Quant Scorecard"
-                                                            ),
-                                                            React.createElement("div", { className: "grid grid-cols-4 gap-2" },
-                                                                ...[
-                                                                    ["Z-Score (20d)", d.scorecard.z_score_20d, ""],
-                                                                    ["Bollinger %B", d.scorecard.bollinger_pct_b, ""],
-                                                                    ["Sharpe", d.scorecard.sharpe_ratio, ""],
-                                                                    ["Sortino", d.scorecard.sortino_ratio, ""],
-                                                                    ["Calmar", d.scorecard.calmar_ratio, ""],
-                                                                    ["Omega", d.scorecard.omega_ratio, ""],
-                                                                    ["Kelly ½", d.scorecard.half_kelly, "%"],
-                                                                    ["VaR 95%", d.scorecard.var_95, "%"],
-                                                                    ["CVaR 95%", d.scorecard.cvar_95, "%"],
-                                                                    ["Max DD", d.scorecard.max_drawdown, "%"],
-                                                                    ["Price %ile", d.scorecard.percentile_rank_price, ""],
-                                                                    ["Volume %ile", d.scorecard.percentile_rank_volume, ""],
-                                                                ].map(([label, val, suffix], mi) =>
-                                                                    React.createElement("div", {
-                                                                        key: mi,
-                                                                        className: "rounded-md bg-onyx-surface/60 p-2 text-center border border-border-dark/50"
-                                                                    },
-                                                                        React.createElement("div", { className: "text-xs font-mono text-white font-bold" },
-                                                                            val != null ? `${Number(val).toFixed(2)}${suffix}` : "—"
-                                                                        ),
-                                                                        React.createElement("div", { className: "text-[9px] text-text-muted mt-0.5" }, label)
-                                                                    )
+                                                        // ── Quant Scorecard metrics (color-coded bullish/bearish)
+                                                        d.scorecard && (() => {
+                                                            // Interpret each metric: returns { score: 0-1 (0=bearish, 1=bullish), hint: string }
+                                                            const interpret = (label, v) => {
+                                                                if (v == null) return { score: 0.5, hint: "No data" };
+                                                                const n = Number(v);
+                                                                switch (label) {
+                                                                    case "Z-Score (20d)":
+                                                                        // >1 = overbought (risky), <-1 = oversold (opportunity), near 0 = neutral
+                                                                        if (n > 2) return { score: 0.15, hint: "Very overbought — may be due for pullback" };
+                                                                        if (n > 1) return { score: 0.3, hint: "Overbought — price well above mean" };
+                                                                        if (n > 0.5) return { score: 0.6, hint: "Slightly above average" };
+                                                                        if (n > -0.5) return { score: 0.5, hint: "Near average — neutral zone" };
+                                                                        if (n > -1) return { score: 0.65, hint: "Slightly below average — possible value" };
+                                                                        if (n > -2) return { score: 0.8, hint: "Oversold — potential buying opportunity" };
+                                                                        return { score: 0.9, hint: "Deeply oversold — strong mean reversion signal" };
+                                                                    case "Bollinger %B":
+                                                                        // >1 = above upper band (overbought), <0 = below lower band (oversold), 0.5 = middle
+                                                                        if (n > 1) return { score: 0.15, hint: "Above upper band — overbought" };
+                                                                        if (n > 0.8) return { score: 0.3, hint: "Near upper band — losing momentum?" };
+                                                                        if (n > 0.6) return { score: 0.6, hint: "Upper zone — mild bullish" };
+                                                                        if (n > 0.4) return { score: 0.5, hint: "Mid-band — no strong signal" };
+                                                                        if (n > 0.2) return { score: 0.65, hint: "Lower zone — possible bounce" };
+                                                                        if (n > 0) return { score: 0.8, hint: "Near lower band — oversold" };
+                                                                        return { score: 0.9, hint: "Below lower band — deep oversold" };
+                                                                    case "Sharpe":
+                                                                        // >1 = good risk-adjusted return, >2 = great, <0 = losing money
+                                                                        if (n > 2) return { score: 0.95, hint: "Excellent risk-adjusted returns" };
+                                                                        if (n > 1) return { score: 0.8, hint: "Good return per unit of risk" };
+                                                                        if (n > 0.5) return { score: 0.65, hint: "Moderate risk-adjusted return" };
+                                                                        if (n > 0) return { score: 0.5, hint: "Positive but weak returns for risk taken" };
+                                                                        if (n > -0.5) return { score: 0.3, hint: "Negative — losing money vs risk" };
+                                                                        return { score: 0.1, hint: "Poor — significant losses for risk" };
+                                                                    case "Sortino":
+                                                                        // Like Sharpe but only penalizes downside. >1 = good, >2 = great
+                                                                        if (n > 2) return { score: 0.95, hint: "Excellent — high return, low downside" };
+                                                                        if (n > 1) return { score: 0.8, hint: "Good downside-adjusted returns" };
+                                                                        if (n > 0.5) return { score: 0.65, hint: "Decent — some downside protection" };
+                                                                        if (n > 0) return { score: 0.5, hint: "Positive but limited upside vs drops" };
+                                                                        if (n > -0.5) return { score: 0.3, hint: "Weak — drops outpace gains" };
+                                                                        return { score: 0.1, hint: "Poor — heavy downside losses" };
+                                                                    case "Calmar":
+                                                                        // Return / max drawdown. >1 = returns exceed worst drop
+                                                                        if (n > 2) return { score: 0.95, hint: "Great — returns far exceed drawdowns" };
+                                                                        if (n > 1) return { score: 0.8, hint: "Good — gains outpace worst drop" };
+                                                                        if (n > 0.5) return { score: 0.6, hint: "Moderate — returns vs drawdown OK" };
+                                                                        if (n > 0) return { score: 0.4, hint: "Low — drawdowns nearly match returns" };
+                                                                        return { score: 0.15, hint: "Negative — losing with big drawdowns" };
+                                                                    case "Omega":
+                                                                        // >1 = more gains than losses (weighted). Higher = better
+                                                                        if (n > 2) return { score: 0.95, hint: "Strong — gains far outweigh losses" };
+                                                                        if (n > 1.5) return { score: 0.8, hint: "Good — winning more than losing" };
+                                                                        if (n > 1) return { score: 0.6, hint: "Slightly profitable overall" };
+                                                                        if (n > 0.8) return { score: 0.4, hint: "Near breakeven — weak edge" };
+                                                                        return { score: 0.15, hint: "Below 1 — losses outweigh gains" };
+                                                                    case "Kelly ½":
+                                                                        // Suggested position size. >0 = profitable edge, higher = stronger
+                                                                        if (n > 15) return { score: 0.95, hint: "Strong edge — large suggested bet" };
+                                                                        if (n > 5) return { score: 0.8, hint: "Good edge — moderate position OK" };
+                                                                        if (n > 0) return { score: 0.6, hint: "Small edge — conservative size" };
+                                                                        if (n === 0) return { score: 0.5, hint: "No edge detected — no bet" };
+                                                                        return { score: 0.15, hint: "Negative edge — avoid trading" };
+                                                                    case "VaR 95%":
+                                                                        // Value at risk — worst expected daily loss. More negative = riskier
+                                                                        if (n > -1) return { score: 0.9, hint: "Very low daily risk" };
+                                                                        if (n > -2) return { score: 0.7, hint: "Normal daily risk range" };
+                                                                        if (n > -5) return { score: 0.5, hint: "Moderate risk — plan for drops" };
+                                                                        if (n > -10) return { score: 0.3, hint: "High risk — large daily swings" };
+                                                                        return { score: 0.1, hint: "Extreme risk — very volatile" };
+                                                                    case "CVaR 95%":
+                                                                        // Expected loss beyond VaR. More negative = worse tail risk
+                                                                        if (n > -2) return { score: 0.9, hint: "Low tail risk — calm in crashes" };
+                                                                        if (n > -5) return { score: 0.65, hint: "Moderate tail risk" };
+                                                                        if (n > -10) return { score: 0.4, hint: "Significant crash exposure" };
+                                                                        return { score: 0.1, hint: "Severe tail risk — big crash danger" };
+                                                                    case "Max DD":
+                                                                        // Maximum drawdown. Less negative = better. >-10% is great
+                                                                        if (n > -5) return { score: 0.95, hint: "Very shallow drawdown — stable" };
+                                                                        if (n > -10) return { score: 0.8, hint: "Small drawdown — manageable" };
+                                                                        if (n > -20) return { score: 0.6, hint: "Moderate drawdown — normal" };
+                                                                        if (n > -30) return { score: 0.35, hint: "Large drawdown — painful dip" };
+                                                                        if (n > -50) return { score: 0.15, hint: "Severe — lost 30-50% at worst" };
+                                                                        return { score: 0.05, hint: "Catastrophic drawdown" };
+                                                                    case "Price %ile":
+                                                                        // Where price sits vs 1yr range. >80 = near highs, <20 = near lows
+                                                                        if (n > 90) return { score: 0.2, hint: "Near 1yr high — limited upside?" };
+                                                                        if (n > 70) return { score: 0.4, hint: "Upper range — momentum or topping?" };
+                                                                        if (n > 50) return { score: 0.55, hint: "Mid-range — balanced" };
+                                                                        if (n > 30) return { score: 0.7, hint: "Lower range — possible value" };
+                                                                        if (n > 10) return { score: 0.85, hint: "Near lows — potential bargain" };
+                                                                        return { score: 0.9, hint: "At 1yr low — deep value or distress" };
+                                                                    case "Volume %ile":
+                                                                        // Volume vs history. High = lots of interest, low = quiet
+                                                                        if (n > 90) return { score: 0.85, hint: "Very high volume — major interest" };
+                                                                        if (n > 70) return { score: 0.7, hint: "Above-average volume — active" };
+                                                                        if (n > 40) return { score: 0.5, hint: "Normal volume — no unusual activity" };
+                                                                        if (n > 20) return { score: 0.35, hint: "Below-average — low interest" };
+                                                                        return { score: 0.2, hint: "Very low volume — illiquid, risky" };
+                                                                    default:
+                                                                        return { score: 0.5, hint: "" };
+                                                                }
+                                                            };
+
+                                                            // Convert 0-1 score to HSL color: 0 = red (0°), 0.5 = yellow (50°), 1 = green (130°)
+                                                            const scoreToColor = (score) => {
+                                                                const hue = Math.round(score * 130); // 0=red, 65=yellow, 130=green
+                                                                return `hsl(${hue}, 80%, 55%)`;
+                                                            };
+
+                                                            // Dot color for the indicator
+                                                            const scoreToBg = (score) => {
+                                                                const hue = Math.round(score * 130);
+                                                                return `hsl(${hue}, 80%, 20%)`;
+                                                            };
+
+                                                            const metrics = [
+                                                                ["Z-Score (20d)", d.scorecard.z_score_20d, ""],
+                                                                ["Bollinger %B", d.scorecard.bollinger_pct_b, ""],
+                                                                ["Sharpe", d.scorecard.sharpe_ratio, ""],
+                                                                ["Sortino", d.scorecard.sortino_ratio, ""],
+                                                                ["Calmar", d.scorecard.calmar_ratio, ""],
+                                                                ["Omega", d.scorecard.omega_ratio, ""],
+                                                                ["Kelly ½", d.scorecard.half_kelly, "%"],
+                                                                ["VaR 95%", d.scorecard.var_95, "%"],
+                                                                ["CVaR 95%", d.scorecard.cvar_95, "%"],
+                                                                ["Max DD", d.scorecard.max_drawdown, "%"],
+                                                                ["Price %ile", d.scorecard.percentile_rank_price, ""],
+                                                                ["Volume %ile", d.scorecard.percentile_rank_volume, ""],
+                                                            ];
+
+                                                            return React.createElement("div", null,
+                                                                React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                    React.createElement("span", { className: "material-symbols-outlined text-[14px] text-primary" }, "analytics"),
+                                                                    "Quant Scorecard"
+                                                                ),
+                                                                React.createElement("div", { className: "grid grid-cols-4 gap-2" },
+                                                                    ...metrics.map(([label, val, suffix], mi) => {
+                                                                        const { score, hint } = interpret(label, val);
+                                                                        const valColor = val != null ? scoreToColor(score) : "#6b7280";
+                                                                        const bgTint = val != null ? scoreToBg(score) : "transparent";
+                                                                        return React.createElement("div", {
+                                                                            key: mi,
+                                                                            className: "rounded-md bg-onyx-surface/60 p-2 text-center border border-border-dark/50 relative overflow-hidden",
+                                                                            title: hint,
+                                                                            style: { borderColor: val != null ? `${valColor}33` : undefined }
+                                                                        },
+                                                                            // Subtle colored background glow
+                                                                            React.createElement("div", {
+                                                                                style: {
+                                                                                    position: "absolute", inset: 0,
+                                                                                    background: `radial-gradient(ellipse at center bottom, ${bgTint} 0%, transparent 70%)`,
+                                                                                    pointerEvents: "none"
+                                                                                }
+                                                                            }),
+                                                                            // Value
+                                                                            React.createElement("div", {
+                                                                                className: "text-xs font-mono font-bold relative",
+                                                                                style: { color: valColor }
+                                                                            },
+                                                                                val != null ? `${Number(val).toFixed(2)}${suffix}` : "—"
+                                                                            ),
+                                                                            // Label
+                                                                            React.createElement("div", { className: "text-[9px] text-text-muted mt-0.5 relative" }, label),
+                                                                            // Explanation hint
+                                                                            hint && React.createElement("div", {
+                                                                                className: "text-[8px] mt-1 leading-tight relative",
+                                                                                style: { color: `${valColor}cc` }
+                                                                            }, hint)
+                                                                        );
+                                                                    })
                                                                 )
-                                                            )
-                                                        ),
+                                                            );
+                                                        })(),
 
                                                         // ── Metadata footer
                                                         React.createElement("div", { className: "flex items-center justify-between text-[10px] text-text-muted pt-3 border-t border-border-dark" },

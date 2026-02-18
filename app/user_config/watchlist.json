@@ -1,5 +1,15 @@
 {
   "tickers": [
-    "NVDA"
+    "NVDA",
+    "MSFT",
+    "VXUS",
+    "AAPL",
+    "TSLA",
+    "RTX",
+    "ASTS",
+    "VOO",
+    "AMZN",
+    "META",
+    "CSU"
   ]
 }
