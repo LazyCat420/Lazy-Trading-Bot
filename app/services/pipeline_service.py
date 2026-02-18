@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -368,8 +369,18 @@ class PipelineService:
 
         async def run_agent(name: str, agent: Any, ctx: dict) -> Any:
             try:
+                t0 = time.perf_counter()
+                logger.info("🚀 Agent [%s] START for %s", name, ticker)
                 report = await agent.analyze(ticker, ctx)
-                result.status[f"agent_{name}"] = {"status": "ok"}
+                elapsed = time.perf_counter() - t0
+                result.status[f"agent_{name}"] = {
+                    "status": "ok",
+                    "elapsed_s": round(elapsed, 2),
+                }
+                logger.info(
+                    "✅ Agent [%s] DONE  for %s in %.2fs",
+                    name, ticker, elapsed,
+                )
                 return report
             except Exception as e:
                 result.status[f"agent_{name}"] = {
@@ -385,8 +396,14 @@ class PipelineService:
         sa_task = run_agent("sentiment", self.sentiment_agent, sa_context)
         ra_task = run_agent("risk", self.risk_agent, ra_context)
 
+        agents_t0 = time.perf_counter()
         ta_report, fa_report, sa_report, ra_report = await asyncio.gather(
             ta_task, fa_task, sa_task, ra_task
+        )
+        agents_elapsed = time.perf_counter() - agents_t0
+        logger.info(
+            "⏱️  All 4 agents completed for %s in %.2fs (parallel)",
+            ticker, agents_elapsed,
         )
 
         # ============================================================
@@ -677,12 +694,23 @@ class PipelineService:
         async def _run_agent_streaming(name: str, agent: Any, ctx: dict) -> Any:
             await _emit({"type": "agent_start", "name": name})
             try:
+                t0 = time.perf_counter()
+                logger.info("🚀 Agent [%s] START for %s", name, ticker)
                 report = await agent.analyze(ticker, ctx)
-                result.status[f"agent_{name}"] = {"status": "ok"}
+                elapsed = time.perf_counter() - t0
+                result.status[f"agent_{name}"] = {
+                    "status": "ok",
+                    "elapsed_s": round(elapsed, 2),
+                }
+                logger.info(
+                    "✅ Agent [%s] DONE  for %s in %.2fs",
+                    name, ticker, elapsed,
+                )
                 await _emit({
                     "type": "agent_complete",
                     "name": name,
                     "report": _dump_report(report),
+                    "elapsed_s": round(elapsed, 2),
                 })
                 return report
             except Exception as e:

@@ -15,6 +15,10 @@ duckdb>=1.2.0
 # LLM Integration
 httpx>=0.28.0
 
+# Deep Analysis (4-Layer Funnel)
+rank-bm25>=0.2.2
+scipy>=1.14.0
+
 # YouTube Transcripts
 youtube-transcript-api>=0.6.3
 

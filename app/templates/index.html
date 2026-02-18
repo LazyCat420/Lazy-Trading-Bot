@@ -68,22 +68,49 @@
     </script>
 
     <style>
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #0f1115; }
-        ::-webkit-scrollbar-thumb { background: #283932; border-radius: 2px; }
-        ::-webkit-scrollbar-thumb:hover { background: #3b544a; }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
 
-        .dense-grid { display: grid; grid-template-rows: auto 1fr; }
-        .zebra-row:nth-child(even) { background-color: rgba(255, 255, 255, 0.02); }
-        .glow-green { box-shadow: 0 0 12px rgba(0, 255, 157, 0.15); border-color: rgba(0, 255, 157, 0.4) !important; }
-        .glow-red { box-shadow: 0 0 12px rgba(255, 77, 77, 0.15); border-color: rgba(255, 77, 77, 0.4) !important; }
+        ::-webkit-scrollbar-track {
+            background: #0f1115;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #283932;
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3b544a;
+        }
+
+        .dense-grid {
+            display: grid;
+            grid-template-rows: auto 1fr;
+        }
+
+        .zebra-row:nth-child(even) {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .glow-green {
+            box-shadow: 0 0 12px rgba(0, 255, 157, 0.15);
+            border-color: rgba(0, 255, 157, 0.4) !important;
+        }
+
+        .glow-red {
+            box-shadow: 0 0 12px rgba(255, 77, 77, 0.15);
+            border-color: rgba(255, 77, 77, 0.4) !important;
+        }
     </style>
 </head>
 
 <body>
     <div id="root" class="h-screen w-screen overflow-hidden"></div>
 
-    <script type="text/babel" src="/static/terminal_app.js"></script>
+    <script type="text/babel" src="/static/terminal_app.js?v=2"></script>
 </body>
 
 </html>

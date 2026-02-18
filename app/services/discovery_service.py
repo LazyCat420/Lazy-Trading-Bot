@@ -26,18 +26,70 @@ class DiscoveryService:
         self._running: bool = False
         self._last_run_at: datetime | None = None
 
+    def clear_data(self) -> dict:
+        """Truncate both discovery tables so the monitor starts fresh.
+
+        Runs DELETE on both tables, then verifies they are empty.
+        Returns remaining row counts so the frontend can confirm success.
+        """
+        db = get_db()
+
+        # Log pre-clear counts for diagnostics
+        dt_before = db.execute(
+            "SELECT COUNT(*) FROM discovered_tickers"
+        ).fetchone()[0]
+        ts_before = db.execute(
+            "SELECT COUNT(*) FROM ticker_scores"
+        ).fetchone()[0]
+        logger.info(
+            "[Discovery] clear_data called — "
+            "discovered_tickers=%d, ticker_scores=%d",
+            dt_before, ts_before,
+        )
+
+        try:
+            db.execute("DELETE FROM discovered_tickers")
+            db.execute("DELETE FROM ticker_scores")
+        except Exception as e:
+            logger.error("[Discovery] clear_data DELETE failed: %s", e)
+            return {"status": "error", "error": str(e)}
+
+        # Verify the tables are actually empty
+        dt_after = db.execute(
+            "SELECT COUNT(*) FROM discovered_tickers"
+        ).fetchone()[0]
+        ts_after = db.execute(
+            "SELECT COUNT(*) FROM ticker_scores"
+        ).fetchone()[0]
+        remaining = dt_after + ts_after
+
+        logger.info(
+            "[Discovery] clear_data complete — "
+            "remaining: discovered_tickers=%d, ticker_scores=%d",
+            dt_after, ts_after,
+        )
+
+        if remaining > 0:
+            logger.warning(
+                "[Discovery] clear_data: %d rows still remain!", remaining,
+            )
+            return {"status": "partial", "remaining": remaining}
+
+        return {"status": "cleared", "remaining": 0}
+
     async def run_discovery(
         self,
         *,
         enable_reddit: bool = True,
         enable_youtube: bool = True,
         youtube_hours: int = 24,
+        max_tickers: int | None = None,
     ) -> DiscoveryResult:
         """Run full discovery pipeline and return merged results."""
         self._running = True
         start = time.time()
         logger.info("=" * 70)
-        logger.info("[Discovery] Starting full discovery run")
+        logger.info("[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers)
         logger.info("=" * 70)
 
         reddit_tickers: list[ScoredTicker] = []
@@ -67,6 +119,11 @@ class DiscoveryService:
 
         # Merge scores from both sources
         merged = self._merge_scores(reddit_tickers, youtube_tickers)
+
+        # Cap results if max_tickers is set (for faster debugging)
+        if max_tickers and len(merged) > max_tickers:
+            logger.info("[Discovery] Capping results from %d to %d", len(merged), max_tickers)
+            merged = merged[:max_tickers]
 
         # Persist to DuckDB
         self._save_to_db(merged)
@@ -181,7 +238,8 @@ class DiscoveryService:
         rows = db.execute(
             """
             SELECT ticker, source, source_detail, discovery_score,
-                   sentiment_hint, context_snippet, discovered_at
+                   sentiment_hint, context_snippet, discovered_at,
+                   source_url
             FROM discovered_tickers
             ORDER BY discovered_at DESC
             LIMIT ?
@@ -198,6 +256,7 @@ class DiscoveryService:
                 "sentiment_hint": r[4],
                 "context_snippet": r[5],
                 "discovered_at": str(r[6]) if r[6] else None,
+                "source_url": r[7] if r[7] else "",
             }
             for r in rows
         ]
@@ -273,6 +332,7 @@ class DiscoveryService:
                     source_detail=f"{existing.source_detail}, {t.source_detail}",
                     sentiment_hint=t.sentiment_hint,
                     context_snippets=existing.context_snippets + t.context_snippets,
+                    source_urls=existing.source_urls + t.source_urls,
                     first_seen=min(existing.first_seen, t.first_seen),
                     last_seen=max(existing.last_seen, t.last_seen),
                 )
@@ -297,8 +357,8 @@ class DiscoveryService:
                 """
                 INSERT INTO discovered_tickers
                     (ticker, source, source_detail, discovery_score,
-                     sentiment_hint, context_snippet, discovered_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     sentiment_hint, context_snippet, source_url, discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     t.ticker,
@@ -307,6 +367,7 @@ class DiscoveryService:
                     t.discovery_score,
                     t.sentiment_hint,
                     t.context_snippets[0] if t.context_snippets else "",
+                    t.source_urls[0] if t.source_urls else "",
                     now,
                 ],
             )

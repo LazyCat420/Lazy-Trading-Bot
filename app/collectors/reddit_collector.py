@@ -239,26 +239,32 @@ If none are relevant, output: []"""
 
         # Step 4 + 5: Scrape and score
         ticker_counts: dict[str, int] = {}
-        ticker_contexts: dict[str, list[str]] = {}
+        ticker_contexts: dict[str, list[tuple[str, str]]] = {}  # ticker -> [(snippet, url)]
 
         for thread in threads:
-            title, body, comments = self.get_thread_data(thread["permalink"])
+            permalink = thread["permalink"]
+            thread_url = f"https://www.reddit.com{permalink}"
+            title, body, comments = self.get_thread_data(permalink)
             time.sleep(1)  # Respect Reddit rate limits
 
             # Weighted scoring
             for t in self.extract_tickers(title):
                 ticker_counts[t] = ticker_counts.get(t, 0) + 3
-                ticker_contexts.setdefault(t, []).append(f"[title] {title[:80]}")
+                ticker_contexts.setdefault(t, []).append(
+                    (f"[title] {title[:80]}", thread_url)
+                )
 
             for t in self.extract_tickers(body):
                 ticker_counts[t] = ticker_counts.get(t, 0) + 2
-                ticker_contexts.setdefault(t, []).append(f"[body] {body[:80]}")
+                ticker_contexts.setdefault(t, []).append(
+                    (f"[body] {body[:80]}", thread_url)
+                )
 
             for comment in comments:
                 for t in self.extract_tickers(comment):
                     ticker_counts[t] = ticker_counts.get(t, 0) + 1
                     ticker_contexts.setdefault(t, []).append(
-                        f"[comment] {comment[:60]}"
+                        (f"[comment] {comment[:60]}", thread_url)
                     )
 
         # Validate tickers
@@ -272,6 +278,14 @@ If none are relevant, output: []"""
         now = datetime.now()
         results: list[ScoredTicker] = []
         for ticker in valid_tickers:
+            ctx_pairs = ticker_contexts.get(ticker, [])
+            # Deduplicate snippets while keeping their URLs
+            seen_snippets: dict[str, str] = {}
+            for snippet, url in ctx_pairs:
+                if snippet not in seen_snippets:
+                    seen_snippets[snippet] = url
+            deduped = list(seen_snippets.items())[:3]  # (snippet, url) pairs
+
             results.append(
                 ScoredTicker(
                     ticker=ticker,
@@ -284,9 +298,8 @@ If none are relevant, output: []"""
                         )
                     ),
                     sentiment_hint="neutral",  # Could enhance with LLM later
-                    context_snippets=list(
-                    dict.fromkeys(ticker_contexts.get(ticker, []))
-                )[:3],
+                    context_snippets=[s for s, _u in deduped],
+                    source_urls=[u for _s, u in deduped],
                     first_seen=now,
                     last_seen=now,
                 )

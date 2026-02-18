@@ -3,16 +3,40 @@
 Provider URLs are centralized in app.config.settings:
     OLLAMA_URL   — Ollama endpoint (default http://localhost:11434)
     LMSTUDIO_URL — LM Studio endpoint (default http://localhost:1234)
+
+Uses a module-level shared httpx.AsyncClient for connection pooling.
+This is critical for parallel LLM calls — when OLLAMA_NUM_PARALLEL > 1,
+multiple agents can share the same TCP connection pool instead of each
+creating and destroying their own connection.
 """
 
 from __future__ import annotations
 
 import re
+import time
 
 import httpx
 
 from app.config import settings
 from app.utils.logger import logger
+
+# Shared async HTTP client — reused across all LLM calls for connection pooling.
+# Created lazily on first use; lives for the entire app lifecycle.
+_shared_client: httpx.AsyncClient | None = None
+
+
+async def _get_shared_client() -> httpx.AsyncClient:
+    """Get or create the shared httpx.AsyncClient."""
+    global _shared_client  # noqa: PLW0603
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            timeout=300.0,
+            limits=httpx.Limits(
+                max_connections=20,      # Up to 20 parallel TCP connections
+                max_keepalive_connections=10,
+            ),
+        )
+    return _shared_client
 
 
 class LLMService:
@@ -62,7 +86,7 @@ class LLMService:
         response_format: str,
         max_tokens: int | None,
     ) -> str:
-        """Call the Ollama /api/chat endpoint."""
+        """Call the Ollama /api/chat endpoint using shared connection pool."""
         url = f"{self.base_url}/api/chat"
         payload: dict = {
             "model": self.model,
@@ -75,19 +99,28 @@ class LLMService:
         }
         if response_format == "json":
             payload["format"] = "json"
-        
+
         if max_tokens:
             payload["options"]["num_predict"] = max_tokens
 
-        logger.debug("Ollama request -> %s model=%s format=%s", url, self.model, response_format)
+        logger.info(
+            "⏱️  Ollama request START → %s model=%s format=%s",
+            url, self.model, response_format,
+        )
+        t0 = time.perf_counter()
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            content = data.get("message", {}).get("content", "")
-            logger.debug("Ollama response length: %d chars", len(content))
-            return content
+        client = await _get_shared_client()
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("message", {}).get("content", "")
+
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "⏱️  Ollama request DONE  → %.2fs, %d chars",
+            elapsed, len(content),
+        )
+        return content
 
     async def _call_openai(
         self,
@@ -111,15 +144,24 @@ class LLMService:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        logger.debug("OpenAI request -> %s model=%s", url, self.model)
+        logger.info(
+            "⏱️  OpenAI request START → %s model=%s",
+            url, self.model,
+        )
+        t0 = time.perf_counter()
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            logger.debug("OpenAI response length: %d chars", len(content))
-            return content
+        client = await _get_shared_client()
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "⏱️  OpenAI request DONE  → %.2fs, %d chars",
+            elapsed, len(content),
+        )
+        return content
 
     @staticmethod
     def clean_json_response(raw: str) -> str:

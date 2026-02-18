@@ -61,6 +61,17 @@ class WatchlistUpdateRequest(BaseModel):
     tickers: list[str]
 
 
+class WatchlistAddRequest(BaseModel):
+    ticker: str
+    source: str = "manual"
+    notes: str = ""
+
+
+class WatchlistImportRequest(BaseModel):
+    min_score: float = 3.0
+    max_tickers: int = 10
+
+
 class LLMConfigRequest(BaseModel):
     provider: str | None = None
     ollama_url: str | None = None
@@ -72,6 +83,13 @@ class LLMConfigRequest(BaseModel):
 
 # ── Singleton services ──────────────────────────────────────────────
 pipeline = PipelineService()
+
+# Lazy import to avoid circular — WatchlistManager uses PipelineService
+from app.services.watchlist_manager import WatchlistManager  # noqa: E402
+from app.services.deep_analysis_service import DeepAnalysisService  # noqa: E402
+
+_watchlist_mgr = WatchlistManager()
+_deep_analysis = DeepAnalysisService()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -197,22 +215,135 @@ async def analyze_stream(
 
 @app.get("/api/watchlist")
 async def get_watchlist() -> dict:
-    """Get the current watchlist."""
-    wl_path = settings.USER_CONFIG_DIR / "watchlist.json"
-    if wl_path.exists():
-        data = json.loads(wl_path.read_text(encoding="utf-8"))
-        return data
-    return {"tickers": []}
+    """Get the current watchlist (DuckDB-backed)."""
+    entries = _watchlist_mgr.get_watchlist()
+    return {"tickers": entries}
+
+
+@app.get("/api/watchlist/summary")
+async def get_watchlist_summary() -> dict:
+    """Aggregate stats for the watchlist header."""
+    return _watchlist_mgr.get_summary()
+
+
+@app.post("/api/watchlist/add")
+async def add_to_watchlist(req: WatchlistAddRequest) -> dict:
+    """Add a ticker to the watchlist."""
+    return _watchlist_mgr.add_ticker(
+        ticker=req.ticker,
+        source=req.source,
+        notes=req.notes,
+    )
+
+
+@app.delete("/api/watchlist/remove/{ticker}")
+async def remove_from_watchlist(ticker: str) -> dict:
+    """Remove a ticker from the watchlist."""
+    return _watchlist_mgr.remove_ticker(ticker)
+
+
+@app.post("/api/watchlist/import-discovery")
+async def import_discovery_to_watchlist(req: WatchlistImportRequest) -> dict:
+    """Pull top-scoring discovered tickers into the watchlist."""
+    return _watchlist_mgr.import_from_discovery(
+        min_score=req.min_score,
+        max_tickers=req.max_tickers,
+    )
+
+
+@app.post("/api/watchlist/analyze/{ticker}")
+async def analyze_watchlist_ticker(ticker: str) -> dict:
+    """Run full analysis pipeline on one watchlist ticker."""
+    return await _watchlist_mgr.analyze_ticker(ticker)
+
+
+@app.post("/api/watchlist/analyze-all")
+async def analyze_all_watchlist(
+    batch_size: int = Query(default=2, ge=1, le=5),
+) -> dict:
+    """Analyze all active watchlist tickers in parallel batches."""
+    return await _watchlist_mgr.analyze_all(batch_size=batch_size)
+
+
+@app.post("/api/watchlist/clear")
+async def clear_watchlist() -> dict:
+    """Clear all watchlist entries."""
+    return _watchlist_mgr.clear()
 
 
 @app.put("/api/watchlist")
-async def update_watchlist(req: WatchlistUpdateRequest) -> dict:
-    """Update the watchlist."""
+async def update_watchlist_legacy(req: WatchlistUpdateRequest) -> dict:
+    """Legacy: update watchlist from JSON file (kept for backwards compat)."""
     wl_path = settings.USER_CONFIG_DIR / "watchlist.json"
     data = {"tickers": [t.upper().strip() for t in req.tickers if t.strip()]}
     wl_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    logger.info("Watchlist updated: %s", data["tickers"])
+    logger.info("Legacy watchlist updated: %s", data["tickers"])
     return data
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DEEP ANALYSIS ROUTES (4-Layer Funnel)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.post("/api/analysis/deep/{ticker}")
+async def deep_analyze_ticker(ticker: str) -> dict:
+    """Run the full 4-layer analysis funnel for one ticker."""
+    dossier = await _deep_analysis.analyze_ticker(ticker.upper())
+    return {
+        "status": "complete",
+        "ticker": dossier.ticker,
+        "conviction_score": dossier.conviction_score,
+        "executive_summary": dossier.executive_summary,
+        "bull_case": dossier.bull_case,
+        "bear_case": dossier.bear_case,
+        "key_catalysts": dossier.key_catalysts,
+        "signal_summary": dossier.signal_summary,
+        "flags": dossier.quant_scorecard.flags,
+        "total_tokens": dossier.total_tokens,
+    }
+
+
+@app.post("/api/analysis/deep-batch")
+async def deep_analyze_batch(
+    batch_size: int = Query(default=2, ge=1, le=5),
+) -> dict:
+    """Run deep analysis for all active watchlist tickers."""
+    tickers = _watchlist_mgr.get_active_tickers()
+    if not tickers:
+        return {"status": "no_tickers", "results": []}
+    dossiers = await _deep_analysis.analyze_batch(tickers, concurrency=batch_size)
+    return {
+        "status": "complete",
+        "analyzed": len(dossiers),
+        "total": len(tickers),
+        "results": [
+            {
+                "ticker": d.ticker,
+                "conviction_score": d.conviction_score,
+                "signal_summary": d.signal_summary,
+            }
+            for d in dossiers
+        ],
+    }
+
+
+@app.get("/api/dossiers/{ticker}")
+async def get_dossier(ticker: str) -> dict:
+    """Get the latest dossier for a ticker."""
+    result = DeepAnalysisService.get_latest_dossier(ticker.upper())
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No dossier found for {ticker}")
+    return result
+
+
+@app.get("/api/scorecards/{ticker}")
+async def get_scorecard(ticker: str) -> dict:
+    """Get the latest quant scorecard for a ticker."""
+    result = DeepAnalysisService.get_latest_scorecard(ticker.upper())
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No scorecard found for {ticker}")
+    return result
 
 
 @app.get("/api/strategy")
@@ -647,7 +778,7 @@ async def dashboard_db_stats() -> dict:
         "technicals", "news_articles", "youtube_transcripts",
         "risk_metrics", "balance_sheet", "cash_flows",
         "analyst_data", "insider_activity", "earnings_calendar",
-        "discovered_tickers", "ticker_scores",
+        "discovered_tickers", "ticker_scores", "watchlist",
     ]
     counts = {}
     db = get_db()
@@ -674,13 +805,15 @@ async def run_discovery(
     reddit: bool = Query(default=True),
     youtube: bool = Query(default=True),
     hours: int = Query(default=24),
+    max_tickers: int = Query(default=0, description="Cap results to N tickers (0=no limit)"),
 ) -> dict:
     """Trigger a discovery scan (Reddit + YouTube)."""
-    logger.info("[API] /api/discovery/run called (reddit=%s, youtube=%s)", reddit, youtube)
+    logger.info("[API] /api/discovery/run called (reddit=%s, youtube=%s, max=%s)", reddit, youtube, max_tickers)
     result = await _discovery.run_discovery(
         enable_reddit=reddit,
         enable_youtube=youtube,
         youtube_hours=hours,
+        max_tickers=max_tickers if max_tickers > 0 else None,
     )
     return {
         "status": "complete",
@@ -714,6 +847,12 @@ async def get_discovery_history(
 async def get_discovery_status() -> dict:
     """Bot vitals: running state, last run, aggregate stats."""
     return _discovery.status()
+
+
+@app.post("/api/discovery/clear")
+async def clear_discovery_data() -> dict:
+    """Clear all discovery data (discovered_tickers + ticker_scores)."""
+    return _discovery.clear_data()
 
 
 @app.get("/api/discovery/transcripts/{ticker}")

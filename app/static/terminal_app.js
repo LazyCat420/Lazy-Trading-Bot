@@ -96,7 +96,9 @@ const useTerminalData = () => {
             try {
                 const res = await fetch("/api/watchlist");
                 const data = await res.json();
-                const tickers = data.tickers || [];
+                const raw = data.tickers || [];
+                // Normalize: DuckDB returns objects {ticker, signal, ...}, legacy returns strings
+                const tickers = raw.map(t => typeof t === "string" ? t : t.ticker);
                 setWatchlist(tickers);
                 if (tickers.length > 0 && !tickers.includes(selectedTicker)) {
                     setSelectedTicker(tickers[0]);
@@ -898,169 +900,121 @@ const WatchlistPage = ({
     };
 
     return (
-        <div className="flex h-full w-full bg-onyx-black text-gray-200 font-display">
-            {/* Sidebar */}
-            <aside className="w-64 bg-onyx-panel border-r border-border-dark flex flex-col shrink-0 h-full">
-                <div className="h-16 flex items-center px-4 border-b border-border-dark">
-                    <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-primary/20 rounded flex items-center justify-center">
-                            <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
-                        </div>
-                        <div>
-                            <h1 className="text-white text-base font-bold leading-none tracking-tight">LAZY BOT</h1>
-                            <p className="text-text-secondary text-[10px] font-mono mt-1">v1.0  Terminal</p>
-                        </div>
-                    </div>
+        <SidebarLayout active="watchlist" watchlist={watchlist} selectedTicker={selectedTicker}
+            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow} setExpandedRow={setExpandedRow}
+            overviewCache={overviewCache}>
+            {/*  Main Content */}
+            {/* Header Bar */}
+            <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
+                <div className="flex items-center gap-4">
+                    <h2 className="text-white font-bold text-lg">Watchlist</h2>
+                    <span className="text-text-muted text-xs font-mono">{watchlist.length} tickers</span>
                 </div>
-
-                <div className="flex-1 overflow-y-auto py-4 px-2 flex flex-col gap-1">
-                    <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Navigation</h3>
-
-                    <Link to="/" className="flex items-center gap-3 px-3 py-2 rounded bg-border-dark/50 border-l-2 border-primary group">
-                        <span className="material-symbols-outlined text-primary text-[20px]">monitoring</span>
-                        <span className="text-sm font-medium text-white">Watchlist</span>
-                    </Link>
-
-                    <Link to="/settings" className="flex items-center gap-3 px-3 py-2 rounded hover:bg-border-dark/50 group transition-colors">
-                        <span className="material-symbols-outlined text-text-secondary text-[20px]">tune</span>
-                        <span className="text-sm font-medium text-text-secondary group-hover:text-white">Settings</span>
-                    </Link>
-
-                    <Link to="/diagnostics" className="flex items-center gap-3 px-3 py-2 rounded hover:bg-border-dark/50 group transition-colors">
-                        <span className="material-symbols-outlined text-text-secondary text-[20px]">bug_report</span>
-                        <span className="text-sm font-medium text-text-secondary group-hover:text-white">Diagnostics</span>
-                    </Link>
-
-                    <div className="mt-6">
-                        <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Watchlist</h3>
-                        {watchlist.map(t => (
-                            <button key={t} onClick={() => { setSelectedTicker(t); setExpandedRow(expandedRow === t ? null : t); }}
-                                className={`w-full flex items-center justify-between px-3 py-2 rounded transition-colors ${selectedTicker === t ? "bg-border-dark/50 text-primary" : "text-text-secondary hover:bg-border-dark/30 hover:text-white"
-                                    }`}>
-                                <span className="text-sm font-mono">{t}</span>
-                                {overviewCache[t]?.price?.close && (
-                                    <span className="text-[10px] font-mono">${Number(overviewCache[t].price.close).toFixed(2)}</span>
-                                )}
-                            </button>
-                        ))}
-                    </div>
+                <div className="flex items-center gap-2">
+                    <input
+                        type="text" value={addInput} onChange={e => setAddInput(e.target.value.toUpperCase())}
+                        onKeyDown={e => e.key === "Enter" && handleAdd()}
+                        placeholder="Add ticker|" maxLength={10}
+                        className="w-32 bg-onyx-black border border-border-dark rounded px-3 py-1.5 text-xs text-white focus:border-primary focus:outline-none font-mono"
+                    />
+                    <button onClick={handleAdd}
+                        className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition">
+                        ADD
+                    </button>
                 </div>
-            </aside>
+            </div>
 
-            {/* Main Content */}
-            <main className="flex-1 flex flex-col overflow-hidden">
-                {/* Header Bar */}
-                <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
-                    <div className="flex items-center gap-4">
-                        <h2 className="text-white font-bold text-lg">Watchlist</h2>
-                        <span className="text-text-muted text-xs font-mono">{watchlist.length} tickers</span>
+            {/* Ticker Table */}
+            <div className="flex-1 overflow-y-auto">
+                <table className="w-full">
+                    <thead className="sticky top-0 bg-onyx-panel z-10">
+                        <tr className="text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark">
+                            <th className="text-left px-6 py-3">Ticker</th>
+                            <th className="text-right px-4 py-3">Price</th>
+                            <th className="text-right px-4 py-3">Change</th>
+                            <th className="text-right px-4 py-3">Market Cap</th>
+                            <th className="text-right px-4 py-3">RSI</th>
+                            <th className="text-center px-4 py-3">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {watchlist.map(ticker => {
+                            const ov = overviewCache[ticker] || {};
+                            const price = ov.price?.close;
+                            const prevClose = ov.prev_price?.close;
+                            const change = price && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+                            const rsi = ov.technicals?.rsi_14 || ov.technicals?.RSI_14;
+
+                            return (
+                                <React.Fragment key={ticker}>
+                                    <tr onClick={() => { setSelectedTicker(ticker); setExpandedRow(expandedRow === ticker ? null : ticker); }}
+                                        className={`border-b border-border-dark/50 hover:bg-onyx-surface cursor-pointer transition-colors ${selectedTicker === ticker ? "bg-onyx-surface" : ""
+                                            }`}>
+                                        <td className="px-6 py-3">
+                                            <div className="flex items-center gap-3">
+                                                <span className={`material-symbols-outlined text-sm ${expandedRow === ticker ? "text-primary" : "text-text-muted"}`}>
+                                                    {expandedRow === ticker ? "expand_less" : "expand_more"}
+                                                </span>
+                                                <a href={`https://finviz.com/quote.ashx?t=${ticker}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-white font-bold font-mono text-sm hover:text-primary transition-colors" title={`View ${ticker} on Finviz`}>{ticker}</a>
+                                            </div>
+                                        </td>
+                                        <td className="text-right px-4 py-3">
+                                            <span className="text-white font-mono text-sm">{price ? fmt.usd(price) : <Skeleton w="60px" />}</span>
+                                        </td>
+                                        <td className="text-right px-4 py-3">
+                                            {change != null ? (
+                                                <span className={`metric-pill ${change >= 0 ? "green" : "red"}`}>
+                                                    {change >= 0 ? "-2" : "-1/4"} {Math.abs(change).toFixed(2)}%
+                                                </span>
+                                            ) : <Skeleton w="50px" />}
+                                        </td>
+                                        <td className="text-right px-4 py-3 text-text-secondary text-xs font-mono">
+                                            {ov.fundamentals?.market_cap ? fmt.usdShort(ov.fundamentals.market_cap) : "-"}
+                                        </td>
+                                        <td className="text-right px-4 py-3">
+                                            {rsi != null ? (
+                                                <span className={`text-xs font-mono font-bold ${rsi > 70 ? "text-red-400" : rsi < 30 ? "text-green-400" : "text-text-secondary"}`}>
+                                                    {Number(rsi).toFixed(1)}
+                                                </span>
+                                            ) : "-"}
+                                        </td>
+                                        <td className="text-center px-4 py-3">
+                                            <div className="flex items-center justify-center gap-1">
+                                                <button onClick={(e) => { e.stopPropagation(); navigate(`/analysis/${ticker}`); }}
+                                                    className="icon-btn" title="Run Analysis">
+                                                    <span className="material-symbols-outlined text-[18px]">play_circle</span>
+                                                </button>
+                                                <button onClick={(e) => { e.stopPropagation(); removeTicker(ticker); }}
+                                                    className="icon-btn danger" title="Remove">
+                                                    <span className="material-symbols-outlined text-[16px]">close</span>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {expandedRow === ticker && (
+                                        <tr><td colSpan={6}><TickerDetailPanel ticker={ticker} /></td></tr>
+                                    )}
+                                </React.Fragment>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                {watchlist.length === 0 && (
+                    <div className="flex flex-col items-center justify-center h-64 text-text-muted">
+                        <span className="material-symbols-outlined text-5xl mb-4">add_chart</span>
+                        <p className="text-lg mb-2">No tickers yet</p>
+                        <p className="text-xs">Add a ticker symbol above to get started</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <input
-                            type="text" value={addInput} onChange={e => setAddInput(e.target.value.toUpperCase())}
-                            onKeyDown={e => e.key === "Enter" && handleAdd()}
-                            placeholder="Add ticker|" maxLength={10}
-                            className="w-32 bg-onyx-black border border-border-dark rounded px-3 py-1.5 text-xs text-white focus:border-primary focus:outline-none font-mono"
-                        />
-                        <button onClick={handleAdd}
-                            className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition">
-                            ADD
-                        </button>
-                    </div>
-                </div>
-
-                {/* Ticker Table */}
-                <div className="flex-1 overflow-y-auto">
-                    <table className="w-full">
-                        <thead className="sticky top-0 bg-onyx-panel z-10">
-                            <tr className="text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark">
-                                <th className="text-left px-6 py-3">Ticker</th>
-                                <th className="text-right px-4 py-3">Price</th>
-                                <th className="text-right px-4 py-3">Change</th>
-                                <th className="text-right px-4 py-3">Market Cap</th>
-                                <th className="text-right px-4 py-3">RSI</th>
-                                <th className="text-center px-4 py-3">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {watchlist.map(ticker => {
-                                const ov = overviewCache[ticker] || {};
-                                const price = ov.price?.close;
-                                const prevClose = ov.prev_price?.close;
-                                const change = price && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
-                                const rsi = ov.technicals?.rsi_14 || ov.technicals?.RSI_14;
-
-                                return (
-                                    <React.Fragment key={ticker}>
-                                        <tr onClick={() => { setSelectedTicker(ticker); setExpandedRow(expandedRow === ticker ? null : ticker); }}
-                                            className={`border-b border-border-dark/50 hover:bg-onyx-surface cursor-pointer transition-colors ${selectedTicker === ticker ? "bg-onyx-surface" : ""
-                                                }`}>
-                                            <td className="px-6 py-3">
-                                                <div className="flex items-center gap-3">
-                                                    <span className={`material-symbols-outlined text-sm ${expandedRow === ticker ? "text-primary" : "text-text-muted"}`}>
-                                                        {expandedRow === ticker ? "expand_less" : "expand_more"}
-                                                    </span>
-                                                    <span className="text-white font-bold font-mono text-sm">{ticker}</span>
-                                                </div>
-                                            </td>
-                                            <td className="text-right px-4 py-3">
-                                                <span className="text-white font-mono text-sm">{price ? fmt.usd(price) : <Skeleton w="60px" />}</span>
-                                            </td>
-                                            <td className="text-right px-4 py-3">
-                                                {change != null ? (
-                                                    <span className={`metric-pill ${change >= 0 ? "green" : "red"}`}>
-                                                        {change >= 0 ? "-2" : "-1/4"} {Math.abs(change).toFixed(2)}%
-                                                    </span>
-                                                ) : <Skeleton w="50px" />}
-                                            </td>
-                                            <td className="text-right px-4 py-3 text-text-secondary text-xs font-mono">
-                                                {ov.fundamentals?.market_cap ? fmt.usdShort(ov.fundamentals.market_cap) : "-"}
-                                            </td>
-                                            <td className="text-right px-4 py-3">
-                                                {rsi != null ? (
-                                                    <span className={`text-xs font-mono font-bold ${rsi > 70 ? "text-red-400" : rsi < 30 ? "text-green-400" : "text-text-secondary"}`}>
-                                                        {Number(rsi).toFixed(1)}
-                                                    </span>
-                                                ) : "-"}
-                                            </td>
-                                            <td className="text-center px-4 py-3">
-                                                <div className="flex items-center justify-center gap-1">
-                                                    <button onClick={(e) => { e.stopPropagation(); navigate(`/analysis/${ticker}`); }}
-                                                        className="icon-btn" title="Run Analysis">
-                                                        <span className="material-symbols-outlined text-[18px]">play_circle</span>
-                                                    </button>
-                                                    <button onClick={(e) => { e.stopPropagation(); removeTicker(ticker); }}
-                                                        className="icon-btn danger" title="Remove">
-                                                        <span className="material-symbols-outlined text-[16px]">close</span>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        {expandedRow === ticker && (
-                                            <tr><td colSpan={6}><TickerDetailPanel ticker={ticker} /></td></tr>
-                                        )}
-                                    </React.Fragment>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                    {watchlist.length === 0 && (
-                        <div className="flex flex-col items-center justify-center h-64 text-text-muted">
-                            <span className="material-symbols-outlined text-5xl mb-4">add_chart</span>
-                            <p className="text-lg mb-2">No tickers yet</p>
-                            <p className="text-xs">Add a ticker symbol above to get started</p>
-                        </div>
-                    )}
-                </div>
-            </main>
-        </div>
+                )}
+            </div>
+        </SidebarLayout>
     );
 };
 
 // ***************************************************************
 // SIDEBAR LAYOUT  Shared sidebar for inner pages
 // ***************************************************************
-const SidebarLayout = ({ children, active = "" }) => {
+const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
     const navigate = useNavigate();
 
     const NavLink = ({ to, icon, label, id }) => (
@@ -1092,6 +1046,23 @@ const SidebarLayout = ({ children, active = "" }) => {
                     <NavLink to="/monitor" icon="precision_manufacturing" label="Autobot Monitor" id="monitor" />
                     <NavLink to="/settings" icon="tune" label="Settings" id="settings" />
                     <NavLink to="/diagnostics" icon="bug_report" label="Diagnostics" id="diagnostics" />
+
+                    {/* Watchlist ticker list — shown when watchlist data is available */}
+                    {watchlist && watchlist.length > 0 && (
+                        <div className="mt-6">
+                            <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Watchlist</h3>
+                            {watchlist.map(t => (
+                                <button key={t} onClick={() => { setSelectedTicker(t); setExpandedRow(expandedRow === t ? null : t); }}
+                                    className={`w-full flex items-center justify-between px-3 py-2 rounded transition-colors ${selectedTicker === t ? "bg-border-dark/50 text-primary" : "text-text-secondary hover:bg-border-dark/30 hover:text-white"
+                                        }`}>
+                                    <a href={`https://finviz.com/quote.ashx?t=${t}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-sm font-mono hover:text-primary transition-colors" title={`View ${t} on Finviz`}>{t}</a>
+                                    {overviewCache && overviewCache[t]?.price?.close && (
+                                        <span className="text-[10px] font-mono">${Number(overviewCache[t].price.close).toFixed(2)}</span>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </aside>
             <main className="flex-1 flex flex-col overflow-hidden">{children}</main>
@@ -2348,8 +2319,29 @@ const AutobotMonitorPage = () => {
     const [enableYoutube, setEnableYoutube] = useState(true);
     const [sortBy, setSortBy] = useState("total_score");
     const [expandedTicker, setExpandedTicker] = useState(null);
-    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity"
+    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist"
+    const [maxTickers, setMaxTickers] = useState(5);
     const navigate = useNavigate();
+
+    // ── Watchlist state (DuckDB-backed) ──
+    const [wlEntries, setWlEntries] = useState([]);
+    const [wlSummary, setWlSummary] = useState(null);
+    const [wlImporting, setWlImporting] = useState(false);
+    const [wlAnalyzing, setWlAnalyzing] = useState(false);
+    const [wlAnalyzingTicker, setWlAnalyzingTicker] = useState(null);
+
+    const fetchWatchlist = useCallback(async () => {
+        try {
+            const [entriesRes, summaryRes] = await Promise.all([
+                fetch("/api/watchlist").then(r => r.json()),
+                fetch("/api/watchlist/summary").then(r => r.json()),
+            ]);
+            setWlEntries(entriesRes.tickers || []);
+            setWlSummary(summaryRes);
+        } catch (e) {
+            console.error("Watchlist fetch error:", e);
+        }
+    }, []);
 
     const fetchAll = useCallback(async () => {
         try {
@@ -2366,7 +2358,9 @@ const AutobotMonitorPage = () => {
         } finally {
             setLoading(false);
         }
-    }, []);
+        // Also refresh watchlist
+        fetchWatchlist();
+    }, [fetchWatchlist]);
 
     useEffect(() => {
         fetchAll();
@@ -2377,7 +2371,8 @@ const AutobotMonitorPage = () => {
     const runScan = async () => {
         setScanning(true);
         try {
-            await fetch(`/api/discovery/run?reddit=${enableReddit}&youtube=${enableYoutube}`);
+            const limitParam = maxTickers > 0 ? `&max_tickers=${maxTickers}` : "";
+            await fetch(`/api/discovery/run?reddit=${enableReddit}&youtube=${enableYoutube}${limitParam}`);
             await fetchAll();
         } catch (e) {
             console.error("Discovery scan error:", e);
@@ -2386,20 +2381,131 @@ const AutobotMonitorPage = () => {
         }
     };
 
+    const clearData = async () => {
+        if (!confirm("Clear all discovery data? This cannot be undone.")) return;
+        try {
+            console.log("[ClearData] Sending POST /api/discovery/clear...");
+            const res = await fetch("/api/discovery/clear", { method: "POST" });
+            const body = await res.json();
+            console.log("[ClearData] Response:", res.status, body);
+
+            if (!res.ok) {
+                console.error("[ClearData] Server returned", res.status, body);
+                alert("Clear failed — server error " + res.status);
+                return;
+            }
+
+            if (body.status !== "cleared") {
+                console.error("[ClearData] Unexpected status:", body);
+                alert("Clear may have partially failed. Check console.");
+                return;
+            }
+
+            // Success — reset ALL local state immediately.
+            // Do NOT call fetchAll() here; it would race against the DB
+            // flush and potentially re-read stale data.
+            console.log("[ClearData] Success — resetting local state");
+            setScores([]);
+            setHistory([]);
+            setExpandedTicker(null);
+            setStatus({
+                is_running: false,
+                last_run_at: null,
+                total_discovered: 0,
+                reddit_total: 0,
+                youtube_total: 0,
+                top_ticker: null,
+            });
+        } catch (e) {
+            console.error("[ClearData] Network or parse error:", e);
+            alert("Clear data failed: " + e.message);
+        }
+    };
+
     const addToWatchlist = async (ticker) => {
         try {
-            const wlRes = await fetch("/api/watchlist").then(r => r.json());
-            const current = wlRes.tickers || [];
-            if (!current.includes(ticker)) {
-                await fetch("/api/watchlist", {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tickers: [...current, ticker] }),
-                });
-            }
+            await fetch("/api/watchlist/add", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ticker, source: "discovery" }),
+            });
+            fetchWatchlist();
         } catch (e) {
             console.error("Add to watchlist error:", e);
         }
+    };
+
+    const removeFromWatchlist = async (ticker) => {
+        try {
+            await fetch(`/api/watchlist/remove/${ticker}`, { method: "DELETE" });
+            fetchWatchlist();
+        } catch (e) {
+            console.error("Remove from watchlist error:", e);
+        }
+    };
+
+    const importFromDiscovery = async () => {
+        setWlImporting(true);
+        try {
+            const res = await fetch("/api/watchlist/import-discovery", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ min_score: 3.0, max_tickers: 10 }),
+            });
+            const data = await res.json();
+            console.log("Import result:", data);
+            fetchWatchlist();
+        } catch (e) {
+            console.error("Import from discovery error:", e);
+        } finally {
+            setWlImporting(false);
+        }
+    };
+
+    const analyzeWatchlistTicker = async (ticker) => {
+        setWlAnalyzingTicker(ticker);
+        try {
+            await fetch(`/api/watchlist/analyze/${ticker}`, { method: "POST" });
+            fetchWatchlist();
+        } catch (e) {
+            console.error("Analyze watchlist ticker error:", e);
+        } finally {
+            setWlAnalyzingTicker(null);
+        }
+    };
+
+    const analyzeAllWatchlist = async () => {
+        setWlAnalyzing(true);
+        try {
+            await fetch("/api/watchlist/analyze-all", { method: "POST" });
+            fetchWatchlist();
+        } catch (e) {
+            console.error("Analyze all error:", e);
+        } finally {
+            setWlAnalyzing(false);
+        }
+    };
+
+    const clearWatchlist = async () => {
+        if (!confirm("Clear all watchlist data? This cannot be undone.")) return;
+        try {
+            await fetch("/api/watchlist/clear", { method: "POST" });
+            fetchWatchlist();
+        } catch (e) {
+            console.error("Clear watchlist error:", e);
+        }
+    };
+
+    // Signal badge helper
+    const signalBadge = (signal) => {
+        const cls = signal === "BUY" || signal === "STRONG_BUY" ? "bg-green-500/20 text-green-400 border-green-500/30"
+            : signal === "SELL" || signal === "STRONG_SELL" ? "bg-red-500/20 text-red-400 border-red-500/30"
+                : signal === "HOLD" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                    : signal === "ERROR" ? "bg-red-500/20 text-red-300 border-red-500/20"
+                        : "bg-border-dark text-text-muted border-border-dark";
+        return React.createElement("span", {
+            className: `px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase border ${cls}`
+        }, signal || "PENDING");
     };
 
     const sortedScores = [...scores].sort((a, b) => {
@@ -2496,7 +2602,7 @@ const AutobotMonitorPage = () => {
 
                 // Ticker name + sentiment
                 React.createElement("div", { className: "flex items-center gap-3 w-32 shrink-0" },
-                    React.createElement("span", { className: "text-white font-bold font-mono text-lg" }, `$${s.ticker}`),
+                    React.createElement("a", { href: `https://finviz.com/quote.ashx?t=${s.ticker}`, target: "_blank", rel: "noopener noreferrer", onClick: (e) => e.stopPropagation(), className: "text-white font-bold font-mono text-lg hover:text-primary transition-colors", title: `View ${s.ticker} on Finviz` }, `$${s.ticker}`),
                     sentimentBadge(s.sentiment_hint)
                 ),
 
@@ -2553,25 +2659,47 @@ const AutobotMonitorPage = () => {
                         React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${redditEntries.length} mentions`)
                     ),
                     React.createElement("div", { className: "space-y-2" },
-                        ...redditEntries.map((h, i) => React.createElement("div", {
-                            key: `r-${i}`,
-                            className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-orange-400/30",
-                        },
-                            React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
-                                `+${(h.discovery_score ?? 0).toFixed(1)}`
-                            ),
-                            React.createElement("div", { className: "flex-1 min-w-0" },
-                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
-                                    h.context_snippet || "No context available"
+                        ...redditEntries.map((h, i) => {
+                            // Parse subreddits from source_detail
+                            const subs = (h.source_detail || "").split(",").map(s => s.trim()).filter(Boolean);
+                            // Use real source_url if available, else link to first subreddit
+                            const linkUrl = h.source_url || (subs.length > 0 ? `https://www.reddit.com/r/${subs[0]}` : "");
+                            const rawSnippet = h.context_snippet || "No context available";
+                            return React.createElement("div", {
+                                key: `r-${i}`,
+                                className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-orange-400/30",
+                            },
+                                React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
+                                    `+${(h.discovery_score ?? 0).toFixed(1)}`
                                 ),
-                                h.source_detail && React.createElement("span", { className: "text-[10px] text-text-muted mt-1 block" },
-                                    `r/${h.source_detail}`
+                                React.createElement("div", { className: "flex-1 min-w-0" },
+                                    linkUrl
+                                        ? React.createElement("a", {
+                                            href: linkUrl,
+                                            target: "_blank",
+                                            rel: "noopener",
+                                            className: "text-xs text-text-secondary leading-relaxed hover:text-orange-400 transition cursor-pointer block",
+                                            title: "View on Reddit"
+                                        }, rawSnippet)
+                                        : React.createElement("p", {
+                                            className: "text-xs text-text-secondary leading-relaxed"
+                                        }, rawSnippet),
+                                    subs.length > 0 && React.createElement("div", { className: "flex flex-wrap gap-1.5 mt-1" },
+                                        ...subs.map((sub, si) => React.createElement("a", {
+                                            key: si,
+                                            href: `https://www.reddit.com/r/${sub}`,
+                                            target: "_blank",
+                                            rel: "noopener",
+                                            className: "text-[10px] text-text-muted hover:text-orange-400 transition cursor-pointer",
+                                            title: `Visit r/${sub}`
+                                        }, `r/${sub}`))
+                                    )
+                                ),
+                                React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
+                                    h.discovered_at ? fmt.ago(h.discovered_at) : ""
                                 )
-                            ),
-                            React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
-                                h.discovered_at ? fmt.ago(h.discovered_at) : ""
-                            )
-                        ))
+                            );
+                        })
                     )
                 ),
 
@@ -2743,6 +2871,25 @@ const AutobotMonitorPage = () => {
                             "YouTube"
                         )
                     ),
+                    React.createElement("div", { className: "flex items-center gap-3 border-l border-border-dark pl-4" },
+                        React.createElement("label", { className: "flex items-center gap-1.5 text-xs text-text-secondary" },
+                            "Limit:",
+                            React.createElement("input", {
+                                type: "number", value: maxTickers, min: 0, max: 100, step: 1,
+                                onChange: (e) => setMaxTickers(parseInt(e.target.value) || 0),
+                                className: "w-12 bg-onyx-black border border-border-dark rounded px-1.5 py-1 text-xs text-white font-mono text-center focus:border-primary focus:outline-none",
+                                title: "Max tickers (0 = no limit)",
+                            })
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: clearData,
+                        className: "px-3 py-2 rounded-lg text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
+                        title: "Clear all discovery data",
+                    }, React.createElement("span", { className: "flex items-center gap-1.5" },
+                        React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "delete_sweep"),
+                        "Clear Data")
+                    ),
                     status?.last_run_at && React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-auto" },
                         "Last scan: ", fmt.ago(status.last_run_at)
                     )
@@ -2757,6 +2904,15 @@ const AutobotMonitorPage = () => {
                         React.createElement("span", { className: "flex items-center gap-1.5" },
                             React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "leaderboard"),
                             `Scoreboard (${scores.length})`
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: () => setActiveTab("watchlist"),
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "watchlist" ? "bg-primary/20 text-primary shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "monitoring"),
+                            `Watchlist (${wlEntries.length})`
                         )
                     ),
                     React.createElement("button", {
@@ -2782,6 +2938,150 @@ const AutobotMonitorPage = () => {
                         )
                         : React.createElement("div", { className: "space-y-2" },
                             ...sortedScores.map((s, i) => React.createElement(TickerCard, { key: s.ticker, s, rank: i + 1 }))
+                        )
+                ),
+
+                // ── WATCHLIST TAB: DuckDB-backed table with signals ──
+                activeTab === "watchlist" && React.createElement("div", null,
+
+                    // Watchlist summary stats
+                    wlSummary && React.createElement("div", { className: "grid grid-cols-6 gap-3 mb-4" },
+                        React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-xl font-bold font-mono text-primary" }, wlSummary.active || 0),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Active")
+                        ),
+                        React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-xl font-bold font-mono text-green-400" }, wlSummary.buy_count || 0),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Buy")
+                        ),
+                        React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-xl font-bold font-mono text-red-400" }, wlSummary.sell_count || 0),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Sell")
+                        ),
+                        React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-xl font-bold font-mono text-yellow-400" }, wlSummary.hold_count || 0),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Hold")
+                        ),
+                        React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-xl font-bold font-mono text-text-muted" }, wlSummary.pending_count || 0),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Pending")
+                        ),
+                        wlSummary.top_confidence && wlSummary.top_confidence.ticker && React.createElement("div", { className: "glass-card p-3 text-center" },
+                            React.createElement("div", { className: "text-sm font-bold font-mono text-white" }, `$${wlSummary.top_confidence.ticker}`),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-0.5" }, "Top Confidence"),
+                            React.createElement("div", { className: "text-[10px] text-primary font-mono" }, `${(wlSummary.top_confidence.confidence * 100).toFixed(0)}%`)
+                        )
+                    ),
+
+                    // Watchlist action buttons
+                    React.createElement("div", { className: "glass-card p-4 flex items-center gap-3 flex-wrap mb-4" },
+                        React.createElement("button", {
+                            onClick: importFromDiscovery,
+                            disabled: wlImporting,
+                            className: `px-4 py-2 rounded-lg font-bold text-sm transition-all ${wlImporting ? "bg-primary/10 text-primary/50 cursor-wait" : "bg-primary/20 hover:bg-primary/30 text-primary"}`,
+                        },
+                            React.createElement("span", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: `material-symbols-outlined text-sm ${wlImporting ? "animate-spin" : ""}` }, wlImporting ? "progress_activity" : "download"),
+                                wlImporting ? "Importing..." : "Import from Discovery"
+                            )
+                        ),
+                        React.createElement("button", {
+                            onClick: analyzeAllWatchlist,
+                            disabled: wlAnalyzing || wlEntries.length === 0,
+                            className: `px-4 py-2 rounded-lg font-bold text-sm transition-all ${wlAnalyzing ? "bg-blue-500/10 text-blue-400/50 cursor-wait" : "bg-blue-500/20 hover:bg-blue-500/30 text-blue-400"}`,
+                        },
+                            React.createElement("span", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: `material-symbols-outlined text-sm ${wlAnalyzing ? "animate-spin" : ""}` }, wlAnalyzing ? "progress_activity" : "play_circle"),
+                                wlAnalyzing ? "Analyzing All..." : "Analyze All"
+                            )
+                        ),
+                        React.createElement("button", {
+                            onClick: clearWatchlist,
+                            disabled: wlEntries.length === 0,
+                            className: "px-3 py-2 rounded-lg text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
+                        },
+                            React.createElement("span", { className: "flex items-center gap-1.5" },
+                                React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "delete_sweep"),
+                                "Clear Watchlist"
+                            )
+                        ),
+                        wlSummary && wlSummary.last_scan && React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-auto" },
+                            "Last analyzed: ", fmt.ago(wlSummary.last_scan)
+                        )
+                    ),
+
+                    // Watchlist table
+                    wlEntries.length === 0
+                        ? React.createElement("div", { className: "glass-card text-center py-16" },
+                            React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "playlist_add"),
+                            React.createElement("p", { className: "text-sm text-text-muted" }, "No tickers in watchlist yet"),
+                            React.createElement("p", { className: "text-xs text-text-muted mt-1" }, 'Use "Import from Discovery" or add tickers in the Scoreboard tab')
+                        )
+                        : React.createElement("div", { className: "glass-card overflow-hidden" },
+                            React.createElement("table", { className: "w-full" },
+                                React.createElement("thead", null,
+                                    React.createElement("tr", { className: "text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark bg-onyx-panel" },
+                                        React.createElement("th", { className: "text-left px-4 py-3" }, "Ticker"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Signal"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Confidence"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Source"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Score"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Analyzed"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Actions")
+                                    )
+                                ),
+                                React.createElement("tbody", null,
+                                    ...wlEntries.map((entry, i) => {
+                                        const confPct = ((entry.confidence || 0) * 100).toFixed(0);
+                                        const isAnalyzingThis = wlAnalyzingTicker === entry.ticker;
+                                        return React.createElement("tr", {
+                                            key: entry.ticker,
+                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`,
+                                        },
+                                            React.createElement("td", { className: "px-4 py-3" },
+                                                React.createElement("div", { className: "flex items-center gap-2" },
+                                                    React.createElement("a", { href: `https://finviz.com/quote.ashx?t=${entry.ticker}`, target: "_blank", rel: "noopener noreferrer", className: "text-white font-bold font-mono text-sm hover:text-primary transition-colors" }, `$${entry.ticker}`),
+                                                    sentimentBadge(entry.sentiment_hint)
+                                                )
+                                            ),
+                                            React.createElement("td", { className: "text-center px-4 py-3" }, signalBadge(entry.signal)),
+                                            React.createElement("td", { className: "text-right px-4 py-3" },
+                                                React.createElement("div", { className: "flex items-center gap-2 justify-end" },
+                                                    React.createElement("div", { className: "w-16 h-1.5 rounded-full bg-onyx-black/60 overflow-hidden" },
+                                                        React.createElement("div", {
+                                                            className: `h-full rounded-full transition-all duration-500 ${entry.confidence > 0.6 ? "bg-green-400" : entry.confidence > 0.3 ? "bg-yellow-400" : "bg-red-400"}`,
+                                                            style: { width: `${confPct}%` }
+                                                        })
+                                                    ),
+                                                    React.createElement("span", { className: "text-xs font-mono text-text-secondary w-10 text-right" }, `${confPct}%`)
+                                                )
+                                            ),
+                                            React.createElement("td", { className: "text-center px-4 py-3" }, sourceIcon(entry.source)),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-xs font-mono text-primary" }, (entry.discovery_score || 0).toFixed(1)),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-[10px] font-mono text-text-muted" },
+                                                entry.last_analyzed ? fmt.ago(entry.last_analyzed) : "Never"
+                                            ),
+                                            React.createElement("td", { className: "text-center px-4 py-3" },
+                                                React.createElement("div", { className: "flex items-center justify-center gap-1" },
+                                                    React.createElement("button", {
+                                                        onClick: () => analyzeWatchlistTicker(entry.ticker),
+                                                        disabled: isAnalyzingThis || wlAnalyzing,
+                                                        className: "icon-btn", title: "Run Analysis",
+                                                    }, React.createElement("span", { className: `material-symbols-outlined text-[16px] ${isAnalyzingThis ? "animate-spin" : ""}` }, isAnalyzingThis ? "progress_activity" : "play_circle")),
+                                                    React.createElement("button", {
+                                                        onClick: () => navigate(`/analysis/${entry.ticker}`),
+                                                        className: "icon-btn", title: "View Details",
+                                                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "open_in_new")),
+                                                    React.createElement("button", {
+                                                        onClick: () => removeFromWatchlist(entry.ticker),
+                                                        className: "icon-btn danger", title: "Remove",
+                                                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "close"))
+                                                )
+                                            )
+                                        );
+                                    })
+                                )
+                            )
                         )
                 ),
 

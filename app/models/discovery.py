@@ -17,6 +17,7 @@ class ScoredTicker(BaseModel):
     source_detail: str = ""  # channel name or subreddit
     sentiment_hint: Literal["bullish", "bearish", "neutral"] = "neutral"
     context_snippets: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
     first_seen: datetime = Field(default_factory=datetime.now)
     last_seen: datetime = Field(default_factory=datetime.now)
 

@@ -324,6 +324,7 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             discovery_score DOUBLE DEFAULT 0.0,
             sentiment_hint  VARCHAR DEFAULT 'neutral',
             context_snippet VARCHAR DEFAULT '',
+            source_url      VARCHAR DEFAULT '',
             discovered_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
@@ -340,6 +341,68 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             sentiment_hint  VARCHAR DEFAULT 'neutral',
             is_validated    BOOLEAN DEFAULT FALSE,
             updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # ---- Phase 2: Watchlist table (bridges Discovery → Analysis) ----
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watchlist (
+            ticker          VARCHAR PRIMARY KEY,
+            source          VARCHAR DEFAULT 'manual',
+            added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_analyzed   TIMESTAMP,
+            analysis_count  INTEGER DEFAULT 0,
+            signal          VARCHAR DEFAULT 'PENDING',
+            confidence      DOUBLE DEFAULT 0.0,
+            discovery_score DOUBLE DEFAULT 0.0,
+            sentiment_hint  VARCHAR DEFAULT 'neutral',
+            status          VARCHAR DEFAULT 'active',
+            cooldown_until  TIMESTAMP,
+            notes           VARCHAR DEFAULT '',
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # ---- Phase 2: Deep Analysis tables ----
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quant_scorecards (
+            id                VARCHAR PRIMARY KEY,
+            ticker            VARCHAR NOT NULL,
+            computed_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            z_score_20d       DOUBLE,
+            robust_z_score    DOUBLE,
+            bollinger_pct_b   DOUBLE,
+            pctl_rank_price   DOUBLE,
+            pctl_rank_volume  DOUBLE,
+            sharpe_ratio      DOUBLE,
+            sortino_ratio     DOUBLE,
+            calmar_ratio      DOUBLE,
+            omega_ratio       DOUBLE,
+            kelly_fraction    DOUBLE,
+            half_kelly        DOUBLE,
+            var_95            DOUBLE,
+            cvar_95           DOUBLE,
+            max_drawdown      DOUBLE,
+            flags             VARCHAR DEFAULT '[]'
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_dossiers (
+            id                VARCHAR PRIMARY KEY,
+            ticker            VARCHAR NOT NULL,
+            generated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            version           INTEGER DEFAULT 1,
+            scorecard_json    VARCHAR,
+            qa_pairs_json     VARCHAR,
+            executive_summary VARCHAR,
+            bull_case         VARCHAR,
+            bear_case         VARCHAR,
+            key_catalysts     VARCHAR DEFAULT '[]',
+            conviction_score  DOUBLE DEFAULT 0.5,
+            total_tokens      INTEGER DEFAULT 0
         );
     """)
 
@@ -365,6 +428,9 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
 
     # ---- news_articles: source column ----
     _add_col("news_articles", "source", "VARCHAR DEFAULT 'yfinance'")
+
+    # ---- discovered_tickers: source_url column ----
+    _add_col("discovered_tickers", "source_url", "VARCHAR DEFAULT ''")
 
     # ---- technicals: Phase 8 expanded columns ----
     tech_cols = [
