@@ -1,30 +1,64 @@
 # Phase 3 — Trading Engine
 
-> **Goal**: Build the buy/sell execution engine that acts on pipeline decisions.
-> Starts with paper trading (simulated), upgrades to live trading via broker API.
+> **Goal**: Execute buy/sell decisions produced by the Deep Analysis pipeline.
+> Starts with paper trading (simulated), upgrades to live trading via Alpaca API.
 > Includes position tracking, price trigger monitoring, and portfolio management.
 
 ---
 
-## 3.1 — Architecture Overview
+## What Already Exists
+
+| Component | File | Status |
+|-----------|------|--------|
+| `FinalDecision` model | `app/models/decision.py` | ✅ Built |
+| Deep Analysis → `TickerDossier` | `app/services/deep_analysis_service.py` | ✅ Built |
+| Autonomous Loop orchestrator | `app/services/autonomous_loop.py` | ✅ Built |
+| `AutonomousLoop.run_full_loop()` | Calls Discovery → Import → Deep Analysis | ✅ Built |
+| Live price quotes | `GET /api/quotes` (batch yfinance) | ✅ Built |
+| Risk params config | `app/user_config/risk_params.json` | ✅ Built |
+| Frontend Autobot Monitor | `app/static/terminal_app.js` | ✅ Built |
+
+---
+
+## 3.1 — Architecture
+
+The trading engine plugs into the **existing autonomous loop** as Step 4:
 
 ```
-FinalDecision (from Pipeline)
+┌─────────────────────────────────────────────────────────────┐
+│  AutonomousLoop.run_full_loop()                              │
+│                                                              │
+│  Step 1: Discovery         ← already built                  │
+│  Step 2: Auto-Import       ← already built                  │
+│  Step 3: Deep Analysis     ← already built                  │
+│  Step 4: Trade Execution   ← THIS PHASE                     │
+│     │                                                        │
+│     ├─ Read each ticker's TickerDossier                      │
+│     ├─ SignalRouter converts conviction → Order              │
+│     ├─ PaperTrader/LiveTrader executes order                 │
+│     └─ PriceMonitor sets stop-loss / take-profit triggers    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Signal Flow
+
+```
+TickerDossier (conviction_score, bull/bear case)
         │
         ▼
-┌──────────────────────┐
-│  Signal Router       │  BUY → Order Manager (open position)
-│                      │  SELL → Order Manager (close position)
-│                      │  HOLD → Price Monitor (set/update triggers)
-└──────────┬───────────┘
+┌──────────────────────────┐
+│  SignalRouter             │  conviction ≥ 0.7 → BUY order
+│  (app/engine/             │  conviction ≤ 0.3 → SELL order
+│   signal_router.py)       │  0.3 < conv < 0.7 → HOLD (update triggers)
+└──────────┬───────────────┘
            │
     ┌──────▼──────────────────────────────────────────┐
     │              ORDER MANAGER                       │
     │  ┌─────────────┐  ┌─────────────┐               │
-    │  │ Paper Mode   │  │ Live Mode   │               │
-    │  │ (Simulated)  │  │ (Broker API)│               │
+    │  │ PaperTrader  │  │ LiveTrader  │               │
+    │  │ (Phase 3a)   │  │ (Phase 3b)  │               │
     │  └─────────────┘  └─────────────┘               │
-    │       Implements same OrderExecutor interface     │
+    │       Both implement OrderExecutor protocol      │
     └──────────────┬──────────────────────────────────┘
                    │
     ┌──────────────▼──────────────────────────────────┐
@@ -36,86 +70,21 @@ FinalDecision (from Pipeline)
                    │
     ┌──────────────▼──────────────────────────────────┐
     │         PRICE TRIGGER MONITOR                    │
-    │  • Stop-loss triggers                            │
-    │  • Take-profit triggers                          │
+    │  • Stop-loss / take-profit triggers              │
     │  • Trailing stop triggers                        │
-    │  • Entry price triggers (buy limit orders)       │
+    │  • Checks every 60s via existing /api/quotes     │
     └─────────────────────────────────────────────────┘
 ```
 
----
-
-## 3.2 — Order Execution
-
-### OrderExecutor Interface
-
-```python
-class OrderExecutor(Protocol):
-    """Common interface for paper and live trading."""
-
-    async def buy(self, ticker: str, qty: int, price: float,
-                  order_type: str = "market") -> Order: ...
-
-    async def sell(self, ticker: str, qty: int, price: float,
-                   order_type: str = "market") -> Order: ...
-
-    async def get_account_balance(self) -> float: ...
-
-    async def get_positions(self) -> list[Position]: ...
-```
-
-### Paper Trading (Phase 3a — Build First)
-
-```python
-class PaperTrader(OrderExecutor):
-    """Simulated trading against live market prices."""
-
-    def __init__(self, starting_balance: float = 10000.0):
-        self.balance = starting_balance
-        self.positions: dict[str, Position] = {}
-        self.order_history: list[Order] = []
-
-    async def buy(self, ticker, qty, price, order_type="market"):
-        """
-        1. Check we have enough balance
-        2. Deduct cost from balance
-        3. Add to positions
-        4. Record in order_history
-        5. Persist to DuckDB
-        """
-
-    async def sell(self, ticker, qty, price, order_type="market"):
-        """
-        1. Check we have the position
-        2. Calculate P&L
-        3. Add proceeds to balance
-        4. Remove/reduce position
-        5. Record in order_history
-        6. Persist to DuckDB
-        """
-```
-
-### Live Trading (Phase 3b — Future)
-
-```python
-class LiveTrader(OrderExecutor):
-    """Real trading via broker API (Alpaca, IBKR, etc.)"""
-    # Implementation deferred — paper trading validates the logic first
-    # Will use Alpaca Trade API (most common for algo trading):
-    #   pip install alpaca-trade-api
-    #   Supports: market, limit, stop, stop-limit orders
-    #   Paper trading mode built into Alpaca (free, no real money)
-```
-
-> **Broker recommendation**: Start with **Alpaca** — they have a free paper trading
-> API that works identically to their live API. This lets us validate the
-> `LiveTrader` implementation without risking real money.
+> [!IMPORTANT]
+> The SignalRouter reads **TickerDossier** (from deep analysis), NOT the old `FinalDecision`.
+> This is a key change from the original plan — the dossier's `conviction_score` + `bull_case`/`bear_case` are richer signals.
 
 ---
 
-## 3.3 — Position Tracking
+## 3.2 — New Files to Create
 
-### Data Models
+### `app/models/trading.py` — Pydantic models
 
 ```python
 class Position(BaseModel):
@@ -125,13 +94,11 @@ class Position(BaseModel):
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
     unrealized_pnl_pct: float = 0.0
+    stop_loss: float = 0.0           # auto-set from dossier
+    take_profit: float = 0.0
+    trailing_stop_pct: float = 0.0   # e.g. 5.0 = sell if drops 5% from peak
     opened_at: datetime
     last_updated: datetime
-
-    # From FinalDecision
-    stop_loss: float = 0.0
-    take_profit: float = 0.0
-    trailing_stop_pct: float = 0.0   # e.g., 5.0 = sell if drops 5% from peak
 
 class Order(BaseModel):
     id: str                            # UUID
@@ -143,133 +110,68 @@ class Order(BaseModel):
     status: Literal["pending", "filled", "cancelled", "failed"]
     filled_at: datetime | None = None
     created_at: datetime
-
-    # Link to the decision that triggered this order
-    decision_signal: str = ""          # BUY/SELL
-    decision_confidence: float = 0.0
+    # Link to the dossier that triggered this order
+    conviction_score: float = 0.0
+    signal: str = ""                   # BUY/SELL/HOLD
 
 class PortfolioSnapshot(BaseModel):
     timestamp: datetime
     cash_balance: float
     total_positions_value: float
     total_portfolio_value: float
-    realized_pnl: float               # Cumulative
-    unrealized_pnl: float             # Current
-    positions: list[Position]
-```
+    realized_pnl: float               # cumulative
+    unrealized_pnl: float             # current
 
----
-
-## 3.4 — Signal Router
-
-The **Signal Router** converts `FinalDecision` output into actionable orders.
-
-```python
-class SignalRouter:
-    """Routes pipeline decisions to order execution."""
-
-    def __init__(self, executor: OrderExecutor, risk_params: dict):
-        self.executor = executor
-        self.risk_params = risk_params
-
-    async def process_decision(self, decision: FinalDecision) -> Order | None:
-        """
-        BUY Decision:
-            1. Check if we already hold this ticker
-            2. Calculate position size from decision.suggested_position_size_pct
-            3. Apply risk limits (max_risk_per_trade, max_position_size)
-            4. Check portfolio allocation limit
-            5. Calculate qty = (portfolio * size_pct) / price
-            6. Execute buy order
-            7. Set stop-loss and take-profit price triggers
-
-        SELL Decision:
-            1. Check if we hold this ticker
-            2. If yes → execute sell (full exit)
-            3. If no → do nothing (can't short in paper mode)
-
-        HOLD Decision:
-            1. Update price triggers if decision suggests new levels
-            2. Log the hold reasoning
-        """
-```
-
-### Position Sizing Calculation
-
-```python
-def calculate_position_size(
-    decision: FinalDecision,
-    portfolio_value: float,
-    risk_params: dict,
-) -> int:
-    """
-    Steps:
-        1. Get suggested_position_size_pct from decision (LLM suggested)
-        2. Cap at risk_params["max_position_size_pct"]
-        3. Calculate dollar amount = portfolio_value × capped_pct
-        4. Calculate qty = dollar_amount / current_price
-        5. Verify total allocation doesn't exceed max_portfolio_allocation_pct
-        6. Return integer qty (floor)
-    """
-```
-
----
-
-## 3.5 — Price Trigger Monitor
-
-### What it does
-
-Polls live prices periodically and checks against active triggers.
-When a trigger fires, it automatically executes the corresponding order.
-
-### Trigger Types
-
-| Trigger | Description | Action |
-|---------|-------------|--------|
-| **Stop-Loss** | Price drops below `stop_loss` | Auto-SELL entire position |
-| **Take-Profit** | Price rises above `take_profit` | Auto-SELL entire position |
-| **Trailing Stop** | Price drops X% from its high-water mark | Auto-SELL |
-| **Entry Limit** | Price drops to `suggested_entry_price` | Auto-BUY |
-
-```python
 class PriceTrigger(BaseModel):
-    id: str                             # UUID
+    id: str
     ticker: str
-    trigger_type: Literal["stop_loss", "take_profit", "trailing_stop", "entry_limit"]
+    trigger_type: Literal["stop_loss", "take_profit", "trailing_stop"]
     trigger_price: float
-    high_water_mark: float = 0.0       # For trailing stops
-    trailing_pct: float = 0.0          # For trailing stops
-    action: Literal["buy", "sell"]
+    high_water_mark: float = 0.0
+    trailing_pct: float = 0.0
+    action: Literal["sell"]            # triggers always sell for safety
     qty: int
     status: Literal["active", "triggered", "cancelled"]
     created_at: datetime
-
-class PriceMonitor:
-    """Polls prices and fires triggers."""
-
-    POLL_INTERVAL_SECONDS = 60  # Check every minute during market hours
-
-    async def check_triggers(self):
-        """
-        1. Get all active triggers from DuckDB
-        2. Fetch current prices via /api/quotes (our existing batch endpoint)
-        3. For each trigger:
-           - Update trailing stop high-water marks
-           - Check if trigger condition is met
-           - If triggered → execute order via SignalRouter
-           - Update trigger status
-        """
-
-    def is_market_open(self) -> bool:
-        """Check if US stock market is currently open (9:30 AM - 4:00 PM ET)."""
 ```
+
+### `app/engine/signal_router.py` — Converts dossiers to orders
+
+Key logic:
+
+1. Read `conviction_score` from latest dossier
+2. Read `risk_params.json` for position sizing limits
+3. Calculate position size: `portfolio_value × suggested_pct / current_price`
+4. Cap at `max_position_size_pct` and `max_portfolio_allocation_pct`
+5. If BUY: execute order, set stop-loss (entry × (1 - stop_loss_pct)), set take-profit
+6. If SELL: close entire position if currently held
+7. If HOLD: update/maintain existing triggers
+
+### `app/services/paper_trader.py` — Simulated execution
+
+```python
+class PaperTrader:
+    def __init__(self, starting_balance: float = 10_000.0): ...
+    async def buy(self, ticker, qty, price) -> Order: ...
+    async def sell(self, ticker, qty, price) -> Order: ...
+    def get_portfolio(self) -> PortfolioSnapshot: ...
+    def get_positions(self) -> list[Position]: ...
+```
+
+All state persisted to DuckDB — survives server restarts.
+
+### `app/services/price_monitor.py` — Trigger checker
+
+Polls `GET /api/quotes` every 60s during market hours.
+Checks all active triggers, fires auto-sells when conditions met.
 
 ---
 
-## 3.6 — DuckDB Persistence
+## 3.3 — DuckDB Tables
+
+Add to `app/database.py`:
 
 ```sql
--- Track all positions
 CREATE TABLE IF NOT EXISTS positions (
     ticker          VARCHAR PRIMARY KEY,
     qty             INTEGER NOT NULL,
@@ -281,22 +183,20 @@ CREATE TABLE IF NOT EXISTS positions (
     last_updated    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Full order history
 CREATE TABLE IF NOT EXISTS orders (
     id              VARCHAR PRIMARY KEY,
     ticker          VARCHAR NOT NULL,
-    side            VARCHAR NOT NULL,          -- 'buy' | 'sell'
+    side            VARCHAR NOT NULL,
     qty             INTEGER NOT NULL,
     price           DOUBLE NOT NULL,
     order_type      VARCHAR DEFAULT 'market',
     status          VARCHAR DEFAULT 'filled',
-    decision_signal VARCHAR DEFAULT '',
-    decision_confidence DOUBLE DEFAULT 0.0,
+    conviction_score DOUBLE DEFAULT 0.0,
+    signal          VARCHAR DEFAULT '',
     filled_at       TIMESTAMP,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Active price triggers
 CREATE TABLE IF NOT EXISTS price_triggers (
     id              VARCHAR PRIMARY KEY,
     ticker          VARCHAR NOT NULL,
@@ -310,7 +210,6 @@ CREATE TABLE IF NOT EXISTS price_triggers (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Portfolio snapshots for P&L tracking over time
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     timestamp            TIMESTAMP PRIMARY KEY,
     cash_balance         DOUBLE NOT NULL,
@@ -323,79 +222,84 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
 
 ---
 
-## 3.7 — API Endpoints
+## 3.4 — Integration with Autonomous Loop
 
-```
-# Portfolio
-GET  /api/portfolio                  → Current portfolio snapshot
-GET  /api/portfolio/history          → Portfolio value over time (for charts)
-GET  /api/portfolio/pnl              → Realized + unrealized P&L breakdown
+Modify `app/services/autonomous_loop.py`:
 
-# Positions
-GET  /api/positions                  → All open positions with live P&L
-POST /api/positions/{ticker}/close   → Manually close a position
-
-# Orders
-GET  /api/orders                     → Order history
-GET  /api/orders/{id}                → Single order details
-
-# Triggers
-GET  /api/triggers                   → Active price triggers
-POST /api/triggers                    → Manually create a trigger
-DELETE /api/triggers/{id}             → Cancel a trigger
-
-# Trading Mode
-GET  /api/trading/mode               → Current mode (paper/live)
-PUT  /api/trading/mode               → Switch mode (requires confirmation)
+```python
+# Step 4 — currently a placeholder, becomes:
+async def _do_trading(self) -> dict:
+    """Process dossiers through SignalRouter → PaperTrader."""
+    tickers = self.watchlist.get_active_tickers()
+    orders_placed = []
+    for ticker in tickers:
+        dossier = DeepAnalysisService.get_latest_dossier(ticker)
+        if not dossier:
+            continue
+        order = await self.signal_router.process_dossier(ticker, dossier)
+        if order:
+            orders_placed.append(order)
+    return {"orders": len(orders_placed), "details": orders_placed}
 ```
 
 ---
 
-## 3.8 — Frontend: Portfolio Dashboard
+## 3.5 — API Endpoints
 
-New dashboard sections:
+Add to `main.py`:
 
-### Portfolio Overview Card
+```
+GET  /api/portfolio              → Current cash + positions + total value
+GET  /api/portfolio/history      → Snapshots over time (for equity curve chart)
+GET  /api/positions              → All open positions with live P&L
+POST /api/positions/{ticker}/close → Manual close
+GET  /api/orders                 → Order history
+GET  /api/triggers               → Active price triggers
+PUT  /api/trading/mode           → Switch paper/live (requires confirmation)
+```
 
-- Total portfolio value (cash + positions)
-- Today's P&L (dollar + percentage)
-- Portfolio allocation pie chart
+---
 
-### Open Positions Table
+## 3.6 — Frontend: Portfolio Tab
 
-| Ticker | Qty | Entry | Current | P&L | P&L % | Stop | Target | Action |
-|--------|-----|-------|---------|-----|-------|------|--------|--------|
-| NVDA | 5 | $120.50 | $125.30 | +$24.00 | +3.98% | $115.00 | $140.00 | Close |
+Add a **"Portfolio"** tab to the Autobot Monitor page (alongside Scoreboard, Watchlist, Activity Log):
 
-### Order History
+| Section | Content |
+|---------|---------|
+| **Overview Card** | Total value, today's P&L ($, %), cash balance |
+| **Positions Table** | Ticker, Qty, Entry, Current, P&L, Stop, Target, Close button |
+| **Order History** | Sortable table with side, price, conviction, timestamp |
+| **Equity Curve** | Line chart of portfolio value over time |
 
-- Filterable table of all past orders
-- Each order links to the FinalDecision that triggered it
+---
 
-### Active Triggers
+## 3.7 — Safety Guardrails
 
-- Visual display of stop-loss, take-profit, trailing stop levels
-- Ability to modify or cancel
+| Guard | Description | Default |
+|-------|-------------|---------|
+| **Max position size** | Single position can't exceed X% of portfolio | 10% |
+| **Max portfolio allocation** | Total invested can't exceed X% of portfolio | 60% |
+| **Max orders/day** | Hard cap on daily order count | 10 |
+| **Daily loss limit** | Pause trading if losses exceed X% | 5% |
+| **Min conviction** | Only trade if conviction ≥ threshold | 0.70 |
+| **Cooldown** | Don't re-buy a ticker within X days of selling | 7 days |
 
-### Equity Curve Chart
-
-- Line chart of portfolio value over time
-- Benchmark comparison (S&P 500)
+All configurable via `risk_params.json`.
 
 ---
 
 ## Testing Plan
 
-1. **Unit tests** for position sizing calculation
-2. **Unit tests** for PaperTrader buy/sell/balance logic
-3. **Unit tests** for each trigger type (stop-loss, take-profit, trailing)
-4. **Integration test**: FinalDecision → SignalRouter → PaperTrader → DuckDB
-5. **Integration test**: PriceMonitor trigger firing → auto sell
-6. **Edge cases**: Insufficient balance, position not found, market closed
-7. **Paper trading backtest**: Feed historical decisions → verify P&L calculation
+1. **Unit**: Position sizing with various portfolio sizes and risk params
+2. **Unit**: PaperTrader buy/sell/balance math
+3. **Unit**: Each trigger type (stop-loss, take-profit, trailing stop)
+4. **Integration**: Dossier → SignalRouter → PaperTrader → DuckDB
+5. **Integration**: PriceMonitor triggers → auto-sell
+6. **Edge cases**: Insufficient balance, position not found, duplicate buy
+7. **End-to-end**: Run full autonomous loop with paper trading enabled
 
 ## Dependencies
 
-- Phase 1 (Discovery) + Phase 2 (Watchlist) must be complete
-- Existing: `FinalDecision`, `/api/quotes`, DuckDB, `risk_params.json`
-- Future: `alpaca-trade-api` (for live trading phase)
+- Existing: `TickerDossier`, `/api/quotes`, DuckDB, `risk_params.json`
+- New: None for paper trading
+- Future: `alpaca-py` for live trading (Phase 3b)

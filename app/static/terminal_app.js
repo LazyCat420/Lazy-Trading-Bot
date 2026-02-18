@@ -2330,6 +2330,15 @@ const AutobotMonitorPage = () => {
     const [wlAnalyzing, setWlAnalyzing] = useState(false);
     const [wlAnalyzingTicker, setWlAnalyzingTicker] = useState(null);
 
+    // ── Deep Analysis state ──
+    const [expandedWlTicker, setExpandedWlTicker] = useState(null);
+    const [dossierData, setDossierData] = useState(null);
+    const [dossierLoading, setDossierLoading] = useState(false);
+
+    // ── Autonomous Loop state ──
+    const [loopRunning, setLoopRunning] = useState(false);
+    const [loopStatus, setLoopStatus] = useState(null);
+
     const fetchWatchlist = useCallback(async () => {
         try {
             const [entriesRes, summaryRes] = await Promise.all([
@@ -2462,37 +2471,110 @@ const AutobotMonitorPage = () => {
         }
     };
 
-    const analyzeWatchlistTicker = async (ticker) => {
+    const deepAnalyzeTicker = async (ticker) => {
         setWlAnalyzingTicker(ticker);
         try {
-            await fetch(`/api/watchlist/analyze/${ticker}`, { method: "POST" });
+            console.log(`[DeepAnalysis] Running 4-layer funnel for ${ticker}...`);
+            const res = await fetch(`/api/analysis/deep/${ticker}`, { method: "POST" });
+            const body = await res.json();
+            console.log(`[DeepAnalysis] ${ticker} result:`, body);
+            if (body.status === "complete") {
+                // Fetch the full dossier (includes quant_scorecard, qa_pairs, etc.)
+                setExpandedWlTicker(ticker);
+                await fetchDossier(ticker);
+            }
             fetchWatchlist();
         } catch (e) {
-            console.error("Analyze watchlist ticker error:", e);
+            console.error("Deep analysis error:", e);
         } finally {
             setWlAnalyzingTicker(null);
         }
     };
 
-    const analyzeAllWatchlist = async () => {
+    const deepAnalyzeAll = async () => {
         setWlAnalyzing(true);
         try {
-            await fetch("/api/watchlist/analyze-all", { method: "POST" });
+            console.log("[DeepAnalysis] Running batch deep analysis...");
+            const res = await fetch("/api/analysis/deep-batch", { method: "POST" });
+            const body = await res.json();
+            console.log("[DeepAnalysis] Batch result:", body);
             fetchWatchlist();
         } catch (e) {
-            console.error("Analyze all error:", e);
+            console.error("Deep analyze all error:", e);
         } finally {
             setWlAnalyzing(false);
         }
     };
 
+    const fetchDossier = async (ticker) => {
+        setDossierLoading(true);
+        try {
+            const res = await fetch(`/api/dossiers/${ticker}`);
+            if (res.ok) {
+                const data = await res.json();
+                setDossierData(data);
+            } else {
+                setDossierData(null);
+            }
+        } catch (e) {
+            console.error("Fetch dossier error:", e);
+            setDossierData(null);
+        } finally {
+            setDossierLoading(false);
+        }
+    };
+
+    const toggleWlExpand = (ticker) => {
+        if (expandedWlTicker === ticker) {
+            setExpandedWlTicker(null);
+            setDossierData(null);
+        } else {
+            setExpandedWlTicker(ticker);
+            fetchDossier(ticker);
+        }
+    };
+
     const clearWatchlist = async () => {
-        if (!confirm("Clear all watchlist data? This cannot be undone.")) return;
+        if (!confirm("Clear all watchlist entries?")) return;
         try {
             await fetch("/api/watchlist/clear", { method: "POST" });
             fetchWatchlist();
         } catch (e) {
             console.error("Clear watchlist error:", e);
+        }
+    };
+
+    // ── Autonomous Full Loop ──
+    const runFullLoop = async () => {
+        if (loopRunning) return;
+        setLoopRunning(true);
+        setLoopStatus(null);
+        try {
+            const res = await fetch("/api/bot/run-loop", { method: "POST" });
+            if (!res.ok) {
+                const body = await res.json();
+                alert(body.detail || "Failed to start loop");
+                setLoopRunning(false);
+                return;
+            }
+            // Poll status every 2 seconds
+            const poll = setInterval(async () => {
+                try {
+                    const sr = await fetch("/api/bot/loop-status");
+                    const st = await sr.json();
+                    setLoopStatus(st);
+                    if (!st.running) {
+                        clearInterval(poll);
+                        setLoopRunning(false);
+                        fetchAll();  // refresh everything when done
+                    }
+                } catch (e) {
+                    console.error("Loop poll error:", e);
+                }
+            }, 2000);
+        } catch (e) {
+            console.error("Run full loop error:", e);
+            setLoopRunning(false);
         }
     };
 
@@ -2793,14 +2875,73 @@ const AutobotMonitorPage = () => {
                 React.createElement("div", { className: "flex items-center gap-3" },
                     React.createElement("span", { className: "material-symbols-outlined text-primary text-2xl" }, "precision_manufacturing"),
                     React.createElement("h2", { className: "text-white font-bold text-lg" }, "Autobot Monitor"),
-                    React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` }, stateLabel)
+                    React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${loopRunning ? "bg-green-500/20 text-green-400 animate-pulse" : isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` },
+                        loopRunning ? "LOOP RUNNING" : stateLabel
+                    )
                 ),
                 React.createElement("div", { className: "flex items-center gap-2" },
+                    // ── Run Full Loop — the primary action ──
+                    React.createElement("button", {
+                        onClick: runFullLoop,
+                        disabled: loopRunning,
+                        className: `flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${loopRunning
+                                ? "bg-green-500/20 text-green-400 border border-green-500/30 cursor-not-allowed"
+                                : "bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-400 hover:to-emerald-500 shadow-lg shadow-green-500/20"
+                            }`,
+                    },
+                        React.createElement("span", { className: `material-symbols-outlined text-[18px] ${loopRunning ? "animate-spin" : ""}` },
+                            loopRunning ? "progress_activity" : "rocket_launch"
+                        ),
+                        loopRunning ? "Running…" : "Run Full Loop"
+                    ),
                     React.createElement("button", {
                         onClick: fetchAll,
                         className: "icon-btn", title: "Refresh",
                     }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh")),
                 )
+            ),
+
+            // ── Loop Progress Panel (visible while running or just finished) ──
+            (loopRunning || (loopStatus && loopStatus.phase === "done")) && React.createElement("div", {
+                className: "mx-6 mt-3 p-4 rounded-xl border border-green-500/20 bg-green-500/5"
+            },
+                React.createElement("div", { className: "flex items-center gap-3 mb-3" },
+                    React.createElement("span", { className: `material-symbols-outlined text-green-400 ${loopRunning ? "animate-spin" : ""}` },
+                        loopRunning ? "progress_activity" : "check_circle"
+                    ),
+                    React.createElement("span", { className: "text-green-400 font-bold text-sm" },
+                        loopRunning ? "Autonomous Loop Running" : "Loop Complete"
+                    )
+                ),
+                // Phase progress indicators
+                loopStatus && React.createElement("div", { className: "flex items-center gap-4 mb-3" },
+                    ...["discovery", "import", "analysis"].map(phase => {
+                        const st = loopStatus.phases?.[phase];
+                        const icon = st === "done" ? "check_circle" : st === "running" ? "progress_activity" : st === "error" ? "error" : "circle";
+                        const color = st === "done" ? "text-green-400" : st === "running" ? "text-primary animate-spin" : st === "error" ? "text-red-400" : "text-text-muted";
+                        const label = phase === "discovery" ? "Discovery" : phase === "import" ? "Import" : "Deep Analysis";
+                        return React.createElement("div", { key: phase, className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: `material-symbols-outlined text-[16px] ${color}` }, icon),
+                            React.createElement("span", { className: `text-xs font-mono ${st === "running" ? "text-white" : "text-text-muted"}` }, label)
+                        );
+                    })
+                ),
+                // Log messages
+                loopStatus?.log?.length > 0 && React.createElement("div", {
+                    className: "max-h-32 overflow-y-auto space-y-0.5 text-[11px] font-mono text-text-muted bg-onyx-black/40 rounded-lg p-2"
+                },
+                    ...loopStatus.log.map((entry, i) =>
+                        React.createElement("div", { key: i },
+                            React.createElement("span", { className: "text-text-muted/50" }, `[${entry.time}] `),
+                            entry.message
+                        )
+                    )
+                ),
+                // Dismiss button when done
+                !loopRunning && loopStatus?.phase === "done" && React.createElement("button", {
+                    onClick: () => setLoopStatus(null),
+                    className: "mt-2 text-xs text-text-muted hover:text-white transition"
+                }, "Dismiss")
             ),
 
             // ── Scrollable content
@@ -2986,13 +3127,13 @@ const AutobotMonitorPage = () => {
                             )
                         ),
                         React.createElement("button", {
-                            onClick: analyzeAllWatchlist,
+                            onClick: deepAnalyzeAll,
                             disabled: wlAnalyzing || wlEntries.length === 0,
                             className: `px-4 py-2 rounded-lg font-bold text-sm transition-all ${wlAnalyzing ? "bg-blue-500/10 text-blue-400/50 cursor-wait" : "bg-blue-500/20 hover:bg-blue-500/30 text-blue-400"}`,
                         },
                             React.createElement("span", { className: "flex items-center gap-2" },
-                                React.createElement("span", { className: `material-symbols-outlined text-sm ${wlAnalyzing ? "animate-spin" : ""}` }, wlAnalyzing ? "progress_activity" : "play_circle"),
-                                wlAnalyzing ? "Analyzing All..." : "Analyze All"
+                                React.createElement("span", { className: `material-symbols-outlined text-sm ${wlAnalyzing ? "animate-spin" : ""}` }, wlAnalyzing ? "progress_activity" : "neurology"),
+                                wlAnalyzing ? "Deep Analyzing..." : "Deep Analyze All"
                             )
                         ),
                         React.createElement("button", {
@@ -3031,16 +3172,29 @@ const AutobotMonitorPage = () => {
                                     )
                                 ),
                                 React.createElement("tbody", null,
-                                    ...wlEntries.map((entry, i) => {
+                                    ...wlEntries.flatMap((entry, i) => {
                                         const confPct = ((entry.confidence || 0) * 100).toFixed(0);
                                         const isAnalyzingThis = wlAnalyzingTicker === entry.ticker;
-                                        return React.createElement("tr", {
+                                        const isExpanded = expandedWlTicker === entry.ticker;
+                                        const rows = [];
+
+                                        // ── Data row (clickable to expand)
+                                        rows.push(React.createElement("tr", {
                                             key: entry.ticker,
-                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`,
+                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors cursor-pointer ${isExpanded ? "bg-onyx-surface" : i % 2 === 0 ? "" : "bg-white/[0.01]"}`,
+                                            onClick: () => toggleWlExpand(entry.ticker),
                                         },
                                             React.createElement("td", { className: "px-4 py-3" },
                                                 React.createElement("div", { className: "flex items-center gap-2" },
-                                                    React.createElement("a", { href: `https://finviz.com/quote.ashx?t=${entry.ticker}`, target: "_blank", rel: "noopener noreferrer", className: "text-white font-bold font-mono text-sm hover:text-primary transition-colors" }, `$${entry.ticker}`),
+                                                    React.createElement("span", {
+                                                        className: `material-symbols-outlined text-[14px] transition-transform duration-200 text-text-muted ${isExpanded ? "rotate-90" : ""}`,
+                                                    }, "chevron_right"),
+                                                    React.createElement("a", {
+                                                        href: `https://finviz.com/quote.ashx?t=${entry.ticker}`,
+                                                        target: "_blank", rel: "noopener noreferrer",
+                                                        className: "text-white font-bold font-mono text-sm hover:text-primary transition-colors",
+                                                        onClick: (e) => e.stopPropagation(),
+                                                    }, `$${entry.ticker}`),
                                                     sentimentBadge(entry.sentiment_hint)
                                                 )
                                             ),
@@ -3064,21 +3218,204 @@ const AutobotMonitorPage = () => {
                                             React.createElement("td", { className: "text-center px-4 py-3" },
                                                 React.createElement("div", { className: "flex items-center justify-center gap-1" },
                                                     React.createElement("button", {
-                                                        onClick: () => analyzeWatchlistTicker(entry.ticker),
+                                                        onClick: (e) => { e.stopPropagation(); deepAnalyzeTicker(entry.ticker); },
                                                         disabled: isAnalyzingThis || wlAnalyzing,
-                                                        className: "icon-btn", title: "Run Analysis",
-                                                    }, React.createElement("span", { className: `material-symbols-outlined text-[16px] ${isAnalyzingThis ? "animate-spin" : ""}` }, isAnalyzingThis ? "progress_activity" : "play_circle")),
+                                                        className: "icon-btn", title: "Deep Analyze (4-layer funnel)",
+                                                    }, React.createElement("span", { className: `material-symbols-outlined text-[16px] ${isAnalyzingThis ? "animate-spin" : ""}` }, isAnalyzingThis ? "progress_activity" : "neurology")),
                                                     React.createElement("button", {
-                                                        onClick: () => navigate(`/analysis/${entry.ticker}`),
+                                                        onClick: (e) => { e.stopPropagation(); navigate(`/analysis/${entry.ticker}`); },
                                                         className: "icon-btn", title: "View Details",
                                                     }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "open_in_new")),
                                                     React.createElement("button", {
-                                                        onClick: () => removeFromWatchlist(entry.ticker),
+                                                        onClick: (e) => { e.stopPropagation(); removeFromWatchlist(entry.ticker); },
                                                         className: "icon-btn danger", title: "Remove",
                                                     }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "close"))
                                                 )
                                             )
-                                        );
+                                        ));
+
+                                        // ── Expanded dossier row
+                                        if (isExpanded) {
+                                            const d = dossierData;
+                                            rows.push(React.createElement("tr", { key: `${entry.ticker}-dossier`, className: "border-b border-primary/20" },
+                                                React.createElement("td", { colSpan: 7, className: "px-0 py-0" },
+
+                                                    // Loading state
+                                                    dossierLoading && React.createElement("div", { className: "p-6 flex items-center gap-2 text-text-muted text-xs" },
+                                                        React.createElement("span", { className: "material-symbols-outlined animate-spin text-sm" }, "progress_activity"),
+                                                        "Loading dossier..."
+                                                    ),
+
+                                                    // No dossier state
+                                                    !dossierLoading && !d && React.createElement("div", { className: "p-6 text-center" },
+                                                        React.createElement("span", { className: "material-symbols-outlined text-3xl text-text-muted mb-2 block" }, "neurology"),
+                                                        React.createElement("p", { className: "text-sm text-text-muted" }, "No deep analysis yet"),
+                                                        React.createElement("p", { className: "text-xs text-text-muted mt-1 mb-3" }, "Run Deep Analysis to generate a full dossier with 4-layer quant + AI analysis"),
+                                                        React.createElement("button", {
+                                                            onClick: () => deepAnalyzeTicker(entry.ticker),
+                                                            disabled: isAnalyzingThis,
+                                                            className: "px-4 py-2 rounded-lg font-bold text-sm bg-primary/20 hover:bg-primary/30 text-primary transition-all",
+                                                        }, React.createElement("span", { className: "flex items-center gap-2" },
+                                                            React.createElement("span", { className: "material-symbols-outlined text-sm" }, "neurology"),
+                                                            "Run Deep Analysis"
+                                                        ))
+                                                    ),
+
+                                                    // Dossier content
+                                                    !dossierLoading && d && React.createElement("div", { className: "p-5 bg-onyx-panel/50 space-y-4" },
+
+                                                        // ── Conviction Score + Signal Summary header
+                                                        React.createElement("div", { className: "flex items-center gap-4 pb-4 border-b border-border-dark" },
+                                                            React.createElement("div", { className: "flex flex-col items-center gap-1" },
+                                                                React.createElement("div", {
+                                                                    className: `text-3xl font-bold font-mono ${(d.conviction_score || 0) > 0.6 ? "text-green-400" : (d.conviction_score || 0) > 0.35 ? "text-yellow-400" : "text-red-400"}`
+                                                                }, `${((d.conviction_score || 0) * 100).toFixed(0)}%`),
+                                                                React.createElement("div", { className: "text-[10px] text-text-muted uppercase tracking-wider" }, "Conviction")
+                                                            ),
+                                                            React.createElement("div", { className: "flex-1" },
+                                                                React.createElement("div", { className: "h-2 rounded-full bg-onyx-black/60 overflow-hidden mb-2" },
+                                                                    React.createElement("div", {
+                                                                        className: `h-full rounded-full transition-all duration-700 ${(d.conviction_score || 0) > 0.6 ? "bg-gradient-to-r from-green-500 to-green-400" : (d.conviction_score || 0) > 0.35 ? "bg-gradient-to-r from-yellow-500 to-yellow-400" : "bg-gradient-to-r from-red-500 to-red-400"}`,
+                                                                        style: { width: `${((d.conviction_score || 0) * 100)}%` }
+                                                                    })
+                                                                ),
+                                                                d.signal_summary && React.createElement("p", { className: "text-xs text-text-secondary italic" }, d.signal_summary)
+                                                            )
+                                                        ),
+
+                                                        // ── Executive Summary
+                                                        d.executive_summary && React.createElement("div", null,
+                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-primary" }, "summarize"),
+                                                                "Executive Summary"
+                                                            ),
+                                                            React.createElement("p", { className: "text-sm text-text-secondary leading-relaxed" }, d.executive_summary)
+                                                        ),
+
+                                                        // ── Bull / Bear Case side by side
+                                                        (d.bull_case || d.bear_case) && React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                                                            d.bull_case && React.createElement("div", { className: "rounded-lg bg-green-500/5 border border-green-500/15 p-3" },
+                                                                React.createElement("h4", { className: "text-[10px] text-green-400 uppercase tracking-wider mb-1.5 flex items-center gap-1" },
+                                                                    React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "trending_up"),
+                                                                    "Bull Case"
+                                                                ),
+                                                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" }, d.bull_case)
+                                                            ),
+                                                            d.bear_case && React.createElement("div", { className: "rounded-lg bg-red-500/5 border border-red-500/15 p-3" },
+                                                                React.createElement("h4", { className: "text-[10px] text-red-400 uppercase tracking-wider mb-1.5 flex items-center gap-1" },
+                                                                    React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "trending_down"),
+                                                                    "Bear Case"
+                                                                ),
+                                                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" }, d.bear_case)
+                                                            )
+                                                        ),
+
+                                                        // ── Key Catalysts
+                                                        d.key_catalysts && d.key_catalysts.length > 0 && React.createElement("div", null,
+                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-yellow-400" }, "bolt"),
+                                                                "Key Catalysts"
+                                                            ),
+                                                            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                                                                ...d.key_catalysts.map((c, ci) =>
+                                                                    React.createElement("span", {
+                                                                        key: ci,
+                                                                        className: "px-2.5 py-1 rounded-md bg-yellow-500/10 text-yellow-300 text-[11px] border border-yellow-500/15"
+                                                                    }, c)
+                                                                )
+                                                            )
+                                                        ),
+
+                                                        // ── Anomaly Flags
+                                                        d.scorecard && d.scorecard.flags && d.scorecard.flags.length > 0 && React.createElement("div", null,
+                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-orange-400" }, "warning"),
+                                                                "Anomaly Flags"
+                                                            ),
+                                                            React.createElement("div", { className: "flex flex-wrap gap-1.5" },
+                                                                ...d.scorecard.flags.map((f, fi) =>
+                                                                    React.createElement("span", {
+                                                                        key: fi,
+                                                                        className: "px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-300 text-[10px] font-mono border border-orange-500/15"
+                                                                    }, f)
+                                                                )
+                                                            )
+                                                        ),
+
+                                                        // ── Q&A Pairs
+                                                        d.qa_pairs && d.qa_pairs.length > 0 && React.createElement("div", null,
+                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-blue-400" }, "forum"),
+                                                                `Research Q&A (${d.qa_pairs.length})`
+                                                            ),
+                                                            React.createElement("div", { className: "space-y-2" },
+                                                                ...d.qa_pairs.map((qa, qi) => {
+                                                                    const srcColor = qa.source === "news" ? "text-blue-400 bg-blue-500/10 border-blue-500/15"
+                                                                        : qa.source === "transcripts" ? "text-red-400 bg-red-500/10 border-red-500/15"
+                                                                            : qa.source === "fundamentals" ? "text-purple-400 bg-purple-500/10 border-purple-500/15"
+                                                                                : qa.source === "technicals" ? "text-cyan-400 bg-cyan-500/10 border-cyan-500/15"
+                                                                                    : "text-orange-400 bg-orange-500/10 border-orange-500/15";
+                                                                    const confColor = qa.confidence === "high" ? "text-green-400" : qa.confidence === "medium" ? "text-yellow-400" : "text-red-400";
+                                                                    return React.createElement("div", {
+                                                                        key: qi,
+                                                                        className: "rounded-lg bg-onyx-surface/60 p-3 border-l-2 border-primary/30"
+                                                                    },
+                                                                        React.createElement("div", { className: "flex items-center gap-2 mb-1.5" },
+                                                                            React.createElement("span", { className: "text-xs text-white font-bold flex-1" }, `Q: ${qa.question}`),
+                                                                            React.createElement("span", { className: `px-1.5 py-0.5 rounded text-[9px] font-mono border ${srcColor}` }, qa.source),
+                                                                            React.createElement("span", { className: `text-[9px] font-mono ${confColor}` }, qa.confidence)
+                                                                        ),
+                                                                        React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed pl-2 border-l border-border-dark ml-1" }, qa.answer)
+                                                                    );
+                                                                })
+                                                            )
+                                                        ),
+
+                                                        // ── Quant Scorecard metrics
+                                                        d.scorecard && React.createElement("div", null,
+                                                            React.createElement("h4", { className: "text-[10px] text-text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5" },
+                                                                React.createElement("span", { className: "material-symbols-outlined text-[14px] text-primary" }, "analytics"),
+                                                                "Quant Scorecard"
+                                                            ),
+                                                            React.createElement("div", { className: "grid grid-cols-4 gap-2" },
+                                                                ...[
+                                                                    ["Z-Score (20d)", d.scorecard.z_score_20d, ""],
+                                                                    ["Bollinger %B", d.scorecard.bollinger_pct_b, ""],
+                                                                    ["Sharpe", d.scorecard.sharpe_ratio, ""],
+                                                                    ["Sortino", d.scorecard.sortino_ratio, ""],
+                                                                    ["Calmar", d.scorecard.calmar_ratio, ""],
+                                                                    ["Omega", d.scorecard.omega_ratio, ""],
+                                                                    ["Kelly ½", d.scorecard.half_kelly, "%"],
+                                                                    ["VaR 95%", d.scorecard.var_95, "%"],
+                                                                    ["CVaR 95%", d.scorecard.cvar_95, "%"],
+                                                                    ["Max DD", d.scorecard.max_drawdown, "%"],
+                                                                    ["Price %ile", d.scorecard.percentile_rank_price, ""],
+                                                                    ["Volume %ile", d.scorecard.percentile_rank_volume, ""],
+                                                                ].map(([label, val, suffix], mi) =>
+                                                                    React.createElement("div", {
+                                                                        key: mi,
+                                                                        className: "rounded-md bg-onyx-surface/60 p-2 text-center border border-border-dark/50"
+                                                                    },
+                                                                        React.createElement("div", { className: "text-xs font-mono text-white font-bold" },
+                                                                            val != null ? `${Number(val).toFixed(2)}${suffix}` : "—"
+                                                                        ),
+                                                                        React.createElement("div", { className: "text-[9px] text-text-muted mt-0.5" }, label)
+                                                                    )
+                                                                )
+                                                            )
+                                                        ),
+
+                                                        // ── Metadata footer
+                                                        React.createElement("div", { className: "flex items-center justify-between text-[10px] text-text-muted pt-3 border-t border-border-dark" },
+                                                            d.total_tokens > 0 && React.createElement("span", null, `${d.total_tokens.toLocaleString()} tokens used`),
+                                                            d.generated_at && React.createElement("span", null, `Generated: ${fmt.ago(d.generated_at)}`)
+                                                        )
+                                                    )
+                                                )
+                                            ));
+                                        }
+
+                                        return rows;
                                     })
                                 )
                             )

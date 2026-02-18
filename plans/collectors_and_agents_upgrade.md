@@ -1,7 +1,40 @@
-# Collectors & Agents — Comprehensive Upgrade Plan
+# Phase 5 — Collectors & Agents Upgrade
 
-> Full gap analysis and upgrade specs for every collector and agent.
+> **Goal**: Expand all collectors to pull maximum data and upgrade all agents
+> to analyze it with institutional-grade depth.
 > Research-backed: web searches + programmatic audit of pandas-ta (154 indicators).
+
+> [!NOTE]
+> This phase is **enhancement**, not blocking. The pipeline already works end-to-end
+> with Discovery → Watchlist → Deep Analysis → Trading (Phase 3).
+> These upgrades make the AI's analysis richer and more accurate.
+
+---
+
+## What Already Exists
+
+| Component | File | Status |
+|-----------|------|--------|
+| Technical collector (7 indicators) | `app/collectors/technical_computer.py` | ✅ Basic |
+| Fundamental collector (24 metrics) | `app/collectors/yfinance_collector.py` | ✅ Basic |
+| News collector (yFinance only) | `app/collectors/news_collector.py` | ✅ Basic |
+| YouTube collector | `app/collectors/youtube_collector.py` | ✅ Basic |
+| Technical agent | `app/agents/technical_agent.py` | ✅ Basic |
+| Fundamental agent | `app/agents/fundamental_agent.py` | ✅ Basic |
+| Sentiment agent | `app/agents/sentiment_agent.py` | ✅ Basic |
+| Risk agent | `app/agents/risk_agent.py` | ✅ Basic |
+| DuckDB persistence | `app/database.py` | ✅ Built |
+| Deep Analysis (4-layer funnel) | `app/services/deep_analysis_service.py` | ✅ Built |
+
+### What This Phase Adds
+
+| Upgrade | Impact |
+|---------|--------|
+| 154 pandas-ta indicators (from 7) | Technical agent sees full picture |
+| Balance sheet, cash flow, analyst, insider, earnings data | Fundamental agent gets Wall Street-grade data |
+| Google News RSS, SEC EDGAR filings | 5x more news sources |
+| Full YouTube transcripts (no truncation) | Sentiment agent reads everything |
+| Quantitative risk metrics (Sharpe, VaR, Beta, etc.) | Risk agent uses real math |
 
 ---
 

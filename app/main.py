@@ -881,3 +881,37 @@ async def get_discovery_transcripts(ticker: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
+# ══════════════════════════════════════════════════════════════════════
+# BOT CONTROL API — Autonomous Full Loop
+# ══════════════════════════════════════════════════════════════════════
+
+from app.services.autonomous_loop import AutonomousLoop  # noqa: E402
+
+_loop = AutonomousLoop()
+_loop_task: asyncio.Task | None = None
+
+
+@app.post("/api/bot/run-loop")
+async def run_full_loop() -> dict:
+    """Trigger the full autonomous loop: Discovery → Import → Deep Analysis."""
+    global _loop_task  # noqa: PLW0603
+
+    if _loop._state["running"]:
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    async def _run() -> None:
+        try:
+            await _loop.run_full_loop()
+        except Exception:
+            logger.exception("[AutoLoop] Unhandled error in background loop")
+
+    _loop_task = asyncio.create_task(_run())
+    return {"status": "started", "message": "Full loop is running in background"}
+
+
+@app.get("/api/bot/loop-status")
+async def get_loop_status() -> dict:
+    """Poll the current state of the autonomous loop."""
+    return _loop.get_status()
+
