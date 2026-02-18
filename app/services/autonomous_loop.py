@@ -1,6 +1,6 @@
 """Autonomous Loop — one-call orchestrator for the full trading bot pipeline.
 
-Chains:  Discovery → Auto-Import → Deep Analysis → (Future) Trading
+Chains:  Discovery → Auto-Import → Deep Analysis → Trading
 """
 
 from __future__ import annotations
@@ -9,8 +9,11 @@ import time
 from datetime import datetime
 from typing import Any
 
+from app.engine.signal_router import SignalRouter
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.discovery_service import DiscoveryService
+from app.services.paper_trader import PaperTrader
+from app.services.price_monitor import PriceMonitor
 from app.services.watchlist_manager import WatchlistManager
 from app.utils.logger import logger
 
@@ -22,6 +25,9 @@ class AutonomousLoop:
         self.discovery = DiscoveryService()
         self.watchlist = WatchlistManager()
         self.deep_analysis = DeepAnalysisService()
+        self.signal_router = SignalRouter()
+        self.paper_trader = PaperTrader()
+        self.price_monitor = PriceMonitor(self.paper_trader)
 
         # Live state the frontend can poll
         self._state: dict[str, Any] = {
@@ -83,9 +89,13 @@ class AutonomousLoop:
         )
         report["phases"]["analysis"] = analysis_result
 
-        # ── Step 4: Trading (placeholder) ─────────────────────────
-        self._log("Phase 3 Trading Engine not built yet — skipping")
-        report["phases"]["trading"] = {"status": "skipped", "reason": "Phase 3 not implemented"}
+        # ── Step 4: Trading (Signal Router + Paper Trader) ─────────
+        trading_result = await self._run_phase(
+            "trading",
+            "Processing signals through paper trader…",
+            self._do_trading,
+        )
+        report["phases"]["trading"] = trading_result
 
         # ── Done ──────────────────────────────────────────────────
         elapsed = round(time.time() - t0, 1)
@@ -158,6 +168,120 @@ class AutonomousLoop:
             "analyzed": len(dossiers),
             "total": len(tickers),
             "results": summaries,
+        }
+
+    async def _do_trading(self) -> dict:
+        """Step 4: Route dossier signals through paper trader."""
+        tickers = self.watchlist.get_active_tickers()
+        if not tickers:
+            self._log("No active tickers for trading")
+            return {"orders": 0, "tickers": []}
+
+        orders_placed = []
+        orders_today = self.paper_trader.get_orders_today_count()
+        daily_pnl = self.paper_trader.get_daily_pnl_pct()
+        portfolio = self.paper_trader.get_portfolio()
+
+        # ---- Check triggers first ----
+        triggered = await self.price_monitor.check_triggers()
+        if triggered:
+            self._log(f"{len(triggered)} price triggers fired")
+
+        # ---- Process each ticker through signal router ----
+        for ticker in tickers:
+            try:
+                dossier_data = DeepAnalysisService.get_latest_dossier(ticker)
+                if not dossier_data:
+                    continue
+
+                conviction = dossier_data.get("conviction_score", 0.5)
+
+                # Get current price
+                from app.main import _fetch_one_quote
+                quote = _fetch_one_quote(ticker)
+                current_price = quote.get("price") if quote else None
+                if not current_price:
+                    self._log(f"{ticker}: no price available, skipping")
+                    continue
+
+                # Check existing position
+                positions = portfolio.get("positions", [])
+                existing_qty = 0
+                for p in positions:
+                    if p["ticker"] == ticker:
+                        existing_qty = p["qty"]
+                        break
+
+                last_sold = self.paper_trader.get_last_sell_date(ticker)
+
+                # Route the signal
+                action = self.signal_router.evaluate(
+                    ticker=ticker,
+                    conviction_score=conviction,
+                    current_price=current_price,
+                    cash_balance=portfolio["cash_balance"],
+                    total_portfolio_value=portfolio["total_portfolio_value"],
+                    existing_position_qty=existing_qty,
+                    orders_today=orders_today,
+                    daily_pnl_pct=daily_pnl,
+                    last_sold_date=last_sold,
+                )
+
+                if not action:
+                    continue
+
+                # Execute the order
+                if action["side"] == "buy":
+                    order = self.paper_trader.buy(
+                        ticker=action["ticker"],
+                        qty=action["qty"],
+                        price=action["price"],
+                        conviction_score=action["conviction"],
+                        signal=action["signal"],
+                    )
+                    if order:
+                        # Set triggers for new position
+                        self.paper_trader.set_triggers_for_position(
+                            ticker=ticker,
+                            entry_price=action["price"],
+                            qty=action["qty"],
+                        )
+                else:
+                    order = self.paper_trader.sell(
+                        ticker=action["ticker"],
+                        qty=action["qty"],
+                        price=action["price"],
+                        conviction_score=action["conviction"],
+                        signal=action["signal"],
+                    )
+
+                if order:
+                    orders_placed.append({
+                        "ticker": ticker,
+                        "side": order.side,
+                        "qty": order.qty,
+                        "price": order.price,
+                    })
+                    orders_today += 1
+                    # Refresh portfolio for next iteration
+                    portfolio = self.paper_trader.get_portfolio()
+
+            except Exception as exc:
+                self._log(f"{ticker} trading error: {exc}")
+                logger.error("[AutoLoop] Trading error for %s: %s", ticker, exc, exc_info=True)
+
+        # ---- Take portfolio snapshot ----
+        self.paper_trader.take_snapshot()
+
+        self._log(
+            f"Trading complete: {len(orders_placed)} orders placed, "
+            f"{len(triggered)} triggers fired"
+        )
+        return {
+            "orders_placed": len(orders_placed),
+            "triggers_fired": len(triggered),
+            "orders": orders_placed,
+            "portfolio_value": portfolio["total_portfolio_value"],
         }
 
     # ------------------------------------------------------------------

@@ -406,6 +406,62 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Phase 3: Trading Engine tables ─────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS positions (
+            ticker            VARCHAR PRIMARY KEY,
+            qty               INTEGER NOT NULL,
+            avg_entry_price   DOUBLE NOT NULL,
+            stop_loss         DOUBLE DEFAULT 0,
+            take_profit       DOUBLE DEFAULT 0,
+            trailing_stop_pct DOUBLE DEFAULT 0,
+            opened_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id               VARCHAR PRIMARY KEY,
+            ticker           VARCHAR NOT NULL,
+            side             VARCHAR NOT NULL,
+            qty              INTEGER NOT NULL,
+            price            DOUBLE NOT NULL,
+            order_type       VARCHAR DEFAULT 'market',
+            status           VARCHAR DEFAULT 'filled',
+            conviction_score DOUBLE DEFAULT 0,
+            signal           VARCHAR DEFAULT '',
+            filled_at        TIMESTAMP,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS price_triggers (
+            id              VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
+            trigger_type    VARCHAR NOT NULL,
+            trigger_price   DOUBLE NOT NULL,
+            high_water_mark DOUBLE DEFAULT 0,
+            trailing_pct    DOUBLE DEFAULT 0,
+            action          VARCHAR DEFAULT 'sell',
+            qty             INTEGER NOT NULL,
+            status          VARCHAR DEFAULT 'active',
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+            timestamp              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            cash_balance           DOUBLE NOT NULL,
+            total_positions_value  DOUBLE DEFAULT 0,
+            total_portfolio_value  DOUBLE DEFAULT 0,
+            realized_pnl           DOUBLE DEFAULT 0,
+            unrealized_pnl         DOUBLE DEFAULT 0
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

@@ -779,6 +779,7 @@ async def dashboard_db_stats() -> dict:
         "risk_metrics", "balance_sheet", "cash_flows",
         "analyst_data", "insider_activity", "earnings_calendar",
         "discovered_tickers", "ticker_scores", "watchlist",
+        "positions", "orders", "price_triggers", "portfolio_snapshots",
     ]
     counts = {}
     db = get_db()
@@ -789,6 +790,102 @@ async def dashboard_db_stats() -> dict:
         except Exception:
             counts[table] = -1  # Table doesn't exist
     return {"counts": counts}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TRADING ENGINE API (Phase 3 — Paper Trading)
+# ══════════════════════════════════════════════════════════════════════
+
+from app.services.paper_trader import PaperTrader  # noqa: E402
+from app.services.price_monitor import PriceMonitor  # noqa: E402
+
+_paper_trader = PaperTrader()
+_price_monitor = PriceMonitor(_paper_trader)
+
+
+@app.get("/api/portfolio")
+async def get_portfolio() -> dict:
+    """Current cash + positions + total value."""
+    return _paper_trader.get_portfolio()
+
+
+@app.get("/api/portfolio/history")
+async def get_portfolio_history(
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict:
+    """Portfolio snapshots over time (equity curve data)."""
+    snapshots = _paper_trader.get_portfolio_history(limit=limit)
+    return {"count": len(snapshots), "snapshots": snapshots}
+
+
+@app.get("/api/positions")
+async def get_positions() -> dict:
+    """All open positions with entry details."""
+    positions = _paper_trader.get_positions()
+    return {"count": len(positions), "positions": positions}
+
+
+@app.post("/api/positions/{ticker}/close")
+async def close_position(ticker: str) -> dict:
+    """Manually close a position at current market price."""
+    ticker = ticker.upper().strip()
+    quote = _fetch_one_quote(ticker)
+    price = quote.get("price")
+    if not price:
+        raise HTTPException(status_code=400, detail=f"Could not fetch price for {ticker}")
+
+    positions = _paper_trader.get_positions()
+    qty = 0
+    for p in positions:
+        if p["ticker"] == ticker:
+            qty = p["qty"]
+            break
+
+    if qty <= 0:
+        raise HTTPException(status_code=404, detail=f"No open position for {ticker}")
+
+    order = _paper_trader.sell(
+        ticker=ticker,
+        qty=qty,
+        price=price,
+        signal="MANUAL_CLOSE",
+    )
+    if not order:
+        raise HTTPException(status_code=500, detail="Sell order failed")
+
+    return {
+        "status": "closed",
+        "ticker": ticker,
+        "qty": order.qty,
+        "price": order.price,
+        "order_id": order.id,
+    }
+
+
+@app.get("/api/orders")
+async def get_orders(
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """Order history."""
+    orders = _paper_trader.get_orders(limit=limit)
+    return {"count": len(orders), "orders": orders}
+
+
+@app.get("/api/triggers")
+async def get_triggers() -> dict:
+    """Active price triggers (stop-loss, take-profit, trailing)."""
+    triggers = _paper_trader.get_triggers()
+    return {"count": len(triggers), "triggers": triggers}
+
+
+@app.post("/api/trading/check-triggers")
+async def check_triggers() -> dict:
+    """Manually fire trigger check against current prices."""
+    actions = await _price_monitor.check_triggers()
+    return {
+        "triggered": len(actions),
+        "actions": actions,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════
