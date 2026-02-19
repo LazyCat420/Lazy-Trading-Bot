@@ -150,11 +150,19 @@ class SignalRouter:
                 "reason": f"Conviction {conviction_score:.2f} ≤ {self.SELL_THRESHOLD}",
             }
 
-        # ── HOLD — no action ───────────────────────────────────────
-        logger.info(
-            "[SignalRouter] %s → HOLD (conviction=%.2f, between thresholds)",
-            ticker, conviction_score,
-        )
+        # ── HOLD or PASS — conviction between thresholds ──────────
+        if existing_position_qty > 0:
+            # We own it — genuine HOLD
+            logger.info(
+                "[SignalRouter] %s → HOLD (conviction=%.2f, holding %d shares)",
+                ticker, conviction_score, existing_position_qty,
+            )
+        else:
+            # We don't own it — PASS (conviction not high enough to buy)
+            logger.info(
+                "[SignalRouter] %s → PASS (conviction=%.2f, not enough to buy)",
+                ticker, conviction_score,
+            )
         return None
 
     # ------------------------------------------------------------------

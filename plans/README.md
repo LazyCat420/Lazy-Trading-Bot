@@ -32,6 +32,8 @@ Run Full Loop (button)
 
 | Plan | Status | Notes |
 |------|--------|-------|
+| [Activity Log Upgrade](activity_log_upgrade.md) | 📋 Planned | Replace discovery-only feed with full pipeline audit trail |
+| [Parallel Streaming Pipeline](parallel_pipeline.md) | 📋 Planned | asyncio.Queue per-ticker pipelining for ~26% faster loop times |
 | [Data Hardening](phase_8_data_hardening.md) | ⚠️ Partially done | YouTube 24h filter done; yFinance verification pending |
 | [Frontend Dashboard](phase_9_frontend_dashboard.md) | ⚠️ Superseded | React-based Onyx Terminal built instead of vanilla JS |
 | [Scheduling & Backtesting](phase_10_scheduling_backtesting.md) | ⚠️ Merged | Scheduling → Phase 4; Backtesting → future enhancement |

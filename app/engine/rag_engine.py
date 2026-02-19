@@ -10,7 +10,6 @@ like "earnings", "revenue", "guidance" are highly distinctive.
 
 from __future__ import annotations
 
-import json
 import re
 
 from rank_bm25 import BM25Okapi
@@ -63,12 +62,38 @@ def _fetch_news_texts(ticker: str) -> list[str]:
 
 
 def _fetch_transcript_texts(ticker: str) -> list[str]:
-    """Fetch YouTube transcript text."""
+    """Fetch YouTube transcript text.
+
+    First searches for transcripts mentioning this ticker.
+    Falls back to recent transcripts if no ticker-specific matches.
+    """
     db = get_db()
+    # Primary: ticker-specific transcripts
     rows = db.execute(
         "SELECT title, raw_transcript FROM youtube_transcripts "
         "WHERE ticker = ? ORDER BY collected_at DESC LIMIT 10",
         [ticker],
+    ).fetchall()
+    if rows:
+        return [
+            f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
+        ]
+
+    # Fallback: search ALL transcripts for ticker mentions in the text
+    rows = db.execute(
+        "SELECT title, raw_transcript FROM youtube_transcripts "
+        "WHERE raw_transcript ILIKE ? ORDER BY collected_at DESC LIMIT 5",
+        [f"%{ticker}%"],
+    ).fetchall()
+    if rows:
+        return [
+            f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
+        ]
+
+    # Last resort: get latest transcripts (may discuss the sector)
+    rows = db.execute(
+        "SELECT title, raw_transcript FROM youtube_transcripts "
+        "ORDER BY collected_at DESC LIMIT 3",
     ).fetchall()
     return [
         f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
@@ -206,10 +231,27 @@ class RAGEngine:
         fetcher = _SOURCE_FETCHERS.get(target_source, _fetch_news_texts)
         raw_texts = fetcher(ticker)
 
+        # Cross-source fallback: if primary source empty, try others
         if not raw_texts:
             logger.info(
-                "[RAG] No %s data for %s — returning empty",
+                "[RAG] No %s data for %s — trying cross-source fallback",
                 target_source,
+                ticker,
+            )
+            for alt_source, alt_fetcher in _SOURCE_FETCHERS.items():
+                if alt_source == target_source:
+                    continue
+                raw_texts = alt_fetcher(ticker)
+                if raw_texts:
+                    logger.info(
+                        "[RAG] Found %d texts from %s (fallback for %s)",
+                        len(raw_texts), alt_source, target_source,
+                    )
+                    break
+
+        if not raw_texts:
+            logger.info(
+                "[RAG] No data at all for %s — returning empty",
                 ticker,
             )
             return QAPair(

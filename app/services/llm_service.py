@@ -32,7 +32,7 @@ async def _get_shared_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(
             timeout=300.0,
             limits=httpx.Limits(
-                max_connections=20,      # Up to 20 parallel TCP connections
+                max_connections=20,  # Up to 20 parallel TCP connections
                 max_keepalive_connections=10,
             ),
         )
@@ -105,7 +105,9 @@ class LLMService:
 
         logger.info(
             "⏱️  Ollama request START → %s model=%s format=%s",
-            url, self.model, response_format,
+            url,
+            self.model,
+            response_format,
         )
         t0 = time.perf_counter()
 
@@ -118,7 +120,8 @@ class LLMService:
         elapsed = time.perf_counter() - t0
         logger.info(
             "⏱️  Ollama request DONE  → %.2fs, %d chars",
-            elapsed, len(content),
+            elapsed,
+            len(content),
         )
         return content
 
@@ -137,7 +140,12 @@ class LLMService:
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
-        if response_format == "json":
+
+        # LM Studio does NOT support response_format — omit it entirely.
+        # See: https://lmstudio.ai/docs/developer/openai-compat/chat-completions
+        # Supported params: model, top_p, top_k, messages, temperature,
+        #   max_tokens, stream, stop, *_penalty, logit_bias, seed.
+        if response_format == "json" and self.provider != "lmstudio":
             payload["response_format"] = {"type": "json_object"}
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -145,21 +153,39 @@ class LLMService:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         logger.info(
-            "⏱️  OpenAI request START → %s model=%s",
-            url, self.model,
+            "⏱️  OpenAI request START → %s model=%s provider=%s",
+            url,
+            self.model,
+            self.provider,
+        )
+        logger.debug(
+            "📦 Payload keys: %s (response_format present: %s)",
+            list(payload.keys()),
+            "response_format" in payload,
         )
         t0 = time.perf_counter()
 
         client = await _get_shared_client()
         resp = await client.post(url, json=payload, headers=headers)
+
+        # Log diagnostic info on errors before raising
+        if resp.status_code >= 400:
+            body = resp.text
+            logger.error(
+                "❌ OpenAI endpoint returned %d: %s",
+                resp.status_code,
+                body[:500],
+            )
         resp.raise_for_status()
+
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
 
         elapsed = time.perf_counter() - t0
         logger.info(
             "⏱️  OpenAI request DONE  → %.2fs, %d chars",
-            elapsed, len(content),
+            elapsed,
+            len(content),
         )
         return content
 
@@ -184,7 +210,7 @@ class LLMService:
             # Found start but no end - try to salvage what we can or just return as is
             # expecting parser to fail later if it's incomplete
             cleaned = cleaned[start:]
-        
+
         return cleaned
 
     @staticmethod
@@ -206,14 +232,9 @@ class LLMService:
                     api_key = settings.OPENAI_API_KEY
                     if api_key:
                         headers["Authorization"] = f"Bearer {api_key}"
-                    resp = await client.get(
-                        f"{base_url}/v1/models", headers=headers
-                    )
+                    resp = await client.get(f"{base_url}/v1/models", headers=headers)
                     resp.raise_for_status()
-                    return [
-                        m.get("id", "")
-                        for m in resp.json().get("data", [])
-                    ]
+                    return [m.get("id", "") for m in resp.json().get("data", [])]
         except Exception:
             return []
 

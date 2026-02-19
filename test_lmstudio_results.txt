@@ -1,0 +1,19 @@
+Endpoint: http://100.98.210.120:1234
+Model: ibm/granite-3.2-8b
+
+--- TEST 1: List models ---
+Status: 200
+Models: ['ibm/granite-3.2-8b', 'qwen2.5-coder-7b-instruct', 'qwen/qwen3-4b-thinking-2507', 'ibm/granite-4-h-tiny', 'zai-org/glm-4.7-flash', 'qwen/qwen3-coder-30b', 'allenai/olmocr-2-7b', 'huihui-qwen3-vl-4b-instruct-abliterated', 'qwen/qwen3-vl-30b', 'qwen3-vl-8b-nsfw-caption-v4.5', 'openai-gpt-oss-20b-heretic-uncensored-neo-imatrix', 'huihui-glm-4.7-flash-abliterated-i1', 'openai-gpt-oss-20b-abliterated-uncensored-neo-imatrix', 'llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b', 'qwen/qwen3-vl-4b', 'lfm2.5-vl-1.6b', 'qwen3-vl-8b-instruct-abliterated-v2.0', 'qwen/qwen3-vl-8b', 'zai-org/glm-4.6v-flash', 'liquid/lfm2.5-1.2b', 'text-embedding-nomic-embed-text-v1.5']
+Our model 'ibm/granite-3.2-8b' in list? True
+
+--- TEST 2: Minimal call (no response_format) ---
+Status: 200
+OK: Greetings, warm welcome!
+
+--- TEST 3: With response_format (expect 400) ---
+Status: 400
+ERROR (expected): {"error":"'response_format.type' must be 'json_schema' or 'text'"}
+
+--- TEST 4: With max_tokens ---
+Status: 200
+OK: Hello! How can I assist you today?

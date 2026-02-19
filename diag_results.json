@@ -1,0 +1,41 @@
+{
+  "test1_models": {
+    "status": 200,
+    "models": [
+      "ibm/granite-3.2-8b",
+      "qwen2.5-coder-7b-instruct",
+      "qwen/qwen3-4b-thinking-2507",
+      "ibm/granite-4-h-tiny",
+      "zai-org/glm-4.7-flash",
+      "qwen/qwen3-coder-30b",
+      "allenai/olmocr-2-7b",
+      "huihui-qwen3-vl-4b-instruct-abliterated",
+      "qwen/qwen3-vl-30b",
+      "qwen3-vl-8b-nsfw-caption-v4.5",
+      "openai-gpt-oss-20b-heretic-uncensored-neo-imatrix",
+      "huihui-glm-4.7-flash-abliterated-i1",
+      "openai-gpt-oss-20b-abliterated-uncensored-neo-imatrix",
+      "llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b",
+      "qwen/qwen3-vl-4b",
+      "lfm2.5-vl-1.6b",
+      "qwen3-vl-8b-instruct-abliterated-v2.0",
+      "qwen/qwen3-vl-8b",
+      "zai-org/glm-4.6v-flash",
+      "liquid/lfm2.5-1.2b",
+      "text-embedding-nomic-embed-text-v1.5"
+    ],
+    "match": true
+  },
+  "test2_minimal": {
+    "status": 200,
+    "content": "Greetings, warm welcome!"
+  },
+  "test3_response_format": {
+    "status": 400,
+    "error": "{\"error\":\"'response_format.type' must be 'json_schema' or 'text'\"}"
+  },
+  "test4_max_tokens": {
+    "status": 200,
+    "content": "Hello! How can I assist you today?"
+  }
+}

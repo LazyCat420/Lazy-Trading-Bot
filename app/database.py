@@ -462,6 +462,21 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Activity Log: pipeline_events audit trail ─────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_events (
+            id          VARCHAR PRIMARY KEY,
+            timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            phase       VARCHAR NOT NULL,
+            event_type  VARCHAR NOT NULL,
+            ticker      VARCHAR,
+            detail      VARCHAR NOT NULL,
+            metadata    VARCHAR DEFAULT '{}',
+            loop_id     VARCHAR,
+            status      VARCHAR DEFAULT 'success'
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

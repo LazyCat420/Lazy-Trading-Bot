@@ -731,4 +731,127 @@ if risk_metrics:
 7. Sentiment Agent full tx      — remove truncation, update prompt
 8. Risk Agent upgrade           — use RiskComputer data + quant prompt
 9. YouTube 24h filter           — dateafter + channel list
+10. Hybrid Semantic Search      — Nomic Embed v1.5 for RAG Layer 3 (below)
 ```
+
+---
+
+## 10. Hybrid Semantic Search (RAG Layer 3 Upgrade)
+
+> **Status**: 📋 Future enhancement — only pursue after BM25 proves insufficient
+> for natural-language queries against news/transcript data.
+
+### Current State
+
+Layer 3 (`rag_engine.py`) uses **BM25 keyword ranking** — pure lexical matching.
+This works well for financial terms (`earnings`, `revenue`, `RSI`) but can miss
+semantically similar phrases (e.g. "bullish outlook" vs "optimistic guidance").
+
+### Proposed Upgrade: Hybrid BM25 + Nomic Embed Text v1.5
+
+Use **Nomic Embed Text v1.5** (`nomic-embed-text-v1.5`) as a semantic
+embedding model alongside BM25. The model is:
+
+- 137M params — fast enough to run locally via Ollama
+- 8192 token context — handles large chunks
+- Matryoshka embeddings — can use shorter vectors (256d) for speed
+- Free / open-source — no API costs
+
+### Architecture
+
+```
+Question from Layer 2
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  Source Router (same as today)           │
+│  Routes to correct DuckDB table          │
+└──────────┬──────────────────────────────┘
+           │
+    ┌──────▼──────────────────────────────┐
+    │  Hybrid Ranker                       │
+    │                                      │
+    │  Path A: BM25 (keyword)              │
+    │    → Score all chunks by term match   │
+    │                                      │
+    │  Path B: Semantic (Nomic Embed)       │
+    │    → Embed query + chunks → cosine    │
+    │                                      │
+    │  Combined: RRF or weighted blend      │
+    │    → Top 3 chunks from union          │
+    └──────────┬──────────────────────────┘
+               │
+    ┌──────────▼──────────────────────────┐
+    │  LLM Answer Extraction (same)        │
+    └──────────────────────────────────────┘
+```
+
+### Source Routing Strategy
+
+**Not all sources benefit from semantic search equally:**
+
+| Source | Search Method | Reasoning |
+|--------|--------------|-----------|
+| `news` | **Hybrid** (BM25 + semantic) | Natural language, vague queries benefit from embeddings |
+| `transcripts` | **Hybrid** (BM25 + semantic) | Conversational text, synonyms common |
+| `fundamentals` | **BM25 only** | Structured numbers — embeddings hurt here |
+| `technicals` | **BM25 only** | Pure numerical data — `RSI=65` is exact match |
+| `insider` | **BM25 only** | Structured data with specific terms |
+
+### Implementation Sketch
+
+```python
+# In rag_engine.py — only changes to answer_question()
+
+from chromadb import Client as ChromaClient  # or FAISS
+
+class RAGEngine:
+    def __init__(self):
+        self._llm = LLMService()
+        self._chroma = ChromaClient()  # in-memory, no server needed
+
+    async def answer_question(self, question, target_source, ticker):
+        # ... existing fetch + chunk logic ...
+
+        # Decide search strategy based on source type
+        use_semantic = target_source in ("news", "transcripts")
+
+        if use_semantic:
+            # Hybrid: BM25 scores + semantic scores → RRF merge
+            bm25_top = self._bm25_rank(all_chunks, question, top_k=5)
+            semantic_top = self._semantic_rank(all_chunks, question, top_k=5)
+            top_chunks = self._reciprocal_rank_fusion(bm25_top, semantic_top, k=3)
+        else:
+            # Structured data: BM25 only (current behavior)
+            top_chunks = self._bm25_rank(all_chunks, question, top_k=3)
+
+        # ... existing LLM extraction ...
+```
+
+### Dependencies
+
+| Library | Purpose | Install |
+|---------|---------|---------|
+| `chromadb` | In-memory vector store (no server) | `pip install chromadb` |
+| `ollama` (existing) | Pull `nomic-embed-text:v1.5` for embeddings | `ollama pull nomic-embed-text:v1.5` |
+
+### Risks & Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| Latency increase (~50-100ms per query) | Only use for `news`/`transcripts`, keep BM25 for structured sources |
+| Embedding model VRAM usage | Nomic is only 137M params — minimal footprint alongside main LLM |
+| Complexity increase | ChromaDB in-memory mode = no server, no persistence needed |
+| Accuracy regression on numerical data | Never use semantic search for `fundamentals`/`technicals`/`insider` |
+
+### When to Build This
+
+Build this **only if** you observe these symptoms:
+
+- RAG answers for news/transcript questions are consistently low-confidence
+- BM25 misses relevant chunks because of synonym/paraphrase mismatches
+- The LLM asks questions using different vocabulary than the source text
+
+> [!TIP]
+> A simple A/B test: run 20 questions through both BM25-only and hybrid,
+> then compare answer quality. If hybrid doesn't clearly win, skip it.

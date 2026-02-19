@@ -1,0 +1,105 @@
+﻿2840:     };
+2843:     // Signal badge helper
+2844:     const signalBadge = (signal) => {
+2845:         const cls = signal === "BUY" || signal === "STRONG_BUY" ? "bg-green-500/20 text-green-400 border-green-500/30"
+2846:             : signal === "SELL" || signal === "STRONG_SELL" ? "bg-red-500/20 text-red-400 border-red-500/30"
+2847:                 : signal === "HOLD" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+2848:                     : signal === "ERROR" ? "bg-red-500/20 text-red-300 border-red-500/20"
+2849:                         : "bg-border-dark text-text-muted border-border-dark";
+2850:         return React.createElement("span", {
+2851:             className: `px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase border ${cls}`
+2852:         }, signal || "PENDING");
+2853:     };
+2855:     const sortedScores = [...scores].sort((a, b) => {
+2856:         const va = a[sortBy] ?? 0, vb = b[sortBy] ?? 0;
+2857:         return vb - va;
+2858:     });
+2860:     // Group history entries by ticker for the expanded card view
+2861:     const historyByTicker = {};
+2862:     history.forEach(h => {
+2863:         if (!historyByTicker[h.ticker]) historyByTicker[h.ticker] = [];
+2864:         historyByTicker[h.ticker].push(h);
+2865:     });
+2867:     const sentimentBadge = (hint) => {
+2868:         const cls = hint === "bullish" ? "bg-green-500/20 text-green-400 border-green-500/30"
+2869:             : hint === "bearish" ? "bg-red-500/20 text-red-400 border-red-500/30"
+2870:                 : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+2871:         return React.createElement("span", {
+2872:             className: `px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase border ${cls}`
+2873:         }, hint || "neutral");
+2874:     };
+2876:     const sourceIcon = (src) => {
+2877:         if (src === "reddit") return React.createElement("span", {
+2878:             className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[1
+2879:         }, "REDDIT");
+2880:         if (src === "youtube") return React.createElement("span", {
+2881:             className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 text-[10px] f
+2882:         }, "YOUTUBE");
+2883:         return React.createElement("span", {
+2884:             className: "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] f
+2885:         }, src?.toUpperCase() || "MIXED");
+2886:     };
+2888:     // Score bar visual
+2889:     const maxScore = sortedScores.length > 0 ? Math.max(...sortedScores.map(s => s.total_score || 0), 1) : 1;
+2891:     const ScoreBar = ({ value, max, color = "bg-primary" }) => {
+2892:         const pct = Math.min((value / max) * 100, 100);
+2893:         return React.createElement("div", { className: "h-1.5 rounded-full bg-onyx-black/60 overflow-hidden flex-1" },
+2894:             React.createElement("div", {
+2895:                 className: `h-full rounded-full ${color} transition-all duration-500`,
+2896:                 style: { width: `${pct}%` }
+2897:             })
+2898:         );
+2899:     };
+2901:     if (loading) return React.createElement(SidebarLayout, { active: "monitor" },
+2902:         React.createElement("div", { className: "flex-1 flex items-center justify-center" },
+2903:             React.createElement("span", { className: "material-symbols-outlined text-primary animate-spin text-4xl" }, "
+2904:         )
+2905:     );
+2907:     const isRunning = status?.is_running || scanning;
+2908:     const stateLabel = isRunning ? "SCANNING" : status?.total_discovered > 0 ? "IDLE" : "NO DATA";
+2910:     // ΓöÇΓöÇ Ticker Discovery Card Component
+2911:     const TickerCard = ({ s, rank }) => {
+2912:         const isExpanded = expandedTicker === s.ticker;
+2913:         const tickerHistory = historyByTicker[s.ticker] || [];
+2914:         const redditEntries = tickerHistory.filter(h => h.source === "reddit");
+2915:         const youtubeEntries = tickerHistory.filter(h => h.source === "youtube");
+2916:         const [transcripts, setTranscripts] = useState(null);
+2918:         // Fetch transcript data when card is expanded
+2919:         useEffect(() => {
+2920:             if (!isExpanded) { setTranscripts(null); return; }
+2921:             fetch(`/api/discovery/transcripts/${s.ticker}`)
+2922:                 .then(r => r.json())
+2923:                 .then(data => setTranscripts(data.transcripts || []))
+2924:                 .catch(() => setTranscripts([]));
+2925:         }, [isExpanded, s.ticker]);
+2927:         const fmtDuration = (secs) => {
+2928:             if (!secs) return "";
+2929:             const m = Math.floor(secs / 60);
+2930:             const s2 = secs % 60;
+2931:             return `${m}:${String(s2).padStart(2, "0")}`;
+2932:         };
+2934:         return React.createElement("div", {
+2935:             className: `glass-card overflow-hidden transition-all duration-200 ${isExpanded ? "ring-1 ring-primary/40" :
+2936:         },
+2937:             // ΓöÇΓöÇ Card header (always visible)
+2938:             React.createElement("div", {
+2939:                 className: "flex items-center gap-4 p-4 cursor-pointer hover:bg-white/[0.02] transition",
+2940:                 onClick: () => setExpandedTicker(isExpanded ? null : s.ticker),
+2941:             },
+2942:                 // Rank badge
+2943:                 React.createElement("div", {
+2944:                     className: "w-8 h-8 rounded-lg bg-onyx-black flex items-center justify-center text-text-muted text-x
+2945:                 }, `#${rank}`),
+2947:                 // Ticker name + sentiment
+2948:                 React.createElement("div", { className: "flex items-center gap-3 w-32 shrink-0" },
+2949:                     React.createElement("a", { href: `https://finviz.com/quote.ashx?t=${s.ticker}`, target: "_blank", re
+2950:                     sentimentBadge(s.sentiment_hint)
+2951:                 ),
+2953:                 // Score bars
+2954:                 React.createElement("div", { className: "flex-1 flex items-center gap-4" },
+2955:                     // Total score
+2956:                     React.createElement("div", { className: "flex items-center gap-2 flex-1" },
+2957:                         React.createElement("span", { className: "text-primary font-bold font-mono text-sm w-12 text-rig
+2958:                             (s.total_score ?? 0).toFixed(1)
+2959:                         ),
+2960:                         React.createElement(ScoreBar, { value: s.total_score ?? 0, max: maxScore })

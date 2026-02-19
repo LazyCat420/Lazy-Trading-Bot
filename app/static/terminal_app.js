@@ -1012,6 +1012,100 @@ const WatchlistPage = ({
 };
 
 // ***************************************************************
+// DEV DEBUG PANEL — Sidebar component for testing individual phases
+// ***************************************************************
+const DevDebugPanel = () => {
+    const [open, setOpen] = useState(false);
+    const [runningPhase, setRunningPhase] = useState(null);
+    const [lastResult, setLastResult] = useState(null);
+
+    const phases = [
+        { key: "discovery", label: "1 · Discovery", icon: "search", endpoint: "/api/bot/run-discovery", color: "text-orange-400" },
+        { key: "import", label: "2 · Import", icon: "download", endpoint: "/api/bot/run-import", color: "text-blue-400" },
+        { key: "analysis", label: "3 · Analysis", icon: "query_stats", endpoint: "/api/bot/run-analysis", color: "text-purple-400" },
+        { key: "trading", label: "4 · Trading", icon: "account_balance_wallet", endpoint: "/api/bot/run-trading", color: "text-green-400" },
+    ];
+
+    const runPhase = async (phase) => {
+        if (runningPhase) return;
+        RetroSFX.click();
+        setRunningPhase(phase.key);
+        setLastResult(null);
+        try {
+            const res = await fetch(phase.endpoint, { method: "POST" });
+            if (!res.ok) {
+                const body = await res.json();
+                setLastResult({ error: body.detail || "Failed" });
+                setRunningPhase(null);
+                return;
+            }
+            // Poll loop-status until done
+            const poll = setInterval(async () => {
+                try {
+                    const sr = await fetch("/api/bot/loop-status");
+                    const st = await sr.json();
+                    if (!st.running) {
+                        clearInterval(poll);
+                        setRunningPhase(null);
+                        setLastResult({ ok: true, phase: phase.key });
+                        RetroSFX.successChime();
+                    }
+                } catch (e) {
+                    clearInterval(poll);
+                    setRunningPhase(null);
+                    setLastResult({ error: "Poll failed" });
+                }
+            }, 2000);
+        } catch (e) {
+            setRunningPhase(null);
+            setLastResult({ error: e.message });
+        }
+    };
+
+    return (
+        <div className="border-t border-amber-500/20">
+            <button
+                onClick={() => { setOpen(!open); RetroSFX.click(); }}
+                className="flex items-center gap-2 px-3 py-2.5 w-full text-xs text-amber-400/70 hover:text-amber-400 transition-colors"
+            >
+                <span className="material-symbols-outlined text-[16px]">bug_report</span>
+                <span className="font-bold tracking-wider">DEV TOOLS</span>
+                <span className="material-symbols-outlined text-[14px] ml-auto">{open ? "expand_less" : "expand_more"}</span>
+            </button>
+            {open && (
+                <div className="px-2 pb-3 space-y-1">
+                    {phases.map(p => (
+                        <button
+                            key={p.key}
+                            onClick={() => runPhase(p)}
+                            disabled={!!runningPhase}
+                            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-[11px] font-mono transition-all ${runningPhase === p.key
+                                ? "bg-amber-500/20 text-amber-300 animate-pulse"
+                                : runningPhase
+                                    ? "text-text-muted/40 cursor-not-allowed"
+                                    : "text-text-muted hover:bg-amber-500/10 hover:text-amber-400"
+                                }`}
+                        >
+                            <span className={`material-symbols-outlined text-[14px] ${runningPhase === p.key ? "animate-spin text-amber-400" : p.color}`}>
+                                {runningPhase === p.key ? "progress_activity" : p.icon}
+                            </span>
+                            <span>{p.label}</span>
+                            {runningPhase === p.key && <span className="ml-auto text-[9px] text-amber-400">RUNNING</span>}
+                        </button>
+                    ))}
+                    {lastResult && (
+                        <div className={`px-2.5 py-1.5 rounded text-[10px] font-mono mt-1 ${lastResult.error ? "bg-red-500/10 text-red-400" : "bg-green-500/10 text-green-400"
+                            }`}>
+                            {lastResult.error ? `✗ ${lastResult.error}` : `✓ ${lastResult.phase} complete`}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ***************************************************************
 // SIDEBAR LAYOUT  Shared sidebar for inner pages
 // ***************************************************************
 const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
@@ -1077,6 +1171,8 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                         <span>{sfxMuted ? "Sound: OFF" : "Sound: ON"}</span>
                     </button>
                 </div>
+                {/* Developer Debug Panel */}
+                <DevDebugPanel />
             </aside>
             <main className="flex-1 flex flex-col overflow-hidden">{children}</main>
         </div>
@@ -2336,6 +2432,7 @@ const useMonitorData = () => {
     const [status, setStatus] = useState(null);
     const [scores, setScores] = useState([]);
     const [history, setHistory] = useState([]);
+    const [pipelineEvents, setPipelineEvents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(false);
     const [enableReddit, setEnableReddit] = useState(true);
@@ -2352,6 +2449,13 @@ const useMonitorData = () => {
     // ── Deep Analysis state ──
     const [dossierData, setDossierData] = useState(null);
     const [dossierLoading, setDossierLoading] = useState(false);
+
+    // ── Portfolio / Trading state ──
+    const [portfolio, setPortfolio] = useState(null);
+    const [orders, setOrders] = useState([]);
+    const [triggers, setTriggers] = useState([]);
+    const [portfolioHistory, setPortfolioHistory] = useState([]);
+    const [portfolioLoading, setPortfolioLoading] = useState(false);
 
     // ── Autonomous Loop state ──
     const [loopRunning, setLoopRunning] = useState(false);
@@ -2373,24 +2477,62 @@ const useMonitorData = () => {
         }
     }, []);
 
+    const fetchPortfolio = useCallback(async () => {
+        setPortfolioLoading(true);
+        try {
+            const [pRes, oRes, tRes, hRes] = await Promise.all([
+                fetch("/api/portfolio").then(r => r.json()),
+                fetch("/api/orders?limit=50").then(r => r.json()),
+                fetch("/api/triggers").then(r => r.json()),
+                fetch("/api/portfolio/history?limit=100").then(r => r.json()),
+            ]);
+            setPortfolio(pRes);
+            setOrders(oRes.orders || []);
+            setTriggers(tRes.triggers || []);
+            setPortfolioHistory(hRes.snapshots || []);
+        } catch (e) {
+            console.error("Portfolio fetch error:", e);
+        } finally {
+            setPortfolioLoading(false);
+        }
+    }, []);
+
+    const closePosition = useCallback(async (ticker) => {
+        try {
+            const res = await fetch(`/api/positions/${ticker}/close`, { method: "POST" });
+            if (!res.ok) {
+                const body = await res.json();
+                alert(body.detail || "Failed to close position");
+                return;
+            }
+            RetroSFX.successChime();
+            await fetchPortfolio();
+        } catch (e) {
+            console.error("Close position error:", e);
+        }
+    }, [fetchPortfolio]);
+
     const fetchAll = useCallback(async () => {
         try {
-            const [statusRes, scoresRes, historyRes] = await Promise.all([
+            const [statusRes, scoresRes, historyRes, eventsRes] = await Promise.all([
                 fetch("/api/discovery/status").then(r => r.json()),
                 fetch("/api/discovery/results?limit=50").then(r => r.json()),
                 fetch("/api/discovery/history?limit=200").then(r => r.json()),
+                fetch("/api/pipeline/events?limit=200").then(r => r.json()).catch(() => ({ events: [] })),
             ]);
             setStatus(statusRes);
             setScores(scoresRes.scores || []);
             setHistory(historyRes.history || []);
+            setPipelineEvents(eventsRes.events || []);
         } catch (e) {
             console.error("Monitor fetch error:", e);
         } finally {
             setLoading(false);
         }
-        // Also refresh watchlist
+        // Also refresh watchlist + portfolio
         fetchWatchlist();
-    }, [fetchWatchlist]);
+        fetchPortfolio();
+    }, [fetchWatchlist, fetchPortfolio]);
 
     // Start polling for loop status
     const startLoopPoll = useCallback(() => {
@@ -2610,7 +2752,7 @@ const useMonitorData = () => {
         setLoopRunning(true);
         setLoopStatus(null);
         try {
-            const res = await fetch("/api/bot/run-loop", { method: "POST" });
+            const res = await fetch(`/api/bot/run-loop?max_tickers=${maxTickers}`, { method: "POST" });
             if (!res.ok) {
                 const body = await res.json();
                 alert(body.detail || "Failed to start loop");
@@ -2627,13 +2769,15 @@ const useMonitorData = () => {
 
     return {
         // Data state
-        status, scores, history, loading,
+        status, scores, history, pipelineEvents, loading,
         scanning, enableReddit, setEnableReddit,
         enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
         // Watchlist state
         wlEntries, wlSummary, wlImporting, wlAnalyzing, wlAnalyzingTicker,
         // Dossier state
         dossierData, setDossierData, dossierLoading,
+        // Portfolio state
+        portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         // Loop state
         loopRunning, loopStatus, setLoopStatus,
         // Actions
@@ -2641,6 +2785,7 @@ const useMonitorData = () => {
         addToWatchlist, removeFromWatchlist,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
+        fetchPortfolio, closePosition,
     };
 };
 
@@ -2653,22 +2798,24 @@ const AutobotMonitorPage = ({ monitorData }) => {
     // UI-only state (safe to reset on navigation)
     const [sortBy, setSortBy] = useState("total_score");
     const [expandedTicker, setExpandedTicker] = useState(null);
-    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist"
+    const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist" | "portfolio"
     const [expandedWlTicker, setExpandedWlTicker] = useState(null);
     const navigate = useNavigate();
 
     // Destructure all data from the persistent hook
     const {
-        status, scores, history, loading,
+        status, scores, history, pipelineEvents, loading,
         scanning, enableReddit, setEnableReddit,
         enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
         wlEntries, wlSummary, wlImporting, wlAnalyzing, wlAnalyzingTicker,
         dossierData, setDossierData, dossierLoading,
+        portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         loopRunning, loopStatus, setLoopStatus,
         fetchAll, runScan, clearData,
         addToWatchlist, removeFromWatchlist,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
+        fetchPortfolio, closePosition,
     } = monitorData;
 
     // ── Local UI wrappers (use local expandedWlTicker state) ──
@@ -2691,6 +2838,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
             await fetchDossier(ticker);
         }
     };
+
 
     // Signal badge helper
     const signalBadge = (signal) => {
@@ -3176,7 +3324,16 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     },
                         React.createElement("span", { className: "flex items-center gap-1.5" },
                             React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "history"),
-                            `Activity Log (${history.length})`
+                            `Activity Log (${pipelineEvents.length || history.length})`
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: () => { RetroSFX.click(); setActiveTab("portfolio"); if (!portfolio) fetchPortfolio(); },
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "portfolio" ? "bg-purple-500/20 text-purple-400 shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "account_balance_wallet"),
+                            `Portfolio${portfolio ? ` (${fmt.usdShort(portfolio.total_portfolio_value)})` : ""}`
                         )
                     )
                 ),
@@ -3676,45 +3833,351 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         )
                 ),
 
-                // ── ACTIVITY TAB: Full-width log
+                // ── ACTIVITY TAB: Pipeline event timeline
                 activeTab === "activity" && React.createElement("div", null,
-                    history.length === 0
-                        ? React.createElement("div", { className: "glass-card text-center py-16 text-text-muted text-sm" }, "No discovery events yet")
-                        : React.createElement("div", { className: "space-y-2" },
-                            ...history.map((h, i) => React.createElement("div", {
-                                key: i,
-                                className: `glass-card p-4 border-l-2 transition-colors hover:border-l-primary/60 ${h.source === "reddit" ? "border-l-orange-400/40" : "border-l-red-400/40"}`,
-                            },
-                                React.createElement("div", { className: "flex items-start gap-3" },
-                                    // Source + Ticker
-                                    React.createElement("div", { className: "flex items-center gap-2 shrink-0 w-40" },
-                                        sourceIcon(h.source),
-                                        React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${h.ticker}`),
-                                        React.createElement("span", { className: "text-primary font-mono text-xs font-bold" },
-                                            `+${(h.discovery_score ?? 0).toFixed(1)}`
+                    // Prefer pipeline events if available, fallback to discovery history
+                    pipelineEvents.length > 0
+                        ? React.createElement("div", { className: "space-y-1.5" },
+                            ...pipelineEvents.map((ev, i) => {
+                                // Phase colors & icons
+                                const phaseConfig = {
+                                    discovery: { icon: "explore", color: "text-cyan-400", border: "border-l-cyan-400/40", bg: "bg-cyan-500/5" },
+                                    import: { icon: "download", color: "text-blue-400", border: "border-l-blue-400/40", bg: "bg-blue-500/5" },
+                                    analysis: { icon: "neurology", color: "text-purple-400", border: "border-l-purple-400/40", bg: "bg-purple-500/5" },
+                                    trading: { icon: "candlestick_chart", color: "text-green-400", border: "border-l-green-400/40", bg: "bg-green-500/5" },
+                                    system: { icon: "settings", color: "text-text-muted", border: "border-l-text-muted/40", bg: "bg-onyx-panel/50" },
+                                    collection: { icon: "database", color: "text-yellow-400", border: "border-l-yellow-400/40", bg: "bg-yellow-500/5" },
+                                };
+                                const pc = phaseConfig[ev.phase] || phaseConfig.system;
+
+                                // Status icons
+                                const statusIcon = ev.status === "error" ? "error"
+                                    : ev.status === "warning" ? "warning"
+                                        : ev.status === "skipped" ? "skip_next"
+                                            : "check_circle";
+                                const statusColor = ev.status === "error" ? "text-red-400"
+                                    : ev.status === "warning" ? "text-yellow-400"
+                                        : ev.status === "skipped" ? "text-text-muted"
+                                            : "text-green-400";
+
+                                // Show loop separator
+                                const prevEv = i > 0 ? pipelineEvents[i - 1] : null;
+                                const isNewLoop = prevEv && ev.loop_id && prevEv.loop_id !== ev.loop_id;
+
+                                const elements = [];
+                                if (isNewLoop) {
+                                    elements.push(React.createElement("div", {
+                                        key: `sep-${i}`,
+                                        className: "flex items-center gap-2 py-2 px-4"
+                                    },
+                                        React.createElement("div", { className: "flex-1 h-px bg-border-dark" }),
+                                        React.createElement("span", { className: "text-[9px] text-text-muted font-mono" }, `Loop ${prevEv.loop_id}`),
+                                        React.createElement("div", { className: "flex-1 h-px bg-border-dark" })
+                                    ));
+                                }
+
+                                elements.push(React.createElement("div", {
+                                    key: ev.id || i,
+                                    className: `glass-card p-3 border-l-2 transition-colors hover:border-l-primary/60 ${pc.border} ${pc.bg}`,
+                                },
+                                    React.createElement("div", { className: "flex items-center gap-3" },
+                                        // Phase icon
+                                        React.createElement("span", { className: `material-symbols-outlined text-[16px] ${pc.color}` }, pc.icon),
+                                        // Ticker (if present)
+                                        ev.ticker && React.createElement("span", { className: "text-white font-bold font-mono text-xs w-14" }, `$${ev.ticker}`),
+                                        // Detail text
+                                        React.createElement("span", { className: "flex-1 text-xs text-text-secondary" }, ev.detail),
+                                        // Status icon
+                                        React.createElement("span", { className: `material-symbols-outlined text-[14px] ${statusColor}` }, statusIcon),
+                                        // Phase badge
+                                        React.createElement("span", { className: `px-1.5 py-0.5 rounded text-[9px] font-mono uppercase ${pc.color} bg-onyx-surface/60` }, ev.phase),
+                                        // Timestamp
+                                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono w-14 text-right shrink-0" },
+                                            ev.timestamp ? fmt.ago(ev.timestamp) : ""
                                         )
-                                    ),
-                                    // Context snippet — FULL WIDTH, no truncation
-                                    React.createElement("div", { className: "flex-1 min-w-0" },
-                                        React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
-                                            h.context_snippet || h.source_detail || "No context"
+                                    )
+                                ));
+
+                                return elements;
+                            }).flat()
+                        )
+                        // Fallback to old discovery history if no pipeline events yet
+                        : history.length === 0
+                            ? React.createElement("div", { className: "glass-card text-center py-16 text-text-muted text-sm" },
+                                React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "timeline"),
+                                "No pipeline events yet. Run the autonomous loop to see activity here."
+                            )
+                            : React.createElement("div", { className: "space-y-2" },
+                                ...history.map((h, i) => React.createElement("div", {
+                                    key: i,
+                                    className: `glass-card p-4 border-l-2 transition-colors hover:border-l-primary/60 ${h.source === "reddit" ? "border-l-orange-400/40" : "border-l-red-400/40"}`,
+                                },
+                                    React.createElement("div", { className: "flex items-start gap-3" },
+                                        React.createElement("div", { className: "flex items-center gap-2 shrink-0 w-40" },
+                                            sourceIcon(h.source),
+                                            React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${h.ticker}`),
+                                            React.createElement("span", { className: "text-primary font-mono text-xs font-bold" },
+                                                `+${(h.discovery_score ?? 0).toFixed(1)}`
+                                            )
                                         ),
-                                        h.source_detail && h.context_snippet && React.createElement("span", {
-                                            className: "text-[10px] text-text-muted mt-1 block"
-                                        }, h.source === "reddit" ? `r/${h.source_detail}` : h.source_detail)
-                                    ),
-                                    // Sentiment + time
-                                    React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
-                                        sentimentBadge(h.sentiment_hint),
-                                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono w-14 text-right" },
-                                            h.discovered_at ? fmt.ago(h.discovered_at) : ""
+                                        React.createElement("div", { className: "flex-1 min-w-0" },
+                                            React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
+                                                h.context_snippet || h.source_detail || "No context"
+                                            ),
+                                            h.source_detail && h.context_snippet && React.createElement("span", {
+                                                className: "text-[10px] text-text-muted mt-1 block"
+                                            }, h.source === "reddit" ? `r/${h.source_detail}` : h.source_detail)
+                                        ),
+                                        React.createElement("div", { className: "flex items-center gap-2 shrink-0" },
+                                            sentimentBadge(h.sentiment_hint),
+                                            React.createElement("span", { className: "text-[10px] text-text-muted font-mono w-14 text-right" },
+                                                h.discovered_at ? fmt.ago(h.discovered_at) : ""
+                                            )
+                                        )
+                                    )
+                                )))
+                ),
+
+                // ── PORTFOLIO TAB: Paper trading overview ──
+                activeTab === "portfolio" && React.createElement("div", { className: "space-y-4" },
+
+                    // Loading state
+                    portfolioLoading && !portfolio && React.createElement("div", { className: "glass-card text-center py-16" },
+                        React.createElement("span", { className: "material-symbols-outlined animate-spin text-3xl text-primary mb-3 block" }, "progress_activity"),
+                        React.createElement("p", { className: "text-sm text-text-muted" }, "Loading portfolio...")
+                    ),
+
+                    // Portfolio Overview Cards
+                    portfolio && React.createElement("div", { className: "grid grid-cols-5 gap-3" },
+                        // Cash Balance
+                        React.createElement("div", { className: "glass-card p-4 text-center border-l-2 border-l-primary/50" },
+                            React.createElement("div", { className: "text-2xl font-bold font-mono text-primary" }, fmt.usdShort(portfolio.cash_balance)),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Cash Balance")
+                        ),
+                        // Total Portfolio
+                        React.createElement("div", { className: "glass-card p-4 text-center border-l-2 border-l-purple-500/50" },
+                            React.createElement("div", { className: "text-2xl font-bold font-mono text-purple-400" }, fmt.usdShort(portfolio.total_portfolio_value)),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Total Value")
+                        ),
+                        // Positions Value
+                        React.createElement("div", { className: "glass-card p-4 text-center" },
+                            React.createElement("div", { className: "text-2xl font-bold font-mono text-white" }, fmt.usdShort(portfolio.total_positions_value)),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "In Positions")
+                        ),
+                        // Open Positions Count
+                        React.createElement("div", { className: "glass-card p-4 text-center" },
+                            React.createElement("div", { className: "text-2xl font-bold font-mono text-blue-400" }, portfolio.positions_count),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Open Positions")
+                        ),
+                        // Realized PnL
+                        React.createElement("div", { className: `glass-card p-4 text-center ${portfolio.realized_pnl > 0 ? "glow-green" : portfolio.realized_pnl < 0 ? "glow-red" : ""}` },
+                            React.createElement("div", { className: `text-2xl font-bold font-mono ${portfolio.realized_pnl > 0 ? "text-green-400" : portfolio.realized_pnl < 0 ? "text-red-400" : "text-text-muted"}` },
+                                `${portfolio.realized_pnl >= 0 ? "+" : ""}${fmt.usdShort(portfolio.realized_pnl)}`
+                            ),
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Realized P&L")
+                        )
+                    ),
+
+                    // Refresh button
+                    React.createElement("div", { className: "glass-card p-3 flex items-center gap-3" },
+                        React.createElement("button", {
+                            onClick: () => { RetroSFX.click(); fetchPortfolio(); },
+                            disabled: portfolioLoading,
+                            className: `px-4 py-2 rounded-lg font-bold text-sm transition-all ${portfolioLoading ? "bg-purple-500/10 text-purple-400/50 cursor-wait" : "bg-purple-500/20 hover:bg-purple-500/30 text-purple-400"}`
+                        },
+                            React.createElement("span", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: `material-symbols-outlined text-sm ${portfolioLoading ? "animate-spin" : ""}` }, portfolioLoading ? "progress_activity" : "refresh"),
+                                portfolioLoading ? "Refreshing..." : "Refresh Portfolio"
+                            )
+                        ),
+                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" },
+                            "Paper trading mode — simulated orders only"
+                        )
+                    ),
+
+                    // ── Open Positions Table ──
+                    portfolio && React.createElement("div", { className: "glass-card overflow-hidden" },
+                        React.createElement("div", { className: "px-4 py-3 border-b border-border-dark bg-onyx-panel flex items-center gap-2" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[16px] text-blue-400" }, "trending_up"),
+                            React.createElement("h3", { className: "text-sm font-bold text-white" }, `Open Positions (${portfolio.positions_count})`)
+                        ),
+                        portfolio.positions_count === 0
+                            ? React.createElement("div", { className: "p-8 text-center" },
+                                React.createElement("span", { className: "material-symbols-outlined text-4xl text-text-muted mb-2 block" }, "inbox"),
+                                React.createElement("p", { className: "text-sm text-text-muted" }, "No open positions"),
+                                React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Positions will appear here when the bot executes buy orders")
+                            )
+                            : React.createElement("table", { className: "w-full" },
+                                React.createElement("thead", null,
+                                    React.createElement("tr", { className: "text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark" },
+                                        React.createElement("th", { className: "text-left px-4 py-3" }, "Ticker"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Qty"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Avg Entry"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Cost Basis"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Stop Loss"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Take Profit"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Opened"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Actions")
+                                    )
+                                ),
+                                React.createElement("tbody", null,
+                                    ...(portfolio.positions || []).map((pos, i) =>
+                                        React.createElement("tr", {
+                                            key: pos.ticker,
+                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`
+                                        },
+                                            React.createElement("td", { className: "px-4 py-3" },
+                                                React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${pos.ticker}`)
+                                            ),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, pos.qty),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-text-secondary" }, fmt.usd(pos.avg_entry_price)),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, fmt.usd(pos.qty * pos.avg_entry_price)),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-xs font-mono" },
+                                                pos.stop_loss > 0
+                                                    ? React.createElement("span", { className: "text-red-400" }, fmt.usd(pos.stop_loss))
+                                                    : React.createElement("span", { className: "text-text-muted" }, "—")
+                                            ),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-xs font-mono" },
+                                                pos.take_profit > 0
+                                                    ? React.createElement("span", { className: "text-green-400" }, fmt.usd(pos.take_profit))
+                                                    : React.createElement("span", { className: "text-text-muted" }, "—")
+                                            ),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-[10px] font-mono text-text-muted" },
+                                                pos.opened_at ? fmt.ago(pos.opened_at) : "—"
+                                            ),
+                                            React.createElement("td", { className: "text-center px-4 py-3" },
+                                                React.createElement("button", {
+                                                    onClick: () => { if (confirm(`Close entire ${pos.ticker} position (${pos.qty} shares)?`)) { closePosition(pos.ticker); } },
+                                                    className: "px-2.5 py-1 rounded text-[10px] font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
+                                                    title: "Close position at market price",
+                                                }, "Close")
+                                            )
                                         )
                                     )
                                 )
-                            ))
+                            )
+                    ),
+
+                    // ── Active Triggers ──
+                    triggers.length > 0 && React.createElement("div", { className: "glass-card overflow-hidden" },
+                        React.createElement("div", { className: "px-4 py-3 border-b border-border-dark bg-onyx-panel flex items-center gap-2" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[16px] text-yellow-400" }, "notification_important"),
+                            React.createElement("h3", { className: "text-sm font-bold text-white" }, `Active Triggers (${triggers.length})`)
+                        ),
+                        React.createElement("table", { className: "w-full" },
+                            React.createElement("thead", null,
+                                React.createElement("tr", { className: "text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark" },
+                                    React.createElement("th", { className: "text-left px-4 py-3" }, "Ticker"),
+                                    React.createElement("th", { className: "text-center px-4 py-3" }, "Type"),
+                                    React.createElement("th", { className: "text-right px-4 py-3" }, "Trigger Price"),
+                                    React.createElement("th", { className: "text-center px-4 py-3" }, "Action"),
+                                    React.createElement("th", { className: "text-right px-4 py-3" }, "Qty"),
+                                    React.createElement("th", { className: "text-right px-4 py-3" }, "Created")
+                                )
+                            ),
+                            React.createElement("tbody", null,
+                                ...triggers.map((t, i) => {
+                                    const typeCls = t.trigger_type === "stop_loss" ? "bg-red-500/20 text-red-400 border-red-500/30"
+                                        : t.trigger_type === "take_profit" ? "bg-green-500/20 text-green-400 border-green-500/30"
+                                            : "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+                                    const typeLabel = t.trigger_type === "stop_loss" ? "Stop Loss"
+                                        : t.trigger_type === "take_profit" ? "Take Profit"
+                                            : "Trailing Stop";
+                                    return React.createElement("tr", {
+                                        key: t.id,
+                                        className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`
+                                    },
+                                        React.createElement("td", { className: "px-4 py-3 text-white font-bold font-mono text-sm" }, `$${t.ticker}`),
+                                        React.createElement("td", { className: "text-center px-4 py-3" },
+                                            React.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${typeCls}` }, typeLabel)
+                                        ),
+                                        React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-text-secondary" }, fmt.usd(t.trigger_price)),
+                                        React.createElement("td", { className: "text-center px-4 py-3 text-xs font-mono text-text-secondary uppercase" }, t.action),
+                                        React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, t.qty),
+                                        React.createElement("td", { className: "text-right px-4 py-3 text-[10px] font-mono text-text-muted" },
+                                            t.created_at ? fmt.ago(t.created_at) : "—"
+                                        )
+                                    );
+                                })
+                            )
                         )
+                    ),
+
+                    // ── Order History Table ──
+                    React.createElement("div", { className: "glass-card overflow-hidden" },
+                        React.createElement("div", { className: "px-4 py-3 border-b border-border-dark bg-onyx-panel flex items-center gap-2" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[16px] text-orange-400" }, "receipt_long"),
+                            React.createElement("h3", { className: "text-sm font-bold text-white" }, `Order History (${orders.length})`)
+                        ),
+                        orders.length === 0
+                            ? React.createElement("div", { className: "p-8 text-center" },
+                                React.createElement("span", { className: "material-symbols-outlined text-4xl text-text-muted mb-2 block" }, "receipt_long"),
+                                React.createElement("p", { className: "text-sm text-text-muted" }, "No orders yet"),
+                                React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Orders will appear here as the trading engine executes signals")
+                            )
+                            : React.createElement("table", { className: "w-full" },
+                                React.createElement("thead", null,
+                                    React.createElement("tr", { className: "text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark" },
+                                        React.createElement("th", { className: "text-left px-4 py-3" }, "Ticker"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Side"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Qty"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Price"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Total"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Signal"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Conviction"),
+                                        React.createElement("th", { className: "text-center px-4 py-3" }, "Status"),
+                                        React.createElement("th", { className: "text-right px-4 py-3" }, "Time")
+                                    )
+                                ),
+                                React.createElement("tbody", null,
+                                    ...orders.map((o, i) => {
+                                        const sideCls = o.side === "BUY" ? "bg-green-500/20 text-green-400 border-green-500/30" : "bg-red-500/20 text-red-400 border-red-500/30";
+                                        const statusCls = o.status === "filled" ? "text-green-400" : o.status === "rejected" ? "text-red-400" : "text-yellow-400";
+                                        return React.createElement("tr", {
+                                            key: o.id,
+                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`
+                                        },
+                                            React.createElement("td", { className: "px-4 py-3" },
+                                                React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${o.ticker}`)
+                                            ),
+                                            React.createElement("td", { className: "text-center px-4 py-3" },
+                                                React.createElement("span", { className: `px-2 py-0.5 rounded-full text-[10px] font-bold border ${sideCls}` }, o.side)
+                                            ),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, o.qty),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-text-secondary" }, fmt.usd(o.price)),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, fmt.usd(o.qty * o.price)),
+                                            React.createElement("td", { className: "text-center px-4 py-3" },
+                                                React.createElement("span", { className: "px-2 py-0.5 rounded text-[10px] font-mono text-text-secondary bg-onyx-surface border border-border-dark" }, o.signal || "—")
+                                            ),
+                                            React.createElement("td", { className: "text-right px-4 py-3" },
+                                                React.createElement("div", { className: "flex items-center gap-1.5 justify-end" },
+                                                    React.createElement("div", { className: "w-10 h-1 rounded-full bg-onyx-black/60 overflow-hidden" },
+                                                        React.createElement("div", {
+                                                            className: `h-full rounded-full ${o.conviction_score > 0.6 ? "bg-green-400" : o.conviction_score > 0.3 ? "bg-yellow-400" : "bg-red-400"}`,
+                                                            style: { width: `${(o.conviction_score * 100)}%` }
+                                                        })
+                                                    ),
+                                                    React.createElement("span", { className: "text-[10px] font-mono text-text-muted" }, `${(o.conviction_score * 100).toFixed(0)}%`)
+                                                )
+                                            ),
+                                            React.createElement("td", { className: `text-center px-4 py-3 text-[10px] font-bold font-mono uppercase ${statusCls}` }, o.status),
+                                            React.createElement("td", { className: "text-right px-4 py-3 text-[10px] font-mono text-text-muted" },
+                                                o.filled_at ? fmt.ago(o.filled_at) : o.created_at ? fmt.ago(o.created_at) : "—"
+                                            )
+                                        );
+                                    })
+                                )
+                            )
+                    ),
+
+                    // Empty state when no portfolio at all and done loading
+                    !portfolio && !portfolioLoading && React.createElement("div", { className: "glass-card text-center py-16" },
+                        React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "account_balance_wallet"),
+                        React.createElement("p", { className: "text-sm text-text-muted" }, "Portfolio not loaded yet"),
+                        React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Click Refresh to load your paper trading portfolio")
+                    )
                 )
-            )
+            ),
         )
     );
 };

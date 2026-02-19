@@ -18,7 +18,7 @@ from app.engine.dossier_synthesizer import DossierSynthesizer
 from app.engine.question_generator import QuestionGenerator
 from app.engine.quant_signals import QuantSignalEngine
 from app.engine.rag_engine import RAGEngine
-from app.models.dossier import QAPair, QuantScorecard, TickerDossier
+from app.models.dossier import TickerDossier
 from app.utils.logger import logger
 
 
@@ -35,7 +35,9 @@ class DeepAnalysisService:
     # Public API
     # ------------------------------------------------------------------
 
-    async def analyze_ticker(self, ticker: str) -> TickerDossier:
+    async def analyze_ticker(
+        self, ticker: str, portfolio_context: dict | None = None,
+    ) -> TickerDossier:
         """Run the full 4-layer funnel for a single ticker.
 
         Layer 1: QuantSignalEngine  → QuantScorecard   (pure math)
@@ -74,7 +76,9 @@ class DeepAnalysisService:
 
         # Layer 4 — async LLM call (synthesis)
         logger.info("[DeepAnalysis] Layer 4: Synthesizing dossier …")
-        dossier = await self._synth.synthesize(scorecard, qa_pairs)
+        dossier = await self._synth.synthesize(
+            scorecard, qa_pairs, portfolio_context=portfolio_context,
+        )
         logger.info(
             "[DeepAnalysis] Layer 4 done: conviction=%.2f",
             dossier.conviction_score,
@@ -102,6 +106,7 @@ class DeepAnalysisService:
         self,
         tickers: list[str],
         concurrency: int = 2,
+        portfolio_context: dict | None = None,
     ) -> list[TickerDossier]:
         """Analyze multiple tickers with bounded concurrency.
 
@@ -112,7 +117,7 @@ class DeepAnalysisService:
 
         async def _run(t: str) -> TickerDossier:
             async with sem:
-                return await self.analyze_ticker(t)
+                return await self.analyze_ticker(t, portfolio_context=portfolio_context)
 
         tasks = [_run(t) for t in tickers]
         dossiers = await asyncio.gather(*tasks, return_exceptions=True)

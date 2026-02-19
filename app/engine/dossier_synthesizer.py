@@ -25,7 +25,7 @@ QUANT SCORECARD:
 
 Q&A RESEARCH:
 {qa_pairs}
-
+{portfolio_section}
 Generate a JSON object with exactly these keys:
 {{
   "executive_summary": "3-5 sentences covering the thesis",
@@ -40,6 +40,7 @@ Rules:
 - conviction_score: 0.0 = strong sell, 0.5 = hold, 1.0 = strong buy
 - Be specific with numbers, dates, and percentages
 - Keep total output under 2000 characters
+- Factor in the portfolio context when assigning conviction
 - Respond ONLY with the JSON object, no markdown fences
 """
 
@@ -54,6 +55,7 @@ class DossierSynthesizer:
         self,
         scorecard: QuantScorecard,
         qa_pairs: list[QAPair],
+        portfolio_context: dict | None = None,
     ) -> TickerDossier:
         """Run the synthesis LLM call and return a TickerDossier."""
         ticker = scorecard.ticker
@@ -65,9 +67,34 @@ class DossierSynthesizer:
             for p in qa_pairs
         )
 
+        # Build portfolio section
+        portfolio_section = ""
+        if portfolio_context:
+            pos_info = portfolio_context.get("positions", {})
+            ticker_pos = pos_info.get(ticker, {})
+            if ticker_pos:
+                pos_line = (
+                    f"Current Position in {ticker}: "
+                    f"{ticker_pos['qty']} shares @ ${ticker_pos['avg_entry']:.2f} "
+                    f"(cost basis ${ticker_pos['cost_basis']:.2f})"
+                )
+            else:
+                pos_line = f"No current position in {ticker}"
+
+            other_positions = [f"{t} ({d['qty']} shares)" for t, d in pos_info.items() if t != ticker]
+            portfolio_section = (
+                f"\nPORTFOLIO CONTEXT:\n"
+                f"Cash Available: ${portfolio_context.get('cash_balance', 0):.2f}\n"
+                f"Total Portfolio Value: ${portfolio_context.get('total_portfolio_value', 0):.2f}\n"
+                f"{pos_line}\n"
+                f"Other Positions: {', '.join(other_positions) if other_positions else 'None'}\n"
+                f"Realized P&L: ${portfolio_context.get('realized_pnl', 0):.2f}\n"
+            )
+
         prompt = SYNTHESIS_SYSTEM_PROMPT.format(
             scorecard=sc_text,
             qa_pairs=qa_text,
+            portfolio_section=portfolio_section,
         )
 
         try:

@@ -399,7 +399,11 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
     """Save new LLM settings + hot-patch the running config."""
     data = {k: v for k, v in req.model_dump().items() if v is not None}
     merged = settings.update_llm_config(data)
-    logger.info("LLM config updated: provider=%s model=%s", merged.get("provider"), merged.get("model"))
+    logger.info(
+        "LLM config updated: provider=%s model=%s",
+        merged.get("provider"),
+        merged.get("model"),
+    )
     return {"status": "updated", "config": merged}
 
 
@@ -471,7 +475,9 @@ def _fetch_one_quote(symbol: str) -> dict:
 
 
 @app.get("/api/quotes")
-async def get_quotes(tickers: str = Query(..., description="Comma-separated ticker symbols")) -> dict:
+async def get_quotes(
+    tickers: str = Query(..., description="Comma-separated ticker symbols"),
+) -> dict:
     """Batch live-price endpoint — fetches current prices from Yahoo Finance.
 
     Uses yfinance.Ticker.fast_info for each ticker in parallel.
@@ -488,7 +494,9 @@ async def get_quotes(tickers: str = Query(..., description="Comma-separated tick
 
     # Run yfinance calls in thread pool (they're synchronous I/O)
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(symbols), 8)
+    ) as pool:
         futures = [loop.run_in_executor(pool, _fetch_one_quote, s) for s in symbols]
         results = await asyncio.gather(*futures, return_exceptions=True)
 
@@ -514,8 +522,7 @@ async def dashboard_overview(ticker: str) -> dict:
     try:
         # Latest price
         prices = _query_to_dicts(
-            "SELECT * FROM price_history WHERE ticker = ? "
-            "ORDER BY date DESC LIMIT 5",
+            "SELECT * FROM price_history WHERE ticker = ? ORDER BY date DESC LIMIT 5",
             [ticker],
         )
         latest_price = prices[0] if prices else {}
@@ -532,8 +539,7 @@ async def dashboard_overview(ticker: str) -> dict:
 
         # Latest technicals
         techs = _query_to_dicts(
-            "SELECT * FROM technicals WHERE ticker = ? "
-            "ORDER BY date DESC LIMIT 1",
+            "SELECT * FROM technicals WHERE ticker = ? ORDER BY date DESC LIMIT 1",
             [ticker],
         )
 
@@ -598,8 +604,7 @@ async def dashboard_technicals(ticker: str) -> dict:
     ticker = ticker.upper().strip()
     try:
         rows = _query_to_dicts(
-            "SELECT * FROM technicals WHERE ticker = ? "
-            "ORDER BY date DESC LIMIT 30",
+            "SELECT * FROM technicals WHERE ticker = ? ORDER BY date DESC LIMIT 30",
             [ticker],
         )
         return {"ticker": ticker, "count": len(rows), "technicals": rows}
@@ -774,12 +779,25 @@ async def dashboard_analyst(ticker: str) -> dict:
 async def dashboard_db_stats() -> dict:
     """Database row counts for diagnostics."""
     tables = [
-        "price_history", "fundamentals", "financial_history",
-        "technicals", "news_articles", "youtube_transcripts",
-        "risk_metrics", "balance_sheet", "cash_flows",
-        "analyst_data", "insider_activity", "earnings_calendar",
-        "discovered_tickers", "ticker_scores", "watchlist",
-        "positions", "orders", "price_triggers", "portfolio_snapshots",
+        "price_history",
+        "fundamentals",
+        "financial_history",
+        "technicals",
+        "news_articles",
+        "youtube_transcripts",
+        "risk_metrics",
+        "balance_sheet",
+        "cash_flows",
+        "analyst_data",
+        "insider_activity",
+        "earnings_calendar",
+        "discovered_tickers",
+        "ticker_scores",
+        "watchlist",
+        "positions",
+        "orders",
+        "price_triggers",
+        "portfolio_snapshots",
     ]
     counts = {}
     db = get_db()
@@ -832,7 +850,9 @@ async def close_position(ticker: str) -> dict:
     quote = _fetch_one_quote(ticker)
     price = quote.get("price")
     if not price:
-        raise HTTPException(status_code=400, detail=f"Could not fetch price for {ticker}")
+        raise HTTPException(
+            status_code=400, detail=f"Could not fetch price for {ticker}"
+        )
 
     positions = _paper_trader.get_positions()
     qty = 0
@@ -902,10 +922,17 @@ async def run_discovery(
     reddit: bool = Query(default=True),
     youtube: bool = Query(default=True),
     hours: int = Query(default=24),
-    max_tickers: int = Query(default=0, description="Cap results to N tickers (0=no limit)"),
+    max_tickers: int = Query(
+        default=0, description="Cap results to N tickers (0=no limit)"
+    ),
 ) -> dict:
     """Trigger a discovery scan (Reddit + YouTube)."""
-    logger.info("[API] /api/discovery/run called (reddit=%s, youtube=%s, max=%s)", reddit, youtube, max_tickers)
+    logger.info(
+        "[API] /api/discovery/run called (reddit=%s, youtube=%s, max=%s)",
+        reddit,
+        youtube,
+        max_tickers,
+    )
     result = await _discovery.run_discovery(
         enable_reddit=reddit,
         enable_youtube=youtube,
@@ -980,6 +1007,65 @@ async def get_discovery_transcripts(ticker: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# PIPELINE ACTIVITY LOG — persistent event audit trail
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/pipeline/events")
+async def get_pipeline_events(
+    limit: int = Query(default=200, ge=1, le=1000),
+    phase: str | None = Query(default=None),
+    ticker: str | None = Query(default=None),
+    loop_id: str | None = Query(default=None),
+) -> dict:
+    """Get pipeline events with optional filtering."""
+    db = get_db()
+    conditions: list[str] = []
+    params: list = []
+
+    if phase:
+        conditions.append("phase = ?")
+        params.append(phase)
+    if ticker:
+        conditions.append("ticker = ?")
+        params.append(ticker.upper())
+    if loop_id:
+        conditions.append("loop_id = ?")
+        params.append(loop_id)
+
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
+
+    rows = db.execute(
+        f"""
+        SELECT id, timestamp, phase, event_type, ticker,
+               detail, metadata, loop_id, status
+        FROM pipeline_events
+        {where}
+        ORDER BY timestamp DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    events = [
+        {
+            "id": r[0],
+            "timestamp": str(r[1]) if r[1] else None,
+            "phase": r[2],
+            "event_type": r[3],
+            "ticker": r[4],
+            "detail": r[5],
+            "metadata": r[6],
+            "loop_id": r[7],
+            "status": r[8],
+        }
+        for r in rows
+    ]
+    return {"count": len(events), "events": events}
+
+
+# ══════════════════════════════════════════════════════════════════════
 # BOT CONTROL API — Autonomous Full Loop
 # ══════════════════════════════════════════════════════════════════════
 
@@ -990,12 +1076,15 @@ _loop_task: asyncio.Task | None = None
 
 
 @app.post("/api/bot/run-loop")
-async def run_full_loop() -> dict:
+async def run_full_loop(max_tickers: int = 10) -> dict:
     """Trigger the full autonomous loop: Discovery → Import → Deep Analysis."""
-    global _loop_task  # noqa: PLW0603
+    global _loop, _loop_task  # noqa: PLW0603
 
     if _loop._state["running"]:
         raise HTTPException(status_code=409, detail="Loop is already running")
+
+    # Re-create the loop with the requested max_tickers
+    _loop = AutonomousLoop(max_tickers=max_tickers)
 
     async def _run() -> None:
         try:
@@ -1004,7 +1093,10 @@ async def run_full_loop() -> dict:
             logger.exception("[AutoLoop] Unhandled error in background loop")
 
     _loop_task = asyncio.create_task(_run())
-    return {"status": "started", "message": "Full loop is running in background"}
+    return {
+        "status": "started",
+        "message": f"Full loop is running (max_tickers={max_tickers})",
+    }
 
 
 @app.get("/api/bot/loop-status")
@@ -1012,3 +1104,109 @@ async def get_loop_status() -> dict:
     """Poll the current state of the autonomous loop."""
     return _loop.get_status()
 
+
+# ── Individual phase endpoints (developer debugging) ──────────────
+
+
+@app.post("/api/bot/run-discovery")
+async def run_discovery_phase() -> dict:
+    """Run ONLY Phase 1: Ticker Discovery (Reddit + YouTube scanning)."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "discovery",
+                "Scanning Reddit + YouTube for tickers…",
+                _loop._do_discovery,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Discovery phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Discovery phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "discovery"}
+
+
+@app.post("/api/bot/run-import")
+async def run_import_phase() -> dict:
+    """Run ONLY Phase 2: Auto-Import top tickers to watchlist."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "import",
+                "Importing top tickers to watchlist…",
+                _loop._do_import,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Import phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Import phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "import"}
+
+
+@app.post("/api/bot/run-analysis")
+async def run_analysis_phase() -> dict:
+    """Run ONLY Phase 3: Deep Analysis on all active watchlist tickers."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "analysis",
+                "Running 4-layer deep analysis on all active tickers…",
+                _loop._do_deep_analysis,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Analysis phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Analysis phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "analysis"}
+
+
+@app.post("/api/bot/run-trading")
+async def run_trading_phase() -> dict:
+    """Run ONLY Phase 4: Signal routing + paper trading."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "trading",
+                "Processing signals through paper trader…",
+                _loop._do_trading,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Trading phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Trading phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "trading"}
