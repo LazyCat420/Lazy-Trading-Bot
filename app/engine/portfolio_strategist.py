@@ -22,6 +22,8 @@ from app.engine.strategist_audit import StrategistAudit
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.llm_service import LLMService
 from app.services.paper_trader import PaperTrader
+from app.services.peer_fetcher import PeerFetcher
+from app.collectors.yfinance_collector import YFinanceCollector
 from app.utils.logger import logger
 
 _MAX_TURNS = 15  # Safety cap on LLM action loops
@@ -43,8 +45,9 @@ Params: none
 Example: {"action": "get_all_candidates", "params": {}}
 
 ### get_sector_peers
-Returns 2-3 peer stocks in the same sector for comparative analysis.
-Use this BEFORE making a buy decision to validate the pick against peers.
+MANDATORY before any buy. Returns 2-3 competitor stocks with their
+fundamentals (P/E, revenue growth, margins, market cap) for comparative
+analysis. Always call this to validate your pick is the best in its sector.
 Params: ticker (str) — the ticker to find peers for
 Example: {"action": "get_sector_peers", "params": {"ticker": "NVDA"}}
 
@@ -382,7 +385,13 @@ class PortfolioStrategist:
         }
 
     async def _tool_get_sector_peers(self, params: dict) -> dict:
-        """Return 2-3 peer stocks in the same sector for comparison."""
+        """Return 2-3 peer stocks with fundamentals for comparison.
+
+        Strategy:
+        1. Check watchlist for same-sector tickers with dossiers
+        2. If < 2 watchlist peers, use PeerFetcher to discover competitors
+           and fetch their fundamentals from yfinance
+        """
         ticker = str(params.get("ticker", "")).upper().strip()
         if not ticker:
             return {"error": "Missing 'ticker' parameter"}
@@ -397,7 +406,7 @@ class PortfolioStrategist:
             "scorecard", {},
         ).get("industry", "Unknown")
 
-        # Find peers from the watchlist with dossiers
+        # ── Step 1: Check watchlist for same-sector peers ──
         peers = []
         for t in self._tickers:
             if t == ticker:
@@ -410,6 +419,7 @@ class PortfolioStrategist:
                 scorecard = dossier.get("scorecard", {})
                 peers.append({
                     "ticker": t,
+                    "source": "watchlist",
                     "sector": peer_sector,
                     "industry": dossier.get("industry", "Unknown"),
                     "conviction_score": dossier.get("conviction_score", 0.5),
@@ -424,8 +434,67 @@ class PortfolioStrategist:
                     "bull_case": dossier.get("bull_case", "")[:200],
                 })
 
-        # Sort by conviction and take top 3
-        peers.sort(key=lambda p: p["conviction_score"], reverse=True)
+        # ── Step 2: If < 2 watchlist peers, discover competitors ──
+        if len(peers) < 2:
+            logger.info(
+                "[Strategist] Only %d watchlist peers for %s — "
+                "discovering competitors via PeerFetcher",
+                len(peers), ticker,
+            )
+            try:
+                llm = LLMService()
+                fetcher = PeerFetcher(llm)
+                yf = YFinanceCollector()
+
+                # Get fundamentals for sector/industry context
+                target_fundamentals = await yf.collect_fundamentals(ticker)
+                discovered = await fetcher.get_industry_peers(
+                    ticker, target_fundamentals,
+                )
+
+                # Fetch fundamentals for each discovered peer
+                existing_tickers = {p["ticker"] for p in peers}
+                for peer_ticker in discovered:
+                    if peer_ticker in existing_tickers or peer_ticker == ticker:
+                        continue
+                    try:
+                        fund = await yf.collect_fundamentals(peer_ticker)
+                        if fund:
+                            peers.append({
+                                "ticker": peer_ticker,
+                                "source": "discovered",
+                                "sector": fund.sector or target_sector,
+                                "industry": fund.industry or "Unknown",
+                                "market_cap": getattr(fund, "market_cap", 0),
+                                "pe_ratio": getattr(fund, "trailing_pe", None),
+                                "forward_pe": getattr(fund, "forward_pe", None),
+                                "revenue_growth": getattr(
+                                    fund, "revenue_growth", None,
+                                ),
+                                "profit_margin": getattr(
+                                    fund, "profit_margin", None,
+                                ),
+                                "current_price": getattr(
+                                    fund, "current_price", None,
+                                ),
+                            })
+                    except Exception as exc:
+                        logger.warning(
+                            "[Strategist] Failed to fetch peer %s: %s",
+                            peer_ticker, exc,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "[Strategist] PeerFetcher failed for %s: %s",
+                    ticker, exc,
+                )
+
+        # Sort by conviction (watchlist) or market_cap (discovered)
+        peers.sort(
+            key=lambda p: p.get("conviction_score", 0)
+            or p.get("market_cap", 0),
+            reverse=True,
+        )
         peers = peers[:3]
 
         return {
@@ -435,8 +504,9 @@ class PortfolioStrategist:
             "peers_found": len(peers),
             "peers": peers,
             "note": (
-                f"Compare {ticker} against these sector peers to validate "
-                f"your thesis. Is {ticker} the best pick in {target_sector}?"
+                f"Compare {ticker} against these sector peers. "
+                f"Is {ticker} the best opportunity in {target_sector}? "
+                f"Consider relative valuation, growth, and momentum."
             ),
         }
 
