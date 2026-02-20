@@ -9,7 +9,6 @@ import time
 from datetime import datetime
 from typing import Any
 
-from app.engine.signal_router import SignalRouter
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.discovery_service import DiscoveryService
 from app.services.event_logger import end_loop, log_event, start_loop
@@ -26,9 +25,8 @@ class AutonomousLoop:
     def __init__(self, *, max_tickers: int = 10) -> None:
         self.discovery = DiscoveryService()
         self.watchlist = WatchlistManager()
-        self.deep_analysis = DeepAnalysisService()
-        self.signal_router = SignalRouter()
         self.paper_trader = PaperTrader()
+        self.deep_analysis = DeepAnalysisService()
         self.max_tickers = max_tickers  # Cap discovery results for faster runs
         self.price_monitor = PriceMonitor(self.paper_trader)
 
@@ -320,7 +318,13 @@ class AutonomousLoop:
         }
 
     async def _do_trading(self) -> dict:
-        """Step 4: Route dossier signals through paper trader."""
+        """Step 4: LLM Portfolio Strategist makes all trading decisions.
+
+        Instead of processing each ticker through hardcoded SignalRouter
+        thresholds, we feed ALL dossiers to the Portfolio Strategist LLM.
+        The LLM compares stocks, decides allocation, and executes trades
+        via tool-calling.
+        """
         tickers = self.watchlist.get_active_tickers()
         if not tickers:
             self._log("No active tickers for trading")
@@ -332,12 +336,7 @@ class AutonomousLoop:
             )
             return {"orders": 0, "tickers": []}
 
-        orders_placed = []
-        orders_today = self.paper_trader.get_orders_today_count()
-        daily_pnl = self.paper_trader.get_daily_pnl_pct()
-        portfolio = self.paper_trader.get_portfolio()
-
-        # ---- Check triggers first ----
+        # ---- Check price triggers first ----
         triggered = await self.price_monitor.check_triggers()
         if triggered:
             self._log(f"{len(triggered)} price triggers fired")
@@ -345,189 +344,92 @@ class AutonomousLoop:
                 log_event(
                     "trading",
                     "trigger_fired",
-                    f"${trig.get('ticker', '?')}: {trig.get('trigger_type', '?')} triggered",
+                    f"${trig.get('ticker', '?')}: "
+                    f"{trig.get('trigger_type', '?')} triggered",
                     ticker=trig.get("ticker"),
                     metadata=trig,
                 )
 
-        # ---- Process each ticker through signal router ----
-        for ticker in tickers:
-            try:
-                dossier_data = DeepAnalysisService.get_latest_dossier(ticker)
-                if not dossier_data:
-                    log_event(
-                        "trading",
-                        "signal_skip",
-                        f"${ticker}: no dossier found, skipping",
-                        ticker=ticker,
-                        status="skipped",
-                    )
-                    continue
-
-                conviction = dossier_data.get("conviction_score", 0.5)
-
-                # Get current price
-                from app.main import _fetch_one_quote
-
-                quote = _fetch_one_quote(ticker)
-                current_price = quote.get("price") if quote else None
-                if not current_price:
-                    self._log(f"{ticker}: no price available, skipping")
-                    log_event(
-                        "trading",
-                        "signal_skip",
-                        f"${ticker}: no price available, skipping",
-                        ticker=ticker,
-                        status="warning",
-                    )
-                    continue
-
-                # Check existing position
-                positions = portfolio.get("positions", [])
-                existing_qty = 0
-                for p in positions:
-                    if p["ticker"] == ticker:
-                        existing_qty = p["qty"]
-                        break
-
-                last_sold = self.paper_trader.get_last_sell_date(ticker)
-
-                # Route the signal
-                action = self.signal_router.evaluate(
-                    ticker=ticker,
-                    conviction_score=conviction,
-                    current_price=current_price,
-                    cash_balance=portfolio["cash_balance"],
-                    total_portfolio_value=portfolio["total_portfolio_value"],
-                    existing_position_qty=existing_qty,
-                    orders_today=orders_today,
-                    daily_pnl_pct=daily_pnl,
-                    last_sold_date=last_sold,
-                )
-
-                if not action:
-                    # Distinguish HOLD (own stock) from PASS (don't own)
-                    if existing_qty > 0:
-                        label = f"${ticker}: HOLD (conviction {conviction:.2f}, holding {existing_qty} shares)"
-                        evt_type = "signal_hold"
-                    else:
-                        label = f"${ticker}: PASS (conviction {conviction:.2f}, not buying)"
-                        evt_type = "signal_pass"
-                    log_event(
-                        "trading",
-                        evt_type,
-                        label,
-                        ticker=ticker,
-                        metadata={"conviction": conviction, "price": current_price,
-                                  "existing_qty": existing_qty},
-                    )
-                    continue
-
-                # Execute the order
-                if action["side"] == "buy":
-                    order = self.paper_trader.buy(
-                        ticker=action["ticker"],
-                        qty=action["qty"],
-                        price=action["price"],
-                        conviction_score=action["conviction"],
-                        signal=action["signal"],
-                    )
-                    if order:
-                        self.paper_trader.set_triggers_for_position(
-                            ticker=ticker,
-                            entry_price=action["price"],
-                            qty=action["qty"],
-                        )
-                        log_event(
-                            "trading",
-                            "order_buy",
-                            f"${ticker}: BUY {order.qty} shares @ ${order.price:.2f}",
-                            ticker=ticker,
-                            metadata={
-                                "qty": order.qty,
-                                "price": order.price,
-                                "conviction": action["conviction"],
-                            },
-                        )
-                else:
-                    order = self.paper_trader.sell(
-                        ticker=action["ticker"],
-                        qty=action["qty"],
-                        price=action["price"],
-                        conviction_score=action["conviction"],
-                        signal=action["signal"],
-                    )
-                    if order:
-                        log_event(
-                            "trading",
-                            "order_sell",
-                            f"${ticker}: SELL {order.qty} shares @ ${order.price:.2f}",
-                            ticker=ticker,
-                            metadata={
-                                "qty": order.qty,
-                                "price": order.price,
-                                "conviction": action["conviction"],
-                            },
-                        )
-
-                if order:
-                    orders_placed.append(
-                        {
-                            "ticker": ticker,
-                            "side": order.side,
-                            "qty": order.qty,
-                            "price": order.price,
-                        }
-                    )
-                    orders_today += 1
-                    portfolio = self.paper_trader.get_portfolio()
-
-            except Exception as exc:
-                self._log(f"{ticker} trading error: {exc}")
-                logger.error(
-                    "[AutoLoop] Trading error for %s: %s", ticker, exc, exc_info=True
-                )
-                log_event(
-                    "trading",
-                    "trading_error",
-                    f"${ticker}: trading error — {exc}",
-                    ticker=ticker,
-                    status="error",
-                    metadata={"error": str(exc)},
-                )
-
-        # ---- Take portfolio snapshot ----
-        self.paper_trader.take_snapshot()
-        log_event(
-            "trading",
-            "portfolio_snapshot",
-            f"Portfolio snapshot: ${portfolio['total_portfolio_value']:.0f}",
-            metadata={
-                "value": portfolio["total_portfolio_value"],
-                "cash": portfolio["cash_balance"],
-            },
+        # ---- Run Portfolio Strategist (LLM tool-calling) ----
+        self._log(
+            f"Portfolio Strategist analyzing {len(tickers)} tickers "
+            f"for trading decisions…"
         )
+
+        from app.engine.portfolio_strategist import PortfolioStrategist
+        from app.engine.strategist_audit import StrategistAudit
+
+        audit = StrategistAudit()
+        strategist = PortfolioStrategist(
+            paper_trader=self.paper_trader,
+            tickers=tickers,
+            audit=audit,
+        )
+
+        try:
+            result = await strategist.run()
+        except Exception as exc:
+            logger.exception("[AutoLoop] Portfolio Strategist failed")
+            self._log(f"Strategist error: {exc}")
+            log_event(
+                "trading",
+                "strategist_error",
+                f"Portfolio Strategist failed: {exc}",
+                status="error",
+            )
+            return {"orders": 0, "error": str(exc)}
+
+        # ---- Log results ----
+        orders_count = result.get("orders_placed", 0)
+        triggers_count = result.get("triggers_set", 0)
+        summary = result.get("summary", "")
+        audit_path = result.get("audit_report", "")
 
         self._log(
-            f"Trading complete: {len(orders_placed)} orders placed, "
-            f"{len(triggered)} triggers fired"
+            f"Strategist: {orders_count} orders, "
+            f"{triggers_count} triggers. {summary[:100]}"
         )
+        if audit_path:
+            self._log(f"Audit report: {audit_path}")
+
         log_event(
             "trading",
-            "trading_complete",
-            f"Trading complete: {len(orders_placed)} orders placed, "
-            f"{len(triggered)} triggers fired",
+            "strategist_complete",
+            f"Portfolio Strategist: {orders_count} orders, "
+            f"{triggers_count} triggers set",
             metadata={
-                "orders_placed": len(orders_placed),
-                "triggers_fired": len(triggered),
+                "orders_placed": orders_count,
+                "triggers_set": triggers_count,
+                "turns_used": result.get("turns_used", 0),
+                "summary": summary,
+                "audit_report": audit_path,
             },
         )
+
+        # Log individual orders for activity feed
+        for order in result.get("orders", []):
+            side = order.get("side", "?").upper()
+            ticker = order.get("ticker", "?")
+            qty = order.get("qty", 0)
+            price = order.get("price", 0)
+            reason = order.get("reason", "")
+            log_event(
+                "trading",
+                f"order_{side.lower()}",
+                f"${ticker}: {side} {qty} shares @ ${price:.2f} — {reason}",
+                ticker=ticker,
+                metadata=order,
+            )
+
         return {
-            "orders_placed": len(orders_placed),
-            "triggers_fired": len(triggered),
-            "orders": orders_placed,
-            "portfolio_value": portfolio["total_portfolio_value"],
+            "orders": orders_count,
+            "triggers": triggers_count,
+            "summary": summary,
+            "tickers": tickers,
+            "audit_report": audit_path,
         }
+
+
 
     # ------------------------------------------------------------------
     # Helpers

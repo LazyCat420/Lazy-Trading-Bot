@@ -41,6 +41,14 @@ class YouTubeCollector:
         "{ticker} technical analysis",
     ]
 
+    # Broader market queries for discovering NEW tickers
+    GENERAL_MARKET_QUERIES = [
+        "stock market news today",
+        "stocks to buy now",
+        "best stocks this week",
+        "stock market analysis today",
+    ]
+
     # Curated financial channels — prioritized in search results
     CURATED_CHANNELS = [
         "CNBC",
@@ -227,6 +235,121 @@ class YouTubeCollector:
             len(transcripts),
             ticker,
             len(new_videos),
+        )
+        return transcripts
+
+    async def collect_general_market(
+        self, max_videos: int = 2,
+    ) -> list[YouTubeTranscript]:
+        """Scrape general market news videos to discover NEW tickers.
+
+        Uses broad queries like 'stock market news today' instead of
+        ticker-specific ones.  Transcripts are stored with
+        ticker='__MARKET__' and later scanned by TickerScanner.
+
+        Has its own daily guard — skips if already scraped today.
+        """
+        db = get_db()
+
+        # Daily guard for general market scrapes
+        today_start = datetime.now(tz=timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        existing = db.execute(
+            "SELECT COUNT(*) FROM youtube_transcripts "
+            "WHERE ticker = '__MARKET__' AND collected_at >= ?",
+            [today_start],
+        ).fetchone()
+        if existing and existing[0] > 0:
+            logger.info(
+                "General market YouTube already scraped today "
+                "(%d transcripts), skipping",
+                existing[0],
+            )
+            return []
+
+        logger.info(
+            "Collecting general market YouTube transcripts "
+            "(%d queries)...",
+            len(self.GENERAL_MARKET_QUERIES),
+        )
+
+        # Step 1: Search across general market queries
+        all_videos: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for query in self.GENERAL_MARKET_QUERIES:
+            results = self._search_videos(query, max_videos)
+            for vid in results:
+                vid_id = vid["id"]
+                if vid_id not in seen_ids:
+                    seen_ids.add(vid_id)
+                    all_videos.append(vid)
+
+        logger.info(
+            "Found %d unique general market videos", len(all_videos),
+        )
+
+        if not all_videos:
+            return []
+
+        # Step 2: Filter out already-collected videos
+        new_videos = []
+        for vid in all_videos:
+            existing_vid = db.execute(
+                "SELECT 1 FROM youtube_transcripts "
+                "WHERE ticker = '__MARKET__' AND video_id = ?",
+                [vid["id"]],
+            ).fetchone()
+            if not existing_vid:
+                new_videos.append(vid)
+
+        if not new_videos:
+            logger.info("All general market videos already collected")
+            return []
+
+        logger.info(
+            "%d new general market videos to process", len(new_videos),
+        )
+
+        # Step 3: Extract transcripts and persist
+        transcripts: list[YouTubeTranscript] = []
+        for vid in new_videos:
+            transcript_text = self._get_transcript(vid["id"])
+            if not transcript_text:
+                continue
+
+            yt = YouTubeTranscript(
+                ticker="__MARKET__",
+                video_id=vid["id"],
+                title=vid.get("title", ""),
+                channel=vid.get("channel", ""),
+                published_at=vid.get("published_at"),
+                duration_seconds=vid.get("duration", 0),
+                raw_transcript=transcript_text,
+            )
+            transcripts.append(yt)
+
+            db.execute(
+                """
+                INSERT INTO youtube_transcripts
+                    (ticker, video_id, title, channel, published_at,
+                     duration_seconds, raw_transcript)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    yt.ticker,
+                    yt.video_id,
+                    yt.title,
+                    yt.channel,
+                    yt.published_at,
+                    yt.duration_seconds,
+                    yt.raw_transcript,
+                ],
+            )
+
+        logger.info(
+            "Collected %d general market transcripts", len(transcripts),
         )
         return transcripts
 

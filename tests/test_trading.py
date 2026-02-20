@@ -102,10 +102,10 @@ class TestSignalRouter:
             yield  # keep mock active during test execution
 
     def test_buy_signal_high_conviction(self):
-        """Conviction >= 0.7 should produce a BUY."""
+        """Conviction >= 0.55 should produce a BUY."""
         result = self.router.evaluate(
             ticker="AAPL",
-            conviction_score=0.85,
+            conviction_score=0.60,
             current_price=150.0,
             cash_balance=10000.0,
             total_portfolio_value=10000.0,
@@ -131,10 +131,10 @@ class TestSignalRouter:
         assert result["qty"] == 10  # full position
 
     def test_hold_signal_mid_conviction(self):
-        """Conviction between 0.3 and 0.7 should return None (HOLD)."""
+        """Conviction between 0.3 and 0.55 should return None (HOLD/PASS)."""
         result = self.router.evaluate(
             ticker="AAPL",
-            conviction_score=0.5,
+            conviction_score=0.45,
             current_price=150.0,
             cash_balance=10000.0,
             total_portfolio_value=10000.0,
@@ -199,9 +199,48 @@ class TestSignalRouter:
             total_portfolio_value=10000.0,
         )
         assert result is not None
+        # With tiered sizing at conviction=0.9 (tier_scale=1.0):
         # max_position_size_pct = 10% of $10,000 = $1,000 → 6 shares @ $150
         expected_max_qty = math.floor(1000 / 150)
         assert result["qty"] == expected_max_qty
+
+    def test_tiered_sizing_low_conviction(self):
+        """Lower conviction should produce smaller position (50% tier)."""
+        result = self.router.evaluate(
+            ticker="AAPL",
+            conviction_score=0.58,
+            current_price=150.0,
+            cash_balance=10000.0,
+            total_portfolio_value=10000.0,
+        )
+        assert result is not None
+        # 10% of $10k = $1000 max, tier_scale=0.50 → $500 → 3 shares
+        assert result["qty"] == math.floor(math.floor(1000 / 150) * 0.50)
+
+    def test_tiered_sizing_mid_conviction(self):
+        """Mid conviction should produce 75% position."""
+        result = self.router.evaluate(
+            ticker="AAPL",
+            conviction_score=0.70,
+            current_price=150.0,
+            cash_balance=10000.0,
+            total_portfolio_value=10000.0,
+        )
+        assert result is not None
+        # 10% of $10k = $1000 max → 6 shares, tier_scale=0.75 → 4 shares
+        assert result["qty"] == math.floor(math.floor(1000 / 150) * 0.75)
+
+    def test_buy_at_threshold_boundary(self):
+        """Conviction exactly at 0.55 should still produce a BUY."""
+        result = self.router.evaluate(
+            ticker="AAPL",
+            conviction_score=0.55,
+            current_price=150.0,
+            cash_balance=10000.0,
+            total_portfolio_value=10000.0,
+        )
+        assert result is not None
+        assert result["side"] == "buy"
 
     def test_sell_no_position_returns_none(self):
         """Sell signal with no position should skip."""

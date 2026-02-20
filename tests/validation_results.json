@@ -1,0 +1,50 @@
+{
+  "VOO": {
+    "fix2_support_levels": [],
+    "fix2_resistance_levels": [],
+    "fix2_key_signals": [],
+    "fix2_strengths": [],
+    "fix2_risks": [],
+    "fix2_key_metrics": {},
+    "fix2_downside_scenarios": [],
+    "fix4_bull_case": null,
+    "fix4_base_case": null,
+    "fix4_bear_case": null,
+    "fix5_entry_price": 0,
+    "fix5_stop_loss": 0,
+    "fix5_take_profit": 0,
+    "fix1_entry_rules": []
+  },
+  "TSLA": {
+    "fix2_support_levels": [],
+    "fix2_resistance_levels": [],
+    "fix2_key_signals": [],
+    "fix2_strengths": [],
+    "fix2_risks": [],
+    "fix2_key_metrics": {},
+    "fix2_downside_scenarios": [],
+    "fix4_bull_case": null,
+    "fix4_base_case": null,
+    "fix4_bear_case": null,
+    "fix5_entry_price": 0,
+    "fix5_stop_loss": 0,
+    "fix5_take_profit": 0,
+    "fix1_entry_rules": []
+  },
+  "WMT": {
+    "fix2_support_levels": [],
+    "fix2_resistance_levels": [],
+    "fix2_key_signals": [],
+    "fix2_strengths": [],
+    "fix2_risks": [],
+    "fix2_key_metrics": {},
+    "fix2_downside_scenarios": [],
+    "fix4_bull_case": null,
+    "fix4_base_case": null,
+    "fix4_bear_case": null,
+    "fix5_entry_price": 0,
+    "fix5_stop_loss": 0,
+    "fix5_take_profit": 0,
+    "fix1_entry_rules": []
+  }
+}

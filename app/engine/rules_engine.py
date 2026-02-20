@@ -1,4 +1,8 @@
-"""Rules Engine — applies the user's trading strategy to the pooled analysis."""
+"""Rules Engine — applies the user's trading strategy to the pooled analysis.
+
+The LLM evaluates all rules holistically using the full agent reports.
+No deterministic overrides — the LLM has full decision-making power.
+"""
 
 from __future__ import annotations
 
@@ -50,6 +54,7 @@ class RulesEngine:
         """Run the decision maker LLM with the user's strategy and all agent reports.
 
         Returns a FinalDecision with per-rule evaluations.
+        The LLM evaluates all rules using the full agent data.
         """
         logger.info("Running rules engine for %s", ticker)
 
@@ -88,10 +93,14 @@ class RulesEngine:
         )
         system_prompt = system_prompt.replace("{schema_json}", schema_json)
 
-        # Call the LLM
         user_message = (
             f"Evaluate {ticker} against the trader's strategy. "
-            f"Return your decision as JSON."
+            f"Return your decision as JSON.\n\n"
+            f"Use the agent reports above to evaluate EACH entry and exit rule. "
+            f"If data for a rule is missing or unavailable, treat it as NEUTRAL "
+            f"(do not count it against the signal). "
+            f"Be decisive — the trader wants to be in the market making trades, "
+            f"not sitting on the sidelines."
         )
 
         raw = await self.llm.chat(
@@ -106,6 +115,7 @@ class RulesEngine:
             decision = FinalDecision.model_validate_json(cleaned)
             decision.strategy_version = strategy_version
             decision.ticker = ticker
+
             logger.info(
                 "Decision for %s: %s (confidence: %.2f)",
                 ticker,

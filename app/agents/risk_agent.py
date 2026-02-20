@@ -20,13 +20,23 @@ class RiskAgent(BaseAgent):
         """Format quantitative risk metrics + fundamental data for the LLM.
 
         context keys:
-            price_history:   list[OHLCVRow]
-            technicals:      list[TechnicalRow]
-            fundamentals:    FundamentalSnapshot
-            risk_metrics:    RiskMetrics
-            risk_params:     dict (user-defined risk parameters)
+            price_history:      list[OHLCVRow]
+            technicals:         list[TechnicalRow]
+            fundamentals:       FundamentalSnapshot
+            risk_metrics:       RiskMetrics
+            risk_params:        dict (user-defined risk parameters)
+            quant_scorecard:    QuantScorecard | None
+            distilled_analysis: str (pre-computed risk analysis)
         """
         parts = []
+
+        # ---- Distilled Analysis (pre-computed risk context & scenarios) ----
+        distilled = context.get("distilled_analysis", "")
+        if distilled:
+            parts.append(distilled)
+            parts.append("\n" + "=" * 60)
+            parts.append("RAW RISK METRICS (reference for above analysis)")
+            parts.append("=" * 60 + "\n")
 
         # ---- Current Price ----
         prices = context.get("price_history", [])

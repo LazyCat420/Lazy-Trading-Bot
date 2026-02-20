@@ -19,7 +19,11 @@ from app.collectors.yfinance_collector import YFinanceCollector
 from app.collectors.youtube_collector import YouTubeCollector
 from app.config import settings
 from app.engine.aggregator import Aggregator, PooledAnalysis
+from app.engine.data_distiller import DataDistiller
+from app.engine.quant_signals import QuantSignalEngine
 from app.engine.rules_engine import RulesEngine
+from app.services.llm_service import LLMService
+from app.services.peer_fetcher import PeerFetcher
 from app.models.agent_reports import (
     FundamentalReport,
     RiskReport,
@@ -90,6 +94,10 @@ class PipelineService:
         self.sentiment_agent = SentimentAgent()
         self.risk_agent = RiskAgent()
 
+        # Services
+        self.llm_service = LLMService()
+        self.peer_fetcher = PeerFetcher(self.llm_service)
+
         # Engine
         self.aggregator = Aggregator()
         self.rules_engine = RulesEngine()
@@ -128,6 +136,8 @@ class PipelineService:
         risk_metrics = None
         news: list = []
         yt_transcripts: list = []
+        industry_peers: list[str] = []
+        peer_fundamentals: list = []
 
         # ----------------------------------------------------------
         # Parallel batch: Steps 1–9 run concurrently when possible
@@ -190,7 +200,8 @@ class PipelineService:
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":
-            # Quick mode: only price history (sequentially)
+            # Quick mode: fresh price history + cached fundamentals/news from DB
+            # The yfinance daily guards return stored data without hitting Yahoo
             try:
                 price_history = await self.yf_collector.collect_price_history(ticker)
                 result.status["price_history"] = {"status": "ok", "rows": len(price_history)}
@@ -198,6 +209,60 @@ class PipelineService:
                 result.status["price_history"] = {"status": "error", "error": str(e)}
                 result.errors.append(f"Price history: {e}")
                 logger.error("Step 1 (Price) failed: %s", e)
+
+            # Load cached fundamentals/financials from DB (daily guards = no Yahoo calls)
+            async def _step_cached(name: str, coro):  # noqa: ANN001
+                try:
+                    data = await coro
+                    return name, data, None
+                except Exception as exc:
+                    return name, None, exc
+
+            cached_tasks = [
+                _step_cached("fundamentals", self.yf_collector.collect_fundamentals(ticker)),
+                _step_cached("financial_history", self.yf_collector.collect_financial_history(ticker)),
+                _step_cached("balance_sheet", self.yf_collector.collect_balance_sheet(ticker)),
+                _step_cached("cashflow", self.yf_collector.collect_cashflow(ticker)),
+                _step_cached("analyst_data", self.yf_collector.collect_analyst_data(ticker)),
+                _step_cached("insider_activity", self.yf_collector.collect_insider_activity(ticker)),
+            ]
+
+            logger.info("Loading cached fundamentals for %s (quick mode) …", ticker)
+            cached_results = await asyncio.gather(*cached_tasks)
+
+            for name, data, exc in cached_results:
+                if exc:
+                    # Non-fatal — quick mode just logs and continues
+                    logger.debug("Quick mode cached %s for %s: %s (non-fatal)", name, ticker, exc)
+                else:
+                    if name == "fundamentals":
+                        fundamentals = data
+                    elif name == "financial_history":
+                        fin_history = data or []
+                    elif name == "balance_sheet":
+                        balance_sheet = data or []
+                    elif name == "cashflow":
+                        cashflow = data or []
+                    elif name == "analyst_data":
+                        analyst_data = data
+                    elif name == "insider_activity":
+                        insider_activity = data
+                    result.status[f"cached_{name}"] = {"status": "ok"}
+
+            # Load historical news and transcripts from DB (no scraping)
+            try:
+                news = await self.news_collector.get_all_historical(ticker)
+                result.status["cached_news"] = {"status": "ok", "articles": len(news)}
+                logger.info("Loaded %d cached news articles for %s", len(news), ticker)
+            except Exception as e:
+                logger.debug("No cached news for %s: %s", ticker, e)
+
+            try:
+                yt_transcripts = await self.yt_collector.get_all_historical(ticker)
+                result.status["cached_youtube"] = {"status": "ok", "transcripts": len(yt_transcripts)}
+                logger.info("Loaded %d cached transcripts for %s", len(yt_transcripts), ticker)
+            except Exception as e:
+                logger.debug("No cached transcripts for %s: %s", ticker, e)
 
         elif mode == "data":
             # Data-only: same parallel batch as full
@@ -278,6 +343,24 @@ class PipelineService:
                 result.errors.append(f"Risk metrics: {e}")
                 logger.error("Step 10 (Risk Metrics) failed: %s", e)
 
+        # Step 10b: Quant Scorecard (PhD-level signals from Phase 1A)
+        quant_scorecard = None
+        if mode != "news" and price_history:
+            try:
+                quant_scorecard = QuantSignalEngine().compute(ticker)
+                result.status["quant_scorecard"] = {
+                    "status": "ok",
+                    "flags": quant_scorecard.flags,
+                }
+                logger.info(
+                    "📊 Quant scorecard for %s: %d flags",
+                    ticker, len(quant_scorecard.flags),
+                )
+            except Exception as e:
+                result.status["quant_scorecard"] = {"status": "error", "error": str(e)}
+                result.errors.append(f"Quant scorecard: {e}")
+                logger.error("Step 10b (Quant Scorecard) failed: %s", e)
+
         # Step 11: News — scrape fresh, then retrieve ALL historical
         if mode in ("full", "news"):
             try:
@@ -322,6 +405,22 @@ class PipelineService:
                 result.errors.append(f"YouTube retrieval: {e}")
                 logger.error("Step 12b (YouTube Retrieval) failed: %s", e)
 
+        # Step 13: Fetch Industry Peers and their Fundamentals
+        if mode in ("full", "data"):
+            try:
+                industry_peers = await self.peer_fetcher.get_industry_peers(ticker, fundamentals)
+                if industry_peers:
+                    # Fetch fundamentals for peers
+                    peer_tasks = [self.yf_collector.collect_fundamentals(peer) for peer in industry_peers]
+                    peer_results = await asyncio.gather(*peer_tasks, return_exceptions=True)
+                    for peer, peer_data in zip(industry_peers, peer_results):
+                        if not isinstance(peer_data, Exception) and peer_data:
+                            peer_fundamentals.append(peer_data)
+                    result.status["industry_peers"] = {"status": "ok", "peers": industry_peers}
+            except Exception as e:
+                result.status["industry_peers"] = {"status": "error", "error": str(e)}
+                logger.error("Step 13 (Industry Peers) failed: %s", e)
+
         # If data-only mode, stop here
         if mode == "data":
             logger.info("Data-only mode complete for %s", ticker)
@@ -335,14 +434,34 @@ class PipelineService:
         # ============================================================
         logger.info("Starting agent analysis for %s", ticker)
 
+        # Data Distillation — pre-compute structured summaries for LLM
+        distiller = DataDistiller()
+        distilled_price = distiller.distill_price_action(
+            price_history, technicals, quant_scorecard
+        )
+        distilled_fundamentals = distiller.distill_fundamentals(
+            fundamentals, fin_history, balance_sheet, cashflow, quant_scorecard
+        )
+        distilled_risk = distiller.distill_risk(risk_metrics, quant_scorecard)
+
+        logger.info(
+            "📋 Distilled summaries: price=%d chars, fundamentals=%d chars, risk=%d chars",
+            len(distilled_price), len(distilled_fundamentals), len(distilled_risk),
+        )
+
         # Load risk params for risk agent
         risk_params_path = settings.USER_CONFIG_DIR / "risk_params.json"
         risk_params = {}
         if risk_params_path.exists():
             risk_params = json.loads(risk_params_path.read_text(encoding="utf-8"))
 
-        # Prepare agent contexts with ALL HISTORICAL data
-        ta_context = {"price_history": price_history, "technicals": technicals}
+        # Prepare agent contexts with DISTILLED + RAW data
+        ta_context = {
+            "price_history": price_history,
+            "technicals": technicals,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_price,
+        }
         fa_context = {
             "fundamentals": fundamentals,
             "financial_history": fin_history,
@@ -351,6 +470,10 @@ class PipelineService:
             "analyst_data": analyst_data,
             "insider_activity": insider_activity,
             "earnings_calendar": earnings_calendar,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_fundamentals,
+            "industry_peers": industry_peers,
+            "peer_fundamentals": peer_fundamentals,
         }
         sa_context = {"news": news, "transcripts": yt_transcripts}
         ra_context = {
@@ -359,6 +482,8 @@ class PipelineService:
             "fundamentals": fundamentals,
             "risk_metrics": risk_metrics,
             "risk_params": risk_params,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_risk,
         }
 
         # Run agents in parallel
@@ -518,6 +643,8 @@ class PipelineService:
         risk_metrics = None
         news: list = []
         yt_transcripts: list = []
+        industry_peers: list[str] = []
+        peer_fundamentals: list = []
 
         async def _tracked_step(name: str, coro) -> tuple:  # noqa: ANN001
             """Run a step, emitting start/complete/error events."""
@@ -659,6 +786,26 @@ class PipelineService:
                 yt_transcripts = yt_data or []
                 result.status["youtube"] = {"status": "ok", "total_transcripts": len(yt_transcripts)}
 
+        # Step 13: Fetch Industry Peers and their Fundamentals
+        if mode in ("full", "data"):
+            await _emit({"type": "step_start", "name": "industry_peers"})
+            try:
+                industry_peers = await self.peer_fetcher.get_industry_peers(ticker, fundamentals)
+                if industry_peers:
+                    # Fetch fundamentals for peers
+                    peer_tasks = [self.yf_collector.collect_fundamentals(peer) for peer in industry_peers]
+                    peer_results = await asyncio.gather(*peer_tasks, return_exceptions=True)
+                    for peer, peer_data in zip(industry_peers, peer_results):
+                        if not isinstance(peer_data, Exception) and peer_data:
+                            peer_fundamentals.append(peer_data)
+                    result.status["industry_peers"] = {"status": "ok", "peers": industry_peers}
+                    await _emit({"type": "step_complete", "name": "industry_peers", "status": "ok", "peers": industry_peers})
+                else:
+                    await _emit({"type": "step_complete", "name": "industry_peers", "status": "warning", "peers": []})
+            except Exception as exc:
+                result.status["industry_peers"] = {"status": "error", "error": str(exc)}
+                await _emit({"type": "step_error", "name": "industry_peers", "error": str(exc)})
+
         # If data-only, stop here
         if mode == "data":
             await _emit({"type": "done", "pipeline_status": result.status, "errors": result.errors})
@@ -678,6 +825,8 @@ class PipelineService:
             "balance_sheet": balance_sheet, "cashflow": cashflow,
             "analyst_data": analyst_data, "insider_activity": insider_activity,
             "earnings_calendar": earnings_calendar,
+            "industry_peers": industry_peers,
+            "peer_fundamentals": peer_fundamentals,
         }
         sa_context = {"news": news, "transcripts": yt_transcripts}
         ra_context = {

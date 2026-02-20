@@ -1106,6 +1106,102 @@ const DevDebugPanel = () => {
 };
 
 // ***************************************************************
+// CONFIRM BUTTON — inline "Are you sure?" (no browser popups)
+// ***************************************************************
+const ConfirmButton = ({ onConfirm, label, confirmLabel, icon, confirmIcon, className, confirmClassName, disabled, title }) => {
+    const [confirming, setConfirming] = useState(false);
+    const timerRef = useRef(null);
+
+    useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+    const handleClick = () => {
+        if (disabled) return;
+        if (confirming) {
+            clearTimeout(timerRef.current);
+            setConfirming(false);
+            onConfirm();
+        } else {
+            RetroSFX.click();
+            setConfirming(true);
+            timerRef.current = setTimeout(() => setConfirming(false), 4000);
+        }
+    };
+
+    return React.createElement("button", {
+        onClick: handleClick,
+        disabled,
+        title: confirming ? "Click again to confirm" : (title || label),
+        className: confirming ? (confirmClassName || "px-4 py-2 rounded-lg font-bold text-sm transition-all bg-red-500/25 text-red-300 border border-red-500/40 animate-pulse") : className,
+    },
+        React.createElement("span", { className: "flex items-center gap-2" },
+            React.createElement("span", { className: "material-symbols-outlined text-sm" }, confirming ? (confirmIcon || "warning") : (icon || "delete")),
+            confirming ? (confirmLabel || "Click to confirm") : label
+        )
+    );
+};
+
+// ***************************************************************
+// INLINE AMOUNT INPUT — replaces prompt() for entering amounts
+// ***************************************************************
+const InlineAmountInput = ({ onSubmit, defaultValue, label, icon, className, submitLabel }) => {
+    const [open, setOpen] = useState(false);
+    const [value, setValue] = useState("");
+    const inputRef = useRef(null);
+
+    useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
+
+    const handleSubmit = () => {
+        const cleaned = value.replace(/[\$,\s]/g, "");
+        const num = parseFloat(cleaned);
+        if (isNaN(num) || num <= 0) {
+            if (inputRef.current) inputRef.current.style.borderColor = "#ef4444";
+            return;
+        }
+        onSubmit(num);
+        setOpen(false);
+        setValue("");
+    };
+
+    if (!open) {
+        return React.createElement("button", {
+            onClick: () => { RetroSFX.click(); setValue(String(defaultValue || 100000)); setOpen(true); },
+            className: className || "px-4 py-2 rounded-lg font-bold text-sm transition-all bg-yellow-500/15 hover:bg-yellow-500/25 text-yellow-400 border border-yellow-500/20",
+        },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                React.createElement("span", { className: "material-symbols-outlined text-sm" }, icon || "restart_alt"),
+                label || "Reset Balance"
+            )
+        );
+    }
+
+    return React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("span", { className: "text-yellow-400 text-sm font-bold" }, "$"),
+        React.createElement("input", {
+            ref: inputRef,
+            type: "text",
+            value,
+            onChange: (e) => setValue(e.target.value),
+            onKeyDown: (e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") { setOpen(false); setValue(""); } },
+            placeholder: "e.g. 100000",
+            className: "w-32 px-3 py-1.5 rounded-lg bg-onyx-surface text-white text-sm font-mono border border-yellow-500/30 focus:border-yellow-400 focus:outline-none",
+        }),
+        React.createElement("button", {
+            onClick: handleSubmit,
+            className: "px-3 py-1.5 rounded-lg font-bold text-sm bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 border border-yellow-500/30 transition-all",
+        },
+            React.createElement("span", { className: "flex items-center gap-1" },
+                React.createElement("span", { className: "material-symbols-outlined text-sm" }, "check"),
+                submitLabel || "Set"
+            )
+        ),
+        React.createElement("button", {
+            onClick: () => { setOpen(false); setValue(""); },
+            className: "px-2 py-1.5 rounded-lg text-sm text-text-muted hover:text-white transition-all",
+        }, React.createElement("span", { className: "material-symbols-outlined text-sm" }, "close"))
+    );
+};
+
+// ***************************************************************
 // SIDEBAR LAYOUT  Shared sidebar for inner pages
 // ***************************************************************
 const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
@@ -2097,7 +2193,16 @@ const YouTubeTab = ({ videos }) => {
 
 const SettingsPage = () => {
     const [strategy, setStrategy] = useState("");
-    const [riskParams, setRiskParams] = useState("");
+    const [riskParams, setRiskParams] = useState({
+        max_risk_per_trade_pct: 2,
+        max_position_size_pct: 10,
+        max_portfolio_allocation_pct: 30,
+        max_orders_per_day: 10,
+        daily_loss_limit_pct: 5,
+        cooldown_days: 7,
+        stop_loss_atr_multiplier: 2,
+        account_size_usd: 10000,
+    });
     const [saveStatus, setSaveStatus] = useState(null);
     const [loading, setLoading] = useState(true);
 
@@ -2125,7 +2230,7 @@ const SettingsPage = () => {
                 const stratData = await stratRes.json();
                 setStrategy(stratData.strategy || "");
                 const riskData = await riskRes.json();
-                setRiskParams(JSON.stringify(riskData, null, 2));
+                setRiskParams(prev => ({ ...prev, ...riskData }));
                 const llmData = await llmRes.json();
                 setLlmConfig(llmData);
                 // Auto-fetch models on load
@@ -2203,11 +2308,10 @@ const SettingsPage = () => {
         RetroSFX.click();
         setSaveStatus("saving");
         try {
-            const parsed = JSON.parse(riskParams);
             await fetch("/api/risk-params", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ params: parsed }),
+                body: JSON.stringify({ params: riskParams }),
             });
             setSaveStatus("saved");
             RetroSFX.successChime();
@@ -2215,6 +2319,54 @@ const SettingsPage = () => {
             setSaveStatus("error");
         }
         setTimeout(() => setSaveStatus(null), 2000);
+    };
+
+    const updateRiskParam = (key, value) => {
+        setRiskParams(prev => ({ ...prev, [key]: value }));
+    };
+
+    // Risk parameter metadata for the dashboard
+    const RISK_PARAM_META = {
+        max_risk_per_trade_pct: {
+            label: "Max Risk per Trade",
+            desc: "Maximum percentage of your portfolio value to risk on a single trade",
+            unit: "%", min: 0.5, max: 10, step: 0.5, icon: "trending_up", color: "text-yellow-400",
+        },
+        max_position_size_pct: {
+            label: "Max Position Size",
+            desc: "Maximum percentage of portfolio value for any single stock position",
+            unit: "%", min: 1, max: 50, step: 1, icon: "pie_chart", color: "text-blue-400",
+        },
+        max_portfolio_allocation_pct: {
+            label: "Max Portfolio Allocation",
+            desc: "Maximum total percentage of portfolio invested in stocks (rest stays as cash)",
+            unit: "%", min: 10, max: 100, step: 5, icon: "account_balance", color: "text-purple-400",
+        },
+        max_orders_per_day: {
+            label: "Daily Order Limit",
+            desc: "Maximum number of trades the bot can execute in a single day",
+            unit: "orders", min: 1, max: 50, step: 1, icon: "receipt_long", color: "text-primary",
+        },
+        daily_loss_limit_pct: {
+            label: "Daily Loss Limit",
+            desc: "Stop trading for the day if portfolio drops by this percentage",
+            unit: "%", min: 1, max: 20, step: 0.5, icon: "shield", color: "text-red-400",
+        },
+        cooldown_days: {
+            label: "Buy Cooldown",
+            desc: "Wait this many days after selling a stock before buying it again",
+            unit: "days", min: 0, max: 30, step: 1, icon: "schedule", color: "text-orange-400",
+        },
+        stop_loss_atr_multiplier: {
+            label: "Stop Loss ATR Multiplier",
+            desc: "Stop loss is set at this many ATRs below entry price (higher = wider stop)",
+            unit: "×", min: 0.5, max: 5, step: 0.5, icon: "vertical_align_bottom", color: "text-red-400",
+        },
+        account_size_usd: {
+            label: "Account Size",
+            desc: "Starting paper trading account balance",
+            unit: "$", min: 1000, max: 1000000, step: 1000, icon: "payments", color: "text-green-400",
+        },
     };
 
     if (loading) return <SidebarLayout active="settings"><Spinner /></SidebarLayout>;
@@ -2403,21 +2555,132 @@ const SettingsPage = () => {
                         placeholder="# My Trading Strategy&#10;&#10;Describe your strategy here..." />
                 </div>
 
-                {/* Risk Params Editor */}
+                {/* Risk Parameters Dashboard */}
                 <div className="glass-card p-5">
-                    <div className="flex justify-between items-center mb-4">
+                    <div className="flex justify-between items-center mb-5">
                         <h3 className="text-sm font-bold text-white flex items-center gap-2">
                             <span className="material-symbols-outlined text-primary text-[18px]">tune</span>
                             Risk Parameters
                         </h3>
                         <button onClick={saveRisk}
-                            className="px-3 py-1 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition">
-                            Save Params
+                            className="px-4 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded-lg transition flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-[14px]">save</span>
+                            Save Parameters
                         </button>
                     </div>
-                    <textarea value={riskParams} onChange={e => setRiskParams(e.target.value)}
-                        className="code-editor min-h-[200px]"
-                        placeholder='{ "max_position_pct": 0.05 }' />
+
+                    {/* Position Sizing Section */}
+                    <div className="mb-5">
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="material-symbols-outlined text-purple-400 text-[16px]">pie_chart</span>
+                            <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">Position Sizing</span>
+                            <div className="flex-1 h-px bg-border-dark" />
+                        </div>
+                        <div className="space-y-4">
+                            {["max_risk_per_trade_pct", "max_position_size_pct", "max_portfolio_allocation_pct"].map(key => {
+                                const meta = RISK_PARAM_META[key];
+                                const val = riskParams[key] ?? 0;
+                                const pct = ((val - meta.min) / (meta.max - meta.min)) * 100;
+                                return (
+                                    <div key={key} className="p-3 rounded-lg bg-onyx-surface/50 border border-border-dark/50 hover:border-border-dark transition">
+                                        <div className="flex items-center justify-between mb-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className={`material-symbols-outlined text-[16px] ${meta.color}`}>{meta.icon}</span>
+                                                <span className="text-sm text-white font-bold">{meta.label}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className={`text-lg font-mono font-bold ${meta.color}`}>{val}</span>
+                                                <span className="text-xs text-text-muted">{meta.unit}</span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[11px] text-text-muted mb-2.5">{meta.desc}</p>
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-[10px] text-text-muted font-mono w-8 text-right">{meta.min}</span>
+                                            <div className="flex-1 relative">
+                                                <div className="h-1.5 rounded-full bg-onyx-black/60 overflow-hidden">
+                                                    <div className={`h-full rounded-full transition-all duration-300 ${key.includes('loss') || key.includes('risk') ? 'bg-gradient-to-r from-green-500 to-red-500' : 'bg-gradient-to-r from-primary/50 to-primary'}`}
+                                                        style={{ width: `${pct}%` }} />
+                                                </div>
+                                                <input type="range" min={meta.min} max={meta.max} step={meta.step} value={val}
+                                                    onChange={e => updateRiskParam(key, parseFloat(e.target.value))}
+                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                            </div>
+                                            <span className="text-[10px] text-text-muted font-mono w-8">{meta.max}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Safety Guards Section */}
+                    <div className="mb-5">
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="material-symbols-outlined text-red-400 text-[16px]">shield</span>
+                            <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Safety Guards</span>
+                            <div className="flex-1 h-px bg-border-dark" />
+                        </div>
+                        <div className="space-y-4">
+                            {["max_orders_per_day", "daily_loss_limit_pct", "cooldown_days", "stop_loss_atr_multiplier"].map(key => {
+                                const meta = RISK_PARAM_META[key];
+                                const val = riskParams[key] ?? 0;
+                                const pct = ((val - meta.min) / (meta.max - meta.min)) * 100;
+                                return (
+                                    <div key={key} className="p-3 rounded-lg bg-onyx-surface/50 border border-border-dark/50 hover:border-border-dark transition">
+                                        <div className="flex items-center justify-between mb-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className={`material-symbols-outlined text-[16px] ${meta.color}`}>{meta.icon}</span>
+                                                <span className="text-sm text-white font-bold">{meta.label}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className={`text-lg font-mono font-bold ${meta.color}`}>{val}</span>
+                                                <span className="text-xs text-text-muted">{meta.unit}</span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[11px] text-text-muted mb-2.5">{meta.desc}</p>
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-[10px] text-text-muted font-mono w-8 text-right">{meta.min}</span>
+                                            <div className="flex-1 relative">
+                                                <div className="h-1.5 rounded-full bg-onyx-black/60 overflow-hidden">
+                                                    <div className={`h-full rounded-full transition-all duration-300 ${key.includes('loss') || key.includes('stop') ? 'bg-gradient-to-r from-green-500 to-red-500' : 'bg-gradient-to-r from-primary/50 to-primary'}`}
+                                                        style={{ width: `${pct}%` }} />
+                                                </div>
+                                                <input type="range" min={meta.min} max={meta.max} step={meta.step} value={val}
+                                                    onChange={e => updateRiskParam(key, parseFloat(e.target.value))}
+                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                            </div>
+                                            <span className="text-[10px] text-text-muted font-mono w-8">{meta.max}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Account Section */}
+                    <div>
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="material-symbols-outlined text-green-400 text-[16px]">payments</span>
+                            <span className="text-xs font-bold text-green-400 uppercase tracking-wider">Account</span>
+                            <div className="flex-1 h-px bg-border-dark" />
+                        </div>
+                        <div className="p-3 rounded-lg bg-onyx-surface/50 border border-border-dark/50 hover:border-border-dark transition">
+                            <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[16px] text-green-400">payments</span>
+                                    <span className="text-sm text-white font-bold">Account Size</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    <span className="text-text-muted text-sm">$</span>
+                                    <input type="number" min={1000} max={1000000} step={1000}
+                                        value={riskParams.account_size_usd ?? 10000}
+                                        onChange={e => updateRiskParam("account_size_usd", parseInt(e.target.value) || 10000)}
+                                        className="w-28 bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 text-lg text-green-400 font-mono font-bold text-right focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                                </div>
+                            </div>
+                            <p className="text-[11px] text-text-muted">Starting paper trading account balance — used for position sizing calculations</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </SidebarLayout>
@@ -2512,6 +2775,29 @@ const useMonitorData = () => {
         }
     }, [fetchPortfolio]);
 
+    const resetPortfolio = useCallback(async (newBalance) => {
+        console.log("[ResetPortfolio] Called with:", newBalance);
+        if (!newBalance || isNaN(newBalance) || newBalance <= 0) return;
+        try {
+            console.log("[ResetPortfolio] Sending API request...");
+            const res = await fetch("/api/portfolio/reset", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ balance: newBalance }),
+            });
+            const body = await res.json();
+            console.log("[ResetPortfolio] Response:", res.status, body);
+            if (!res.ok) {
+                console.error("Reset failed:", body);
+                return;
+            }
+            RetroSFX.successChime();
+            await fetchPortfolio();
+        } catch (e) {
+            console.error("Reset portfolio error:", e);
+        }
+    }, [fetchPortfolio]);
+
     const fetchAll = useCallback(async () => {
         try {
             const [statusRes, scoresRes, historyRes, eventsRes] = await Promise.all([
@@ -2597,7 +2883,6 @@ const useMonitorData = () => {
     };
 
     const clearData = async () => {
-        if (!confirm("Clear all discovery data? This cannot be undone.")) return;
         RetroSFX.alertBuzz();
         try {
             console.log("[ClearData] Sending POST /api/discovery/clear...");
@@ -2736,7 +3021,6 @@ const useMonitorData = () => {
     };
 
     const clearWatchlist = async () => {
-        if (!confirm("Clear all watchlist entries?")) return;
         RetroSFX.alertBuzz();
         try {
             await fetch("/api/watchlist/clear", { method: "POST" });
@@ -2767,6 +3051,55 @@ const useMonitorData = () => {
         }
     };
 
+    // ── Scheduler state ──────────────────────────────────────────
+    const [schedulerStatus, setSchedulerStatus] = useState(null);
+    const [schedulerHistory, setSchedulerHistory] = useState([]);
+    const [schedulerLoading, setSchedulerLoading] = useState(false);
+
+    const fetchSchedulerStatus = useCallback(async () => {
+        try {
+            const res = await fetch("/api/scheduler/status");
+            const data = await res.json();
+            setSchedulerStatus(data);
+        } catch (e) { console.error("Scheduler status error:", e); }
+    }, []);
+
+    const fetchSchedulerHistory = useCallback(async () => {
+        try {
+            const res = await fetch("/api/scheduler/history?limit=20");
+            const data = await res.json();
+            setSchedulerHistory(data.history || []);
+        } catch (e) { console.error("Scheduler history error:", e); }
+    }, []);
+
+    const startScheduler = async () => {
+        setSchedulerLoading(true);
+        try {
+            await fetch("/api/scheduler/start", { method: "POST" });
+            await fetchSchedulerStatus();
+        } catch (e) { console.error("Scheduler start error:", e); }
+        setSchedulerLoading(false);
+    };
+
+    const stopScheduler = async () => {
+        setSchedulerLoading(true);
+        try {
+            await fetch("/api/scheduler/stop", { method: "POST" });
+            await fetchSchedulerStatus();
+        } catch (e) { console.error("Scheduler stop error:", e); }
+        setSchedulerLoading(false);
+    };
+
+    const runSchedulerJob = async (jobName) => {
+        setSchedulerLoading(true);
+        try {
+            await fetch(`/api/scheduler/run/${jobName}`, { method: "POST" });
+            await fetchSchedulerStatus();
+            await fetchSchedulerHistory();
+        } catch (e) { console.error("Scheduler run job error:", e); }
+        setSchedulerLoading(false);
+    };
+
     return {
         // Data state
         status, scores, history, pipelineEvents, loading,
@@ -2780,12 +3113,16 @@ const useMonitorData = () => {
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         // Loop state
         loopRunning, loopStatus, setLoopStatus,
+        // Scheduler state
+        schedulerStatus, schedulerHistory, schedulerLoading,
         // Actions
         fetchAll, runScan, clearData,
         addToWatchlist, removeFromWatchlist,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
-        fetchPortfolio, closePosition,
+        fetchPortfolio, closePosition, resetPortfolio,
+        fetchSchedulerStatus, fetchSchedulerHistory,
+        startScheduler, stopScheduler, runSchedulerJob,
     };
 };
 
@@ -2811,11 +3148,14 @@ const AutobotMonitorPage = ({ monitorData }) => {
         dossierData, setDossierData, dossierLoading,
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         loopRunning, loopStatus, setLoopStatus,
+        schedulerStatus, schedulerHistory, schedulerLoading,
         fetchAll, runScan, clearData,
         addToWatchlist, removeFromWatchlist,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
-        fetchPortfolio, closePosition,
+        fetchPortfolio, closePosition, resetPortfolio,
+        fetchSchedulerStatus, fetchSchedulerHistory,
+        startScheduler, stopScheduler, runSchedulerJob,
     } = monitorData;
 
     // ── Local UI wrappers (use local expandedWlTicker state) ──
@@ -3285,14 +3625,15 @@ const AutobotMonitorPage = ({ monitorData }) => {
                             })
                         )
                     ),
-                    React.createElement("button", {
-                        onClick: clearData,
+                    React.createElement(ConfirmButton, {
+                        onConfirm: clearData,
+                        label: "Clear Data",
+                        confirmLabel: "Click to clear all",
+                        icon: "delete_sweep",
+                        confirmIcon: "warning",
                         className: "px-3 py-2 rounded-lg text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
                         title: "Clear all discovery data",
-                    }, React.createElement("span", { className: "flex items-center gap-1.5" },
-                        React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "delete_sweep"),
-                        "Clear Data")
-                    ),
+                    }),
                     status?.last_run_at && React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-auto" },
                         "Last scan: ", fmt.ago(status.last_run_at)
                     )
@@ -3334,6 +3675,15 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         React.createElement("span", { className: "flex items-center gap-1.5" },
                             React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "account_balance_wallet"),
                             `Portfolio${portfolio ? ` (${fmt.usdShort(portfolio.total_portfolio_value)})` : ""}`
+                        )
+                    ),
+                    React.createElement("button", {
+                        onClick: () => { RetroSFX.click(); setActiveTab("scheduler"); fetchSchedulerStatus(); fetchSchedulerHistory(); },
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "scheduler" ? "bg-cyan-500/20 text-cyan-400 shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "schedule"),
+                            `Scheduler${schedulerStatus?.is_running ? " ●" : ""}`
                         )
                     )
                 ),
@@ -3407,16 +3757,15 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                 wlAnalyzing ? "Deep Analyzing..." : "Deep Analyze All"
                             )
                         ),
-                        React.createElement("button", {
-                            onClick: clearWatchlist,
-                            disabled: wlEntries.length === 0,
+                        React.createElement(ConfirmButton, {
+                            onConfirm: clearWatchlist,
+                            label: "Clear Watchlist",
+                            confirmLabel: "Click to clear all",
+                            icon: "delete_sweep",
+                            confirmIcon: "warning",
                             className: "px-3 py-2 rounded-lg text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
-                        },
-                            React.createElement("span", { className: "flex items-center gap-1.5" },
-                                React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "delete_sweep"),
-                                "Clear Watchlist"
-                            )
-                        ),
+                            disabled: wlEntries.length === 0,
+                        }),
                         wlSummary && wlSummary.last_scan && React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-auto" },
                             "Last analyzed: ", fmt.ago(wlSummary.last_scan)
                         )
@@ -3978,8 +4327,8 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         )
                     ),
 
-                    // Refresh button
-                    React.createElement("div", { className: "glass-card p-3 flex items-center gap-3" },
+                    // Action bar: Refresh + Reset Balance
+                    React.createElement("div", { className: "glass-card p-3 flex items-center gap-3 flex-wrap" },
                         React.createElement("button", {
                             onClick: () => { RetroSFX.click(); fetchPortfolio(); },
                             disabled: portfolioLoading,
@@ -3990,6 +4339,13 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                 portfolioLoading ? "Refreshing..." : "Refresh Portfolio"
                             )
                         ),
+                        React.createElement(InlineAmountInput, {
+                            defaultValue: portfolio ? Math.round(portfolio.total_portfolio_value) : 100000,
+                            onSubmit: resetPortfolio,
+                            label: "Reset Balance",
+                            icon: "restart_alt",
+                            submitLabel: "Reset",
+                        }),
                         React.createElement("span", { className: "text-[10px] text-text-muted font-mono" },
                             "Paper trading mode — simulated orders only"
                         )
@@ -4046,11 +4402,16 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                 pos.opened_at ? fmt.ago(pos.opened_at) : "—"
                                             ),
                                             React.createElement("td", { className: "text-center px-4 py-3" },
-                                                React.createElement("button", {
-                                                    onClick: () => { if (confirm(`Close entire ${pos.ticker} position (${pos.qty} shares)?`)) { closePosition(pos.ticker); } },
+                                                React.createElement(ConfirmButton, {
+                                                    onConfirm: () => closePosition(pos.ticker),
+                                                    label: "Close",
+                                                    confirmLabel: `Close ${pos.ticker}?`,
+                                                    icon: "sell",
+                                                    confirmIcon: "warning",
                                                     className: "px-2.5 py-1 rounded text-[10px] font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
+                                                    confirmClassName: "px-2.5 py-1 rounded text-[10px] font-bold text-red-300 bg-red-500/25 border border-red-500/40 animate-pulse transition-all",
                                                     title: "Close position at market price",
-                                                }, "Close")
+                                                })
                                             )
                                         )
                                     )
@@ -4175,6 +4536,179 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "account_balance_wallet"),
                         React.createElement("p", { className: "text-sm text-text-muted" }, "Portfolio not loaded yet"),
                         React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Click Refresh to load your paper trading portfolio")
+                    )
+                ),
+
+                // ── SCHEDULER TAB ──────────────────────────────────────
+                activeTab === "scheduler" && React.createElement("div", { className: "space-y-4" },
+
+                    // ── Market Status Banner
+                    schedulerStatus?.market && React.createElement("div", {
+                        className: `glass-card p-4 flex items-center gap-4 border-l-4 ${schedulerStatus.market.is_open ? "border-green-400" : "border-yellow-500"}`
+                    },
+                        React.createElement("div", {
+                            className: `w-3 h-3 rounded-full ${schedulerStatus.market.is_open ? "bg-green-400 animate-pulse" : "bg-yellow-500"}`
+                        }),
+                        React.createElement("div", { className: "flex-1" },
+                            React.createElement("div", { className: "flex items-center gap-2" },
+                                React.createElement("span", { className: `font-bold text-sm ${schedulerStatus.market.is_open ? "text-green-400" : "text-yellow-400"}` },
+                                    schedulerStatus.market.is_open ? "MARKET OPEN" : "MARKET CLOSED"
+                                ),
+                                React.createElement("span", { className: "text-text-muted text-xs font-mono" },
+                                    schedulerStatus.market.current_time_et
+                                )
+                            ),
+                            React.createElement("div", { className: "text-xs text-text-muted mt-1" },
+                                `${schedulerStatus.market.next_event} at ${schedulerStatus.market.next_event_time}`,
+                                schedulerStatus.market.time_remaining_seconds > 0 && ` (${Math.floor(schedulerStatus.market.time_remaining_seconds / 3600)}h ${Math.floor((schedulerStatus.market.time_remaining_seconds % 3600) / 60)}m)`
+                            )
+                        ),
+                        React.createElement("span", { className: "text-xs text-text-muted font-mono" },
+                            schedulerStatus.market.day_of_week
+                        )
+                    ),
+
+                    // ── Start / Stop Toggle + Refresh
+                    React.createElement("div", { className: "glass-card p-4 flex items-center gap-4" },
+                        React.createElement("button", {
+                            onClick: schedulerStatus?.is_running ? stopScheduler : startScheduler,
+                            disabled: schedulerLoading,
+                            className: `flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-bold transition-all ${schedulerStatus?.is_running
+                                ? "bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
+                                : "bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:from-cyan-400 hover:to-blue-500 shadow-lg shadow-cyan-500/20"
+                                }`,
+                        },
+                            React.createElement("span", { className: `material-symbols-outlined text-[20px] ${schedulerLoading ? "animate-spin" : ""}` },
+                                schedulerLoading ? "progress_activity" : schedulerStatus?.is_running ? "stop_circle" : "play_circle"
+                            ),
+                            schedulerLoading ? "Processing…" : schedulerStatus?.is_running ? "STOP SCHEDULER" : "START SCHEDULER"
+                        ),
+                        React.createElement("div", { className: "flex-1 text-center" },
+                            React.createElement("div", { className: "text-[10px] text-text-muted uppercase" }, "Status"),
+                            React.createElement("div", { className: `text-sm font-bold ${schedulerStatus?.is_running ? "text-green-400" : "text-text-muted"}` },
+                                schedulerStatus?.is_running ? "RUNNING" : "STOPPED"
+                            ),
+                            schedulerStatus?.job_count > 0 && React.createElement("div", { className: "text-[10px] text-text-muted" },
+                                `${schedulerStatus.job_count} jobs active`
+                            )
+                        ),
+                        React.createElement("button", {
+                            onClick: () => { fetchSchedulerStatus(); fetchSchedulerHistory(); },
+                            className: "icon-btn", title: "Refresh",
+                        }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh"))
+                    ),
+
+                    // ── Scheduled Jobs List
+                    schedulerStatus?.jobs?.length > 0 && React.createElement("div", { className: "glass-card p-4" },
+                        React.createElement("h3", { className: "text-sm font-bold text-white mb-3 flex items-center gap-2" },
+                            React.createElement("span", { className: "material-symbols-outlined text-cyan-400 text-[18px]" }, "event"),
+                            "Scheduled Jobs"
+                        ),
+                        React.createElement("div", { className: "space-y-2" },
+                            ...schedulerStatus.jobs.map(job =>
+                                React.createElement("div", {
+                                    key: job.id,
+                                    className: "flex items-center gap-3 p-3 rounded-lg bg-onyx-surface/50 border border-border-dark/50"
+                                },
+                                    React.createElement("span", { className: "material-symbols-outlined text-cyan-400 text-[16px]" },
+                                        job.id === "price_monitor" ? "monitoring" : job.id === "pre_market" ? "wb_twilight" : job.id === "end_of_day" ? "nights_stay" : "update"
+                                    ),
+                                    React.createElement("div", { className: "flex-1" },
+                                        React.createElement("span", { className: "text-white text-xs font-bold" }, job.name),
+                                        React.createElement("span", { className: "text-text-muted text-[10px] font-mono ml-2" }, job.id)
+                                    ),
+                                    React.createElement("span", { className: "text-xs font-mono text-primary" }, job.next_run_human || "—")
+                                )
+                            )
+                        )
+                    ),
+
+                    // ── Manual Trigger Buttons
+                    React.createElement("div", { className: "glass-card p-4" },
+                        React.createElement("h3", { className: "text-sm font-bold text-white mb-3 flex items-center gap-2" },
+                            React.createElement("span", { className: "material-symbols-outlined text-yellow-400 text-[18px]" }, "bolt"),
+                            "Manual Triggers"
+                        ),
+                        React.createElement("div", { className: "flex gap-3 flex-wrap" },
+                            React.createElement("button", {
+                                onClick: () => runSchedulerJob("pre_market"),
+                                disabled: schedulerLoading,
+                                className: "flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold bg-orange-500/15 text-orange-400 border border-orange-500/20 hover:bg-orange-500/25 transition-all disabled:opacity-50",
+                            },
+                                React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "wb_twilight"),
+                                "Run Pre-Market"
+                            ),
+                            React.createElement("button", {
+                                onClick: () => runSchedulerJob("midday"),
+                                disabled: schedulerLoading,
+                                className: "flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold bg-blue-500/15 text-blue-400 border border-blue-500/20 hover:bg-blue-500/25 transition-all disabled:opacity-50",
+                            },
+                                React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "update"),
+                                "Run Midday Analysis"
+                            ),
+                            React.createElement("button", {
+                                onClick: () => runSchedulerJob("end_of_day"),
+                                disabled: schedulerLoading,
+                                className: "flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold bg-purple-500/15 text-purple-400 border border-purple-500/20 hover:bg-purple-500/25 transition-all disabled:opacity-50",
+                            },
+                                React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "nights_stay"),
+                                "Run End-of-Day"
+                            ),
+                            React.createElement("button", {
+                                onClick: () => runSchedulerJob("price_monitor"),
+                                disabled: schedulerLoading,
+                                className: "flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold bg-green-500/15 text-green-400 border border-green-500/20 hover:bg-green-500/25 transition-all disabled:opacity-50",
+                            },
+                                React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "monitoring"),
+                                "Check Triggers Now"
+                            )
+                        )
+                    ),
+
+                    // ── Run History Table
+                    React.createElement("div", { className: "glass-card overflow-hidden" },
+                        React.createElement("div", { className: "flex items-center gap-2 p-4 border-b border-border-dark" },
+                            React.createElement("span", { className: "material-symbols-outlined text-text-muted text-[18px]" }, "history"),
+                            React.createElement("h3", { className: "text-sm font-bold text-white" }, "Run History")
+                        ),
+                        schedulerHistory.length === 0
+                            ? React.createElement("div", { className: "p-8 text-center text-text-muted text-xs" }, "No scheduler runs yet")
+                            : React.createElement("table", { className: "w-full" },
+                                React.createElement("thead", null,
+                                    React.createElement("tr", { className: "text-[10px] text-text-muted uppercase tracking-wider border-b border-border-dark bg-onyx-panel" },
+                                        React.createElement("th", { className: "text-left px-4 py-2" }, "Job"),
+                                        React.createElement("th", { className: "text-left px-4 py-2" }, "Started"),
+                                        React.createElement("th", { className: "text-center px-4 py-2" }, "Status"),
+                                        React.createElement("th", { className: "text-left px-4 py-2" }, "Summary")
+                                    )
+                                ),
+                                React.createElement("tbody", null,
+                                    ...schedulerHistory.map((run, i) => {
+                                        const statusColor = run.status === "success" ? "text-green-400 bg-green-500/15"
+                                            : run.status === "error" ? "text-red-400 bg-red-500/15"
+                                                : "text-yellow-400 bg-yellow-500/15";
+                                        return React.createElement("tr", {
+                                            key: run.id || i,
+                                            className: `border-b border-border-dark/30 ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`
+                                        },
+                                            React.createElement("td", { className: "px-4 py-2.5 text-xs font-mono text-white font-bold" },
+                                                run.job_name?.replace(/_/g, " ")
+                                            ),
+                                            React.createElement("td", { className: "px-4 py-2.5 text-[10px] font-mono text-text-muted" },
+                                                run.started_at ? fmt.ago(run.started_at) : "—"
+                                            ),
+                                            React.createElement("td", { className: "px-4 py-2.5 text-center" },
+                                                React.createElement("span", {
+                                                    className: `px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${statusColor}`
+                                                }, run.status || "unknown")
+                                            ),
+                                            React.createElement("td", { className: "px-4 py-2.5 text-xs text-text-secondary max-w-xs truncate" },
+                                                run.error || run.summary || "—"
+                                            )
+                                        );
+                                    })
+                                )
+                            )
                     )
                 )
             ),

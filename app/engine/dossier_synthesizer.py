@@ -20,6 +20,17 @@ SYNTHESIS_SYSTEM_PROMPT = """\
 You are synthesizing a trading analysis dossier.  Compress all information
 into a concise, decision-ready format.
 
+COMPANY PROFILE:
+Ticker: {ticker}
+Sector: {sector}
+Industry: {industry}
+Market Cap: {market_cap_formatted} ({cap_tier}-cap)
+
+TECHNICAL SETUP:
+Trend Template Score: {trend_score}/100 ({trend_status})
+VCP Setup Score: {vcp_score}/100 ({vcp_status})
+RS Rating: {rs_rating}/100
+
 QUANT SCORECARD:
 {scorecard}
 
@@ -33,11 +44,32 @@ Generate a JSON object with exactly these keys:
   "bear_case": "strongest arguments against buying (2-3 sentences)",
   "key_catalysts": ["catalyst 1", "catalyst 2", "catalyst 3"],
   "conviction_score": 0.65,
-  "signal_summary": "One-line quant interpretation"
+  "signal_summary": "One-line quant interpretation",
+  "sector": "{sector}",
+  "industry": "{industry}",
+  "market_cap_tier": "{cap_tier}"
 }}
 
 Rules:
-- conviction_score: 0.0 = strong sell, 0.5 = hold, 1.0 = strong buy
+- conviction_score: USE THE FULL 0.0-1.0 RANGE:
+  * 0.0-0.25: Strong SELL — serious red flags, deteriorating fundamentals
+  * 0.25-0.40: Lean SELL — more negatives than positives
+  * 0.40-0.60: RARE — only for genuinely 50/50 cases. AVOID this range.
+  * 0.60-0.75: Lean BUY — positive thesis with manageable risks
+  * 0.75-1.0: Strong BUY — compelling opportunity with multiple catalysts
+- IMPORTANT: Scores of 0.45-0.55 are WASTEFUL. Commit to a directional view.
+  Most stocks should score below 0.40 (avoid) or above 0.60 (consider buying).
+- CAP-TIER CONTEXT for conviction scoring:
+  * Mega/Large cap: Stable moats — moderate conviction is acceptable if fundamentals
+    are solid. Weight competitive position and cash flow over pure growth.
+  * Mid cap: Growth inflection — weight revenue growth trajectory and market
+    expansion heavily. Assign higher conviction for accelerating growth.
+  * Small/Micro cap: High risk/reward — require STRONGER catalysts to justify
+    conviction above 0.65. Always flag liquidity risk in bear case.
+- TECHNICAL SETUP RULES:
+  * If Trend Template Score > 80: This is a "Stage 2 Uptrend". Bias towards BUY.
+  * If VCP Score > 70 AND Trend > 80: This is a "Prime Setup". Conviction should be > 0.75 unless fundamentals are terrible.
+  * If Trend Score < 50: This is a broken trend/downtrend. Conviction MUST be < 0.40 (SELL/AVOID).
 - Be specific with numbers, dates, and percentages
 - Keep total output under 2000 characters
 - Factor in the portfolio context when assigning conviction
@@ -91,11 +123,81 @@ class DossierSynthesizer:
                 f"Realized P&L: ${portfolio_context.get('realized_pnl', 0):.2f}\n"
             )
 
+        # Format market cap for readability
+        mc = scorecard.market_cap
+        if mc >= 1e12:
+            mc_str = f"${mc / 1e12:.2f}T"
+        elif mc >= 1e9:
+            mc_str = f"${mc / 1e9:.1f}B"
+        elif mc >= 1e6:
+            mc_str = f"${mc / 1e6:.0f}M"
+        else:
+            mc_str = f"${mc:,.0f}"
+
+        # Prepare Setup Status strings
+        t_score = getattr(scorecard, "trend_template_score", 0)
+        v_score = getattr(scorecard, "vcp_setup_score", 0)
+        rs = getattr(scorecard, "relative_strength_rating", 0)
+
+        if t_score > 80:
+            t_status = "Stage 2 Uptrend (Bullish)"
+        elif t_score < 50:
+            t_status = "Downtrend/Broken (Bearish)"
+        else:
+            t_status = "Choppy/Base (Neutral)"
+
+        if v_score > 70:
+            v_status = "Tight VCP Action"
+        else:
+            v_status = "Loose/Volatile"
+
         prompt = SYNTHESIS_SYSTEM_PROMPT.format(
+            ticker=ticker,
+            sector=scorecard.sector or "Unknown",
+            industry=scorecard.industry or "Unknown",
+            market_cap_formatted=mc_str,
+            cap_tier=scorecard.market_cap_tier or "unknown",
+            trend_score=int(t_score),
+            trend_status=t_status,
+            vcp_score=int(v_score),
+            vcp_status=v_status,
+            rs_rating=int(rs),
             scorecard=sc_text,
             qa_pairs=qa_text,
             portfolio_section=portfolio_section,
         )
+
+        # ── Proactive context-window guardrail ─────────────────────
+        # Estimate total tokens and trim Q&A if too large
+        user_msg = f"Synthesize the dossier for {ticker}."
+        total_chars = len(prompt) + len(user_msg)
+        max_chars = self._llm.context_size * 4  # ~4 chars per token
+        budget = int(max_chars * 0.75)  # reserve 25% for response
+
+        if total_chars > budget and qa_pairs:
+            # Sort by confidence ascending → drop lowest first
+            sorted_pairs = sorted(qa_pairs, key=lambda p: p.confidence)
+            kept = list(qa_pairs)
+            while total_chars > budget and sorted_pairs:
+                drop = sorted_pairs.pop(0)
+                kept = [p for p in kept if p is not drop]
+                qa_text = "\n".join(
+                    f"Q: {p.question}\nA: {p.answer} "
+                    f"(source={p.source}, conf={p.confidence})"
+                    for p in kept
+                )
+                prompt = SYNTHESIS_SYSTEM_PROMPT.format(
+                    scorecard=sc_text,
+                    qa_pairs=qa_text,
+                    portfolio_section=portfolio_section,
+                )
+                total_chars = len(prompt) + len(user_msg)
+            logger.info(
+                "[Dossier] %s: trimmed Q&A from %d → %d pairs "
+                "(~%d chars, budget=%d)",
+                ticker, len(qa_pairs), len(kept),
+                total_chars, budget,
+            )
 
         try:
             raw = await self._llm.chat(

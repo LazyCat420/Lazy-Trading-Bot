@@ -218,6 +218,26 @@ If none are relevant, output: []"""
 
     async def collect(self) -> list[ScoredTicker]:
         """Run the full Reddit collection pipeline."""
+        # ── 4-hour cooldown guard ──
+        # Reuse the existing discovered_tickers table to check last Reddit run.
+        from app.database import get_db
+
+        db = get_db()
+        last_run = db.execute(
+            "SELECT MAX(discovered_at) FROM discovered_tickers "
+            "WHERE source = 'reddit'"
+        ).fetchone()
+        if last_run and last_run[0]:
+            hours_since = (
+                datetime.now() - last_run[0]
+            ).total_seconds() / 3600
+            if hours_since < 4:
+                logger.info(
+                    "[Reddit] Already scraped %.1fh ago, skipping (4h cooldown)",
+                    hours_since,
+                )
+                return []
+
         start = time.time()
         logger.info("=" * 60)
         logger.info("[Reddit] Starting collection run")

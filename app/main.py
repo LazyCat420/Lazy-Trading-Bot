@@ -72,6 +72,10 @@ class WatchlistImportRequest(BaseModel):
     max_tickers: int = 10
 
 
+class PortfolioResetRequest(BaseModel):
+    balance: float | None = None  # If None, reads from risk_params.json
+
+
 class LLMConfigRequest(BaseModel):
     provider: str | None = None
     ollama_url: str | None = None
@@ -908,6 +912,18 @@ async def check_triggers() -> dict:
     }
 
 
+@app.post("/api/portfolio/reset")
+async def reset_portfolio(req: PortfolioResetRequest | None = None) -> dict:
+    """Reset the portfolio to a specified balance.
+
+    Clears all positions, orders, triggers, and snapshots.
+    If balance is provided, uses that. Otherwise reads from risk_params.json.
+    """
+    balance = req.balance if req and req.balance else None
+    result = _paper_trader.reset_portfolio(new_balance=balance)
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DISCOVERY API (Phase 12 — Ticker Discovery)
 # ══════════════════════════════════════════════════════════════════════
@@ -1210,3 +1226,121 @@ async def run_trading_phase() -> dict:
 
     asyncio.create_task(_run())
     return {"status": "started", "phase": "trading"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# AUTONOMOUS SCHEDULER API (Phase 4)
+# ══════════════════════════════════════════════════════════════════════
+
+from app.services.scheduler import TradingScheduler  # noqa: E402
+
+_scheduler = TradingScheduler(
+    autonomous_loop=_loop,
+    price_monitor=_price_monitor,
+)
+
+
+@app.on_event("startup")
+async def _auto_start_scheduler() -> None:
+    """Auto-start the trading scheduler when the server boots."""
+    result = _scheduler.start()
+    logger.info("[Boot] Scheduler auto-started: %s", result)
+
+
+@app.post("/api/scheduler/start")
+async def scheduler_start() -> dict:
+    """Start the automated daily trading schedule."""
+    return _scheduler.start()
+
+
+@app.post("/api/scheduler/stop")
+async def scheduler_stop() -> dict:
+    """Kill switch — stop all scheduled jobs."""
+    return _scheduler.stop()
+
+
+@app.get("/api/scheduler/status")
+async def scheduler_status() -> dict:
+    """Get scheduler state: running, jobs, market status."""
+    return _scheduler.get_status()
+
+
+@app.post("/api/scheduler/run/{job_name}")
+async def scheduler_run_job(job_name: str) -> dict:
+    """Manually trigger a scheduler job: pre_market, midday, end_of_day."""
+    return await _scheduler.run_job(job_name)
+
+
+@app.get("/api/scheduler/history")
+async def scheduler_history(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    """Recent scheduler run history from DB."""
+    history = _scheduler.get_history(limit=limit)
+    return {"count": len(history), "history": history}
+
+
+# ── Reports ────────────────────────────────────────────────────────
+
+from app.services.report_generator import ReportGenerator  # noqa: E402
+
+_report_gen = ReportGenerator()
+
+
+@app.get("/api/reports/latest")
+async def get_latest_reports() -> dict:
+    """Get the most recent pre-market and EOD reports."""
+    return _report_gen.get_latest()
+
+
+@app.get("/api/reports/history")
+async def get_report_history(
+    limit: int = Query(default=10, ge=1, le=50),
+    report_type: str | None = Query(default=None),
+) -> dict:
+    """Get report history with optional type filter."""
+    db = get_db()
+    conditions: list[str] = []
+    params: list = []
+
+    if report_type:
+        conditions.append("report_type = ?")
+        params.append(report_type)
+
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
+
+    rows = db.execute(
+        f"""
+        SELECT id, report_type, report_date, content, created_at
+        FROM reports
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    reports = [
+        {
+            "id": r[0],
+            "report_type": r[1],
+            "report_date": str(r[2]),
+            "content": json.loads(r[3]) if r[3] else {},
+            "created_at": str(r[4]) if r[4] else None,
+        }
+        for r in rows
+    ]
+    return {"count": len(reports), "reports": reports}
+
+
+# ── Market Status (standalone) ─────────────────────────────────────
+
+from app.utils.market_hours import market_status as _market_status  # noqa: E402
+
+
+@app.get("/api/market/status")
+async def get_market_status() -> dict:
+    """Current NYSE market status (open/closed, countdown)."""
+    return _market_status()
+

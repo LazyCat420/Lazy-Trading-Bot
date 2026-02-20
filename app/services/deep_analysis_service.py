@@ -58,6 +58,30 @@ class DeepAnalysisService:
             len(scorecard.flags),
         )
 
+        # ── Junk Quality Gate ─────────────────────────────────
+        # If the stock is clearly junk, skip Layers 2-4 and remove it
+        _JUNK_FLAGS = {"penny_stock", "micro_junk", "pump_dump", "illiquid"}
+        junk_hits = _JUNK_FLAGS & set(scorecard.flags)
+        if junk_hits:
+            logger.warning(
+                "[DeepAnalysis] %s FAILED quality gate: %s — removing from watchlist",
+                ticker, junk_hits,
+            )
+            from app.services.watchlist_manager import WatchlistManager
+            WatchlistManager().remove_ticker(ticker)
+            # Return a minimal dossier with zero conviction
+            return TickerDossier(
+                ticker=ticker,
+                quant_scorecard=scorecard,
+                qa_pairs=[],
+                executive_summary=f"Auto-removed: {', '.join(junk_hits)}",
+                bull_case="",
+                bear_case="Quality gate failed",
+                key_catalysts=[],
+                conviction_score=0.0,
+                signal_summary=f"JUNK: {', '.join(junk_hits)}",
+            )
+
         # Layer 2 — async LLM call
         logger.info("[DeepAnalysis] Layer 2: Generating follow-up questions …")
         questions = await self._questions.generate(scorecard)
@@ -168,6 +192,19 @@ class DeepAnalysisService:
             "key_catalysts": json.loads(row[9]) if row[9] else [],
             "conviction_score": row[10] or 0.5,
             "total_tokens": row[11] or 0,
+            # Extract sector/cap from the stored scorecard JSON
+            "sector": (
+                json.loads(row[4]).get("sector", "Unknown")
+                if row[4] else "Unknown"
+            ),
+            "industry": (
+                json.loads(row[4]).get("industry", "Unknown")
+                if row[4] else "Unknown"
+            ),
+            "market_cap_tier": (
+                json.loads(row[4]).get("market_cap_tier", "unknown")
+                if row[4] else "unknown"
+            ),
         }
 
     @staticmethod

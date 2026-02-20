@@ -196,6 +196,7 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             duration_seconds INTEGER,
             raw_transcript   VARCHAR,
             collected_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            scanned_for_tickers BOOLEAN DEFAULT FALSE,
             PRIMARY KEY (ticker, video_id)
         );
     """)
@@ -477,6 +478,29 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Phase 4: Scheduler & Reports ─────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scheduler_runs (
+            id            VARCHAR PRIMARY KEY,
+            job_name      VARCHAR NOT NULL,
+            started_at    TIMESTAMP NOT NULL,
+            completed_at  TIMESTAMP,
+            status        VARCHAR DEFAULT 'running',
+            summary       VARCHAR DEFAULT '',
+            error         VARCHAR DEFAULT ''
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id            VARCHAR PRIMARY KEY,
+            report_type   VARCHAR NOT NULL,
+            report_date   DATE NOT NULL,
+            content       VARCHAR NOT NULL,
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
@@ -542,4 +566,21 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
 
     for col, dtype in tech_cols:
         _add_col("technicals", col, dtype)
+
+    # ---- youtube_transcripts: scan tracking column ----
+    _add_col("youtube_transcripts", "scanned_for_tickers", "BOOLEAN DEFAULT FALSE")
+
+    # ---- quant_scorecards: PhD-level signal columns ----
+    quant_cols = [
+        ("momentum_12m", "DOUBLE DEFAULT 0"),
+        ("mean_reversion_score", "DOUBLE DEFAULT 0"),
+        ("hurst_exponent", "DOUBLE DEFAULT 0.5"),
+        ("vwap_deviation", "DOUBLE DEFAULT 0"),
+        ("fama_french_alpha", "DOUBLE DEFAULT 0"),
+        ("earnings_yield_gap", "DOUBLE DEFAULT 0"),
+        ("altman_z_score", "DOUBLE DEFAULT 0"),
+        ("piotroski_f_score", "INTEGER DEFAULT 0"),
+    ]
+    for col, dtype in quant_cols:
+        _add_col("quant_scorecards", col, dtype)
 

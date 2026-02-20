@@ -1,0 +1,41 @@
+﻿.\venv\Scripts\python.exe 
+: Traceback (most recent 
+call last):
+At line:1 char:1
++ 
+.\venv\Scripts\python.exe 
+-c "import traceback; 
+exec(open('tests/test ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
+    + CategoryInfo         
+     : NotSpecified: (Tra  
+  ceback (most recent ca   
+ ll last)::String) [],     
+RemoteException
+    + FullyQualifiedErrorI 
+   d : NativeCommandError
+ 
+  File "<string>", line 1, 
+in <module>
+    import traceback; exec(
+open('tests/test_phase1_pip
+eline.py').read())
+                           
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~^^
+  File "D:\Miniconda3\Lib\e
+ncodings\cp1252.py", line 
+23, in decode
+    return codecs.charmap_d
+ecode(input,self.errors,dec
+oding_table)[0]
+           ~~~~~~~~~~~~~~~~
+~~~~~^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^
+UnicodeDecodeError: 
+'charmap' codec can't 
+decode byte 0x9d in 
+position 1787: character 
+maps to <undefined>

@@ -26,8 +26,15 @@ from app.utils.logger import logger
 class SignalRouter:
     """Convert dossier conviction scores into sized trading orders."""
 
-    BUY_THRESHOLD = 0.70
+    BUY_THRESHOLD = 0.55
     SELL_THRESHOLD = 0.30
+
+    # Tiered position sizing: higher conviction → larger position
+    CONVICTION_TIERS = [
+        (0.80, 1.00),   # 80%+ conviction → 100% of max position
+        (0.65, 0.75),   # 65-80% conviction → 75% of max position
+        (0.55, 0.50),   # 55-65% conviction → 50% of max position
+    ]
 
     def __init__(self) -> None:
         self._risk_params = self._load_risk_params()
@@ -102,20 +109,24 @@ class SignalRouter:
                 )
                 return None
 
+            # Tiered sizing: scale position by conviction level
+            tier_scale = self._get_conviction_tier_scale(conviction_score)
             qty = self._calculate_position_size(
                 current_price, cash_balance, total_portfolio_value,
             )
+            qty = math.floor(qty * tier_scale)
             if qty <= 0:
                 logger.info(
                     "[SignalRouter] %s SKIP — position size is 0 "
-                    "(price=$%.2f, cash=$%.2f)",
-                    ticker, current_price, cash_balance,
+                    "(price=$%.2f, cash=$%.2f, tier_scale=%.0f%%)",
+                    ticker, current_price, cash_balance, tier_scale * 100,
                 )
                 return None
 
             logger.info(
-                "[SignalRouter] %s → BUY %d @ $%.2f (conviction=%.2f)",
-                ticker, qty, current_price, conviction_score,
+                "[SignalRouter] %s → BUY %d @ $%.2f "
+                "(conviction=%.2f, tier_scale=%.0f%%)",
+                ticker, qty, current_price, conviction_score, tier_scale * 100,
             )
             return {
                 "ticker": ticker,
@@ -124,7 +135,10 @@ class SignalRouter:
                 "price": current_price,
                 "signal": "BUY",
                 "conviction": conviction_score,
-                "reason": f"Conviction {conviction_score:.2f} ≥ {self.BUY_THRESHOLD}",
+                "reason": (
+                    f"Conviction {conviction_score:.2f} ≥ {self.BUY_THRESHOLD} "
+                    f"(tier: {tier_scale:.0%} of max position)"
+                ),
             }
 
         # ── SELL signal ─────────────────────────────────────────────
@@ -164,6 +178,16 @@ class SignalRouter:
                 ticker, conviction_score,
             )
         return None
+
+    def _get_conviction_tier_scale(self, conviction: float) -> float:
+        """Return position size multiplier based on conviction level.
+
+        Higher conviction → larger position.
+        """
+        for threshold, scale in self.CONVICTION_TIERS:
+            if conviction >= threshold:
+                return scale
+        return 0.50  # fallback for threshold-level conviction
 
     # ------------------------------------------------------------------
     # Position sizing

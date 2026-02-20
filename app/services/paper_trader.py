@@ -607,3 +607,55 @@ class PaperTrader:
             except (json.JSONDecodeError, OSError):
                 pass
         return 10000.0
+
+    def reset_portfolio(self, new_balance: float | None = None) -> dict:
+        """Wipe all trading data and reinitialize with a new balance.
+
+        Clears: positions, orders, price_triggers, portfolio_snapshots.
+        Then creates a fresh starting snapshot with the given balance.
+        If new_balance is None, reads from risk_params.json.
+        """
+        balance = new_balance if new_balance is not None else self._get_starting_balance()
+        db = get_db()
+
+        # Wipe all trading tables
+        db.execute("DELETE FROM positions")
+        db.execute("DELETE FROM orders")
+        db.execute("DELETE FROM price_triggers")
+        db.execute("DELETE FROM portfolio_snapshots")
+
+        # Create fresh starting snapshot
+        db.execute(
+            """
+            INSERT INTO portfolio_snapshots
+                (timestamp, cash_balance, total_positions_value,
+                 total_portfolio_value, realized_pnl, unrealized_pnl)
+            VALUES (?, ?, 0.0, ?, 0.0, 0.0)
+            """,
+            [datetime.now(), balance, balance],
+        )
+        db.commit()
+
+        # Also update the risk_params.json so the value persists
+        if new_balance is not None:
+            path = settings.USER_CONFIG_DIR / "risk_params.json"
+            if path.exists():
+                try:
+                    params = json.loads(path.read_text(encoding="utf-8"))
+                    params["account_size_usd"] = new_balance
+                    path.write_text(
+                        json.dumps(params, indent=2) + "\n", encoding="utf-8",
+                    )
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        logger.info(
+            "[PaperTrader] Portfolio RESET — new balance: $%.2f", balance,
+        )
+        return {
+            "status": "reset",
+            "new_balance": balance,
+            "positions_cleared": True,
+            "orders_cleared": True,
+            "triggers_cleared": True,
+        }

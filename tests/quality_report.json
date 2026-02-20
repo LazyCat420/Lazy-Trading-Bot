@@ -1,0 +1,427 @@
+{
+  "VOO": {
+    "ticker": "VOO",
+    "cached": true,
+    "date": "2026-02-18",
+    "agents": {
+      "technical": {
+        "status": "ok",
+        "report": {
+          "ticker": "VOO",
+          "trend": "SIDEWAYS",
+          "momentum": "NEUTRAL",
+          "support_levels": [],
+          "resistance_levels": [],
+          "key_signals": [],
+          "chart_pattern": null,
+          "signal": "HOLD",
+          "confidence": 0.7,
+          "reasoning": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment and close to its 200-day moving average. The RSI is neutral at 49, MACD is bearish, and ADX indicates weak/no trend (range-bound). There are no recent crossovers detected. Support levels are identified at $612.97 (+3.0% away), $583.17 (+8.2% away), and $568.21 (+11.1% away). The Hurst Exponent is 0.86, indicating a trending regime. Given the mixed signals, the recommendation is to HOLD."
+        }
+      },
+      "fundamental": {
+        "status": "ok",
+        "report": {
+          "ticker": "VOO",
+          "valuation_grade": "FAIR",
+          "financial_health": "STRONG",
+          "growth_trajectory": "STEADY",
+          "key_metrics": {},
+          "strengths": [],
+          "risks": [],
+          "intrinsic_value_estimate": null,
+          "signal": "HOLD",
+          "confidence": 0.7,
+          "reasoning": "VOO is a well-established ETF tracking the S&P 500 index, known for its strong financial health due to diversification and liquidity. Its steady growth trajectory reflects consistent performance aligned with broader market trends."
+        }
+      },
+      "sentiment": {
+        "status": "ok",
+        "report": {
+          "ticker": "VOO",
+          "overall_sentiment": "NEUTRAL",
+          "sentiment_score": 0.0,
+          "catalysts": [],
+          "risks_mentioned": [],
+          "narrative_shift": null,
+          "top_headlines": [],
+          "signal": "HOLD",
+          "confidence": 0.3,
+          "reasoning": "No recent news or transcript data available for analysis."
+        }
+      },
+      "risk": {
+        "status": "ok",
+        "report": {
+          "ticker": "VOO",
+          "volatility_rating": "MODERATE",
+          "max_position_size_pct": 3.4,
+          "suggested_stop_loss": 9.27,
+          "suggested_take_profit": 80.0,
+          "risk_reward_ratio": 1.67,
+          "atr_based_stop": 0.0,
+          "downside_scenarios": [],
+          "portfolio_impact": "",
+          "risk_grade": "MODERATE_RISK",
+          "reasoning": "Given the moderate risk tolerance and pre-computed Kelly Criterion recommendation of 3.4% of portfolio, this position size is suggested. The volatility rating is MODERATE due to the Sortino Ratio (0.67) indicating some risk-adjusted performance, but also significant drawdown risk (-18.7%). The ATR(14) of 7.51 suggests a moderate level of price fluctuation. Considering these factors and the base case (sideways), bear case (reversal), and bull case (trend continues), a stop-loss at 1.5x ATR (9.27) is proposed, aligning with nearby support levels. The take-profit target is set at a resistance level, maintaining a risk/reward ratio of at least 1.5:1."
+        }
+      }
+    },
+    "decision": {
+      "ticker": "VOO",
+      "signal": "HOLD",
+      "confidence": 0.65,
+      "entry_rules_evaluated": [
+        {
+          "rule_text": "The stock must be in an UPTREND (SMA50 above SMA200)",
+          "is_met": false,
+          "evidence": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment.",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "RSI must be between 30-70 (not extreme overbought/oversold)",
+          "is_met": false,
+          "evidence": "The RSI is neutral at 49.",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Revenue must be growing year-over-year by at least 5%",
+          "is_met": false,
+          "evidence": "Not applicable for ETFs",
+          "data_source": "Fundamental Analysis Report"
+        },
+        {
+          "rule_text": "There must be at least one positive catalyst in recent news",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis.",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The risk/reward ratio must be at least 1.5:1",
+          "is_met": false,
+          "evidence": "Not directly provided in reports; calculated as 1.67 (suggested take profit - suggested stop loss).",
+          "data_source": "Risk Assessment Report"
+        }
+      ],
+      "exit_rules_evaluated": [
+        {
+          "rule_text": "RSI goes above 80 (strongly overbought)",
+          "is_met": false,
+          "evidence": "The RSI is neutral at 49.",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Stock drops below the SMA50",
+          "is_met": false,
+          "evidence": "Not applicable for HOLD signal; stock is currently above SMA50.",
+          "data_source": "N/A"
+        },
+        {
+          "rule_text": "A major negative catalyst appears (earnings miss, lawsuit, CEO departure)",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis.",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The take-profit target is hit",
+          "is_met": false,
+          "evidence": "Not applicable for HOLD signal; take profit not yet reached.",
+          "data_source": "N/A"
+        }
+      ],
+      "suggested_position_size_pct": 3.4,
+      "suggested_entry_price": 0.0,
+      "suggested_stop_loss": 9.27,
+      "suggested_take_profit": 80.0,
+      "risk_reward_ratio": 1.67,
+      "reasoning": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment and close to its 200-day moving average. The RSI is neutral at 49, MACD is bearish, and ADX indicates weak/no trend (range-bound). There are no recent crossovers detected. Support levels are identified at $612.97 (+3.0% away), $583.17 (+8.2% away), and $568.21 (+11.1% away). The Hurst Exponent is 0.86, indicating a trending regime. Given the mixed signals, the recommendation is to HOLD. The risk/reward ratio of 1.67 (suggested take profit - suggested stop loss) meets the minimum requirement of 1.5:1.",
+      "dissenting_signals": [],
+      "timestamp": "2023-04-18T12:00:00Z",
+      "strategy_version": "08df39b8fbad"
+    }
+  },
+  "TSLA": {
+    "ticker": "TSLA",
+    "cached": true,
+    "date": "2026-02-18",
+    "agents": {
+      "technical": {
+        "status": "ok",
+        "report": {
+          "ticker": "TSLA",
+          "trend": "SIDEWAYS",
+          "momentum": "NEUTRAL",
+          "support_levels": [],
+          "resistance_levels": [],
+          "key_signals": [],
+          "chart_pattern": null,
+          "signal": "HOLD",
+          "confidence": 0.7,
+          "reasoning": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment and a distance from SMA200 of -0.7%. The recent MACD bullish crossover suggests a potential upward momentum. However, the RSI (43) indicates neutral momentum. There are multiple support levels identified ($394.15, $331.99, and $318.23), with resistance at $449.36, $459.46, and $468.37. The Hurst Exponent (0.88) indicates a trending regime. Given the mixed signals, the signal is HOLD with moderate confidence."
+        }
+      },
+      "fundamental": {
+        "status": "ok",
+        "report": {
+          "ticker": "TSLA",
+          "valuation_grade": "FAIR",
+          "financial_health": "MODERATE",
+          "growth_trajectory": "STEADY",
+          "key_metrics": {},
+          "strengths": [],
+          "risks": [],
+          "intrinsic_value_estimate": null,
+          "signal": "HOLD",
+          "confidence": 0.5,
+          "reasoning": "Due to lack of available fundamental data, a comprehensive analysis cannot be conducted. However, based on general market knowledge, TSLA's financial health is considered moderate due to its high debt levels and fluctuating profitability. Its growth trajectory appears steady, with consistent revenue increases over the past few years."
+        }
+      },
+      "sentiment": {
+        "status": "ok",
+        "report": {
+          "ticker": "TSLA",
+          "overall_sentiment": "NEUTRAL",
+          "sentiment_score": 0.0,
+          "catalysts": [],
+          "risks_mentioned": [],
+          "narrative_shift": null,
+          "top_headlines": [],
+          "signal": "HOLD",
+          "confidence": 0.3,
+          "reasoning": "No recent news or transcript data available for analysis."
+        }
+      },
+      "risk": {
+        "status": "ok",
+        "report": {
+          "ticker": "TSLA",
+          "volatility_rating": "HIGH",
+          "max_position_size_pct": 1.0,
+          "suggested_stop_loss": 30.2768,
+          "suggested_take_profit": 60.5536,
+          "risk_reward_ratio": 1.5,
+          "atr_based_stop": 0.0,
+          "downside_scenarios": [],
+          "portfolio_impact": "",
+          "risk_grade": "MODERATE_RISK",
+          "reasoning": "Given TSLA's high volatility and severe historical drawdowns, a conservative approach is warranted. The current Max Drawdown of -38.5% indicates significant risk. Despite the moderate risk tolerance, position sizing will be limited to 1% of the portfolio due to these factors. Stop-loss will be set at 2x ATR (14) below entry, aligning with typical risk management practices. Take-profit targets will be based on nearby resistance levels, aiming for a minimum 1.5:1 risk/reward ratio."
+        }
+      }
+    },
+    "decision": {
+      "ticker": "TSLA",
+      "signal": "HOLD",
+      "confidence": 0.5,
+      "entry_rules_evaluated": [
+        {
+          "rule_text": "The stock must be in an UPTREND (SMA50 above SMA200)",
+          "is_met": false,
+          "evidence": "SIDEWAYS trend",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "RSI must be between 30-70 (not extreme overbought/oversold)",
+          "is_met": true,
+          "evidence": "RSI = 43 (NEUTRAL)",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Revenue must be growing year-over-year by at least 5%",
+          "is_met": false,
+          "evidence": "Lack of available fundamental data",
+          "data_source": "Fundamental Analysis Report"
+        },
+        {
+          "rule_text": "There must be at least one positive catalyst in recent news",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The risk/reward ratio must be at least 1.5:1",
+          "is_met": false,
+          "evidence": "Lack of information to calculate risk/reward ratio",
+          "data_source": "N/A"
+        }
+      ],
+      "exit_rules_evaluated": [
+        {
+          "rule_text": "RSI goes above 80 (strongly overbought)",
+          "is_met": false,
+          "evidence": "RSI = 43 (NEUTRAL)",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Stock drops below the SMA50",
+          "is_met": false,
+          "evidence": "SIDEWAYS trend",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "A major negative catalyst appears (earnings miss, lawsuit, CEO departure)",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The take-profit target is hit",
+          "is_met": false,
+          "evidence": "N/A",
+          "data_source": "N/A"
+        }
+      ],
+      "suggested_position_size_pct": 1.0,
+      "suggested_entry_price": 0.0,
+      "suggested_stop_loss": 30.2768,
+      "suggested_take_profit": 60.5536,
+      "risk_reward_ratio": 1.5,
+      "reasoning": "Based on the provided analysis reports, TSLA does not meet three of the five entry rules (uptrend, positive catalyst in recent news, and risk/reward ratio). The stock is currently in a sideways trend with mixed SMA alignment. RSI indicates neutral momentum. There are no recent positive catalysts or available fundamental data to assess revenue growth. Given these factors, the signal is HOLD with moderate confidence.",
+      "dissenting_signals": [],
+      "timestamp": "2023-04-18T16:35:00Z",
+      "strategy_version": "08df39b8fbad"
+    }
+  },
+  "WMT": {
+    "ticker": "WMT",
+    "cached": true,
+    "date": "2026-02-18",
+    "agents": {
+      "technical": {
+        "status": "ok",
+        "report": {
+          "ticker": "WMT",
+          "trend": "UPTREND",
+          "momentum": "BULLISH",
+          "support_levels": [],
+          "resistance_levels": [],
+          "key_signals": [],
+          "chart_pattern": null,
+          "signal": "BUY",
+          "confidence": 0.75,
+          "reasoning": "The stock is currently in a bullish momentum as indicated by the RSI at 55 and MACD being bullish with MACD (3.7383) > Signal (3.6580). The Hurst Exponent of 0.94 suggests a trending regime, further supported by the stock's recent price increase over the last month (6.7%) and three months (23.2%). Despite two RSI crossovers through 70 in the past 10 days, these are not strong enough to counteract the overall bullish momentum. The nearest support levels ($116.57, $111.92, and $101.25) provide additional confidence that the stock is likely to continue its upward trajectory."
+        }
+      },
+      "fundamental": {
+        "status": "ok",
+        "report": {
+          "ticker": "WMT",
+          "valuation_grade": "FAIR",
+          "financial_health": "MODERATE",
+          "growth_trajectory": "STEADY",
+          "key_metrics": {},
+          "strengths": [],
+          "risks": [],
+          "intrinsic_value_estimate": null,
+          "signal": "HOLD",
+          "confidence": 0.7,
+          "reasoning": "WMT has a moderate financial health due to manageable debt levels but could improve its cash position. Its growth trajectory is steady with consistent revenue and EPS increases over the past few years."
+        }
+      },
+      "sentiment": {
+        "status": "ok",
+        "report": {
+          "ticker": "WMT",
+          "overall_sentiment": "NEUTRAL",
+          "sentiment_score": 0.0,
+          "catalysts": [],
+          "risks_mentioned": [],
+          "narrative_shift": null,
+          "top_headlines": [],
+          "signal": "HOLD",
+          "confidence": 0.3,
+          "reasoning": "No recent news or transcript data available for analysis."
+        }
+      },
+      "risk": {
+        "status": "ok",
+        "report": {
+          "ticker": "WMT",
+          "volatility_rating": "MODERATE",
+          "max_position_size_pct": 3.25,
+          "suggested_stop_loss": 3.8,
+          "suggested_take_profit": 16.25,
+          "risk_reward_ratio": 1.49,
+          "atr_based_stop": 0.0,
+          "downside_scenarios": [],
+          "portfolio_impact": "",
+          "risk_grade": "MODERATE_RISK",
+          "reasoning": "Given WMT's moderate volatility and risk-adjusted returns, a position size of 3.25% is suggested based on the Half-Kelly criterion (3.3%). This allows for potential gains while maintaining a manageable risk level. The stop loss is set at 1.5x ATR to account for market volatility and nearby support levels. The take profit target is derived from recent resistance levels, aiming for a 1.5:1 risk/reward ratio."
+        }
+      }
+    },
+    "decision": {
+      "ticker": "WMT",
+      "signal": "HOLD",
+      "confidence": 0.65,
+      "entry_rules_evaluated": [
+        {
+          "rule_text": "The stock must be in an UPTREND (SMA50 above SMA200)",
+          "is_met": true,
+          "evidence": "Trend is UPTREND",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "RSI must be between 30-70 (not extreme overbought/oversold)",
+          "is_met": false,
+          "evidence": "RSI at 55 (above 70 threshold)",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Revenue must be growing year-over-year by at least 5%",
+          "is_met": false,
+          "evidence": "No recent revenue growth data provided",
+          "data_source": "Fundamental Analysis Report"
+        },
+        {
+          "rule_text": "There must be at least one positive catalyst in recent news",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The risk/reward ratio must be at least 1.5:1",
+          "is_met": false,
+          "evidence": "Risk-reward ratio of 1.49 (below 1.5 threshold)",
+          "data_source": "Risk Assessment Report"
+        }
+      ],
+      "exit_rules_evaluated": [
+        {
+          "rule_text": "RSI goes above 80 (strongly overbought)",
+          "is_met": false,
+          "evidence": "RSI at 55 (below 80 threshold)",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "Stock drops below the SMA50",
+          "is_met": false,
+          "evidence": "No evidence of stock dropping below SMA50",
+          "data_source": "Technical Analysis Report"
+        },
+        {
+          "rule_text": "A major negative catalyst appears (earnings miss, lawsuit, CEO departure)",
+          "is_met": false,
+          "evidence": "No recent news or transcript data available for analysis",
+          "data_source": "Sentiment Analysis Report"
+        },
+        {
+          "rule_text": "The take-profit target is hit",
+          "is_met": false,
+          "evidence": "No take-profit target information provided",
+          "data_source": "N/A"
+        }
+      ],
+      "suggested_position_size_pct": 3.25,
+      "suggested_entry_price": 0.0,
+      "suggested_stop_loss": 3.8,
+      "suggested_take_profit": 16.25,
+      "risk_reward_ratio": 1.49,
+      "reasoning": "The stock is currently in an uptrend and has moderate bullish momentum (RSI at 55). However, the RSI is above the 70 threshold, which does not meet the entry rule for RSI. Additionally, there are no recent positive catalysts or revenue growth data available to support the other entry rules. The risk-reward ratio is slightly below the required 1.5:1 threshold. Given these factors, the decision is to HOLD with moderate confidence.",
+      "dissenting_signals": [
+        "RSI above 70 threshold"
+      ],
+      "timestamp": "2023-04-18T16:30:00Z",
+      "strategy_version": "08df39b8fbad"
+    }
+  }
+}

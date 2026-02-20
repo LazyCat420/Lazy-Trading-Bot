@@ -20,10 +20,20 @@ class TechnicalAgent(BaseAgent):
         """Format 6 months of technical indicator data for the LLM.
 
         context keys:
-            price_history:  list[OHLCVRow]
-            technicals:     list[TechnicalRow]
+            price_history:      list[OHLCVRow]
+            technicals:         list[TechnicalRow]
+            quant_scorecard:    QuantScorecard | None
+            distilled_analysis: str (pre-computed chart analysis)
         """
         parts = []
+
+        # ---- Distilled Analysis (pre-computed patterns & signals) ----
+        distilled = context.get("distilled_analysis", "")
+        if distilled:
+            parts.append(distilled)
+            parts.append("\n" + "=" * 60)
+            parts.append("RAW INDICATOR DATA (reference for above analysis)")
+            parts.append("=" * 60 + "\n")
 
         # ---- Current Price ----
         prices = context.get("price_history", [])

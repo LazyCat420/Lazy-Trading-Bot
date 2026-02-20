@@ -107,8 +107,21 @@ class DiscoveryService:
 
         # YouTube collection
         if enable_youtube:
+            # Step 1: Scrape general market news for new ticker leads
             try:
-                youtube_tickers = self.youtube.scan_recent_transcripts(
+                market_transcripts = await self.yt_collector.collect_general_market()
+                logger.info(
+                    "[Discovery] General market: %d new transcripts scraped",
+                    len(market_transcripts),
+                )
+            except Exception as e:
+                logger.error(
+                    "[Discovery] General market scrape failed: %s", e,
+                )
+
+            # Step 2: Scan all un-scanned transcripts for ticker mentions
+            try:
+                youtube_tickers = await self.youtube.scan_recent_transcripts(
                     hours=youtube_hours
                 )
                 logger.info(

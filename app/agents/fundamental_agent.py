@@ -29,8 +29,19 @@ class FundamentalAgent(BaseAgent):
             analyst_data:       AnalystData | None
             insider_activity:   InsiderSummary | None
             earnings_calendar:  EarningsCalendar | None
+            quant_scorecard:    QuantScorecard | None
+            distilled_analysis: str (pre-computed fundamental analysis)
         """
         parts = []
+
+        # ---- Distilled Analysis (pre-computed health scores & context) ----
+        distilled = context.get("distilled_analysis", "")
+        if distilled:
+            parts.append(distilled)
+            parts.append("\n" + "=" * 60)
+            parts.append("RAW FINANCIAL DATA (reference for above analysis)")
+            parts.append("=" * 60 + "\n")
+
         f = context.get("fundamentals")
 
         # ---- Valuation ----
@@ -151,6 +162,20 @@ class FundamentalAgent(BaseAgent):
                 surprise_label = "BEAT" if earnings.surprise_pct > 0 else "MISSED"
                 parts.append(
                     f"Previous Surprise: {surprise_label} by {abs(earnings.surprise_pct):.1f}%"
+                )
+
+        # ---- Industry Peers Comparison ----
+        peer_fundamentals = context.get("peer_fundamentals", [])
+        if peer_fundamentals:
+            parts.append("\n=== INDUSTRY PEERS COMPARISON ===")
+            parts.append("Peer | Mkt Cap | P/E | Fwd P/E | P/S | Rev Growth | ROE | Margins")
+            parts.append("-" * 75)
+            for p in peer_fundamentals:
+                parts.append(
+                    f"{p.ticker} | {self._fmt_big(p.market_cap)} | "
+                    f"{p.trailing_pe:.2f} | {p.forward_pe:.2f} | {p.price_to_sales:.2f} | "
+                    f"{self._pct(p.revenue_growth)} | {self._pct(p.return_on_equity)} | "
+                    f"{self._pct(p.profit_margin)}"
                 )
 
         return "\n".join(parts)

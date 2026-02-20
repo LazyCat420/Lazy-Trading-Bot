@@ -30,7 +30,12 @@ async def _get_shared_client() -> httpx.AsyncClient:
     global _shared_client  # noqa: PLW0603
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
-            timeout=300.0,
+            timeout=httpx.Timeout(
+                connect=10.0,   # Fail fast if server is unreachable
+                read=300.0,     # LLM inference can be slow
+                write=30.0,     # Sending large prompts
+                pool=30.0,      # Waiting for a connection slot
+            ),
             limits=httpx.Limits(
                 max_connections=20,  # Up to 20 parallel TCP connections
                 max_keepalive_connections=10,
@@ -49,6 +54,11 @@ class LLMService:
         self.temperature = settings.LLM_TEMPERATURE
         self.context_size = settings.LLM_CONTEXT_SIZE
         self.api_key = settings.OPENAI_API_KEY
+
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        """Rough token estimate: ~4 chars per token for English text."""
+        return len(text) // 4
 
     async def chat(
         self,
@@ -130,8 +140,14 @@ class LLMService:
         messages: list[dict],
         response_format: str,
         max_tokens: int | None,
+        *,
+        _retries: int = 0,
     ) -> str:
-        """Call an OpenAI-compatible /v1/chat/completions endpoint."""
+        """Call an OpenAI-compatible /v1/chat/completions endpoint.
+
+        On 400 errors (often prompt overflow), trims the longest message
+        and retries up to 2 times.
+        """
         url = f"{self.base_url}/v1/chat/completions"
         payload: dict = {
             "model": self.model,
@@ -142,9 +158,6 @@ class LLMService:
             payload["max_tokens"] = max_tokens
 
         # LM Studio does NOT support response_format — omit it entirely.
-        # See: https://lmstudio.ai/docs/developer/openai-compat/chat-completions
-        # Supported params: model, top_p, top_k, messages, temperature,
-        #   max_tokens, stream, stop, *_penalty, logit_bias, seed.
         if response_format == "json" and self.provider != "lmstudio":
             payload["response_format"] = {"type": "json_object"}
 
@@ -152,21 +165,33 @@ class LLMService:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        est_tokens = self.estimate_tokens(str(total_chars))
         logger.info(
-            "⏱️  OpenAI request START → %s model=%s provider=%s",
-            url,
-            self.model,
-            self.provider,
-        )
-        logger.debug(
-            "📦 Payload keys: %s (response_format present: %s)",
-            list(payload.keys()),
-            "response_format" in payload,
+            "⏱️  OpenAI request START → %s model=%s provider=%s "
+            "(~%d chars, ~%d est tokens, retry=%d)",
+            url, self.model, self.provider,
+            total_chars, est_tokens, _retries,
         )
         t0 = time.perf_counter()
 
         client = await _get_shared_client()
         resp = await client.post(url, json=payload, headers=headers)
+
+        # ── 400 Bad Request → retry with trimmed prompt ────────
+        if resp.status_code == 400 and _retries < 2:
+            body = resp.text
+            logger.warning(
+                "⚠️  400 from LLM (attempt %d), trimming prompt and retrying. "
+                "Body: %s",
+                _retries + 1, body[:300],
+            )
+            # Trim the longest message by ~40%
+            trimmed = self._trim_messages(messages)
+            return await self._call_openai(
+                trimmed, response_format, max_tokens,
+                _retries=_retries + 1,
+            )
 
         # Log diagnostic info on errors before raising
         if resp.status_code >= 400:
@@ -190,28 +215,88 @@ class LLMService:
         return content
 
     @staticmethod
-    def clean_json_response(raw: str) -> str:
-        """Strip markdown code fences and extract the JSON object.
+    def _trim_messages(messages: list[dict]) -> list[dict]:
+        """Trim the longest message by ~40% to fit within context window."""
+        trimmed = []
+        # Find the longest message
+        longest_idx = max(
+            range(len(messages)),
+            key=lambda i: len(messages[i].get("content", "")),
+        )
+        for i, msg in enumerate(messages):
+            if i == longest_idx:
+                content = msg["content"]
+                # Keep ~60% of the content, cutting from the middle
+                keep = int(len(content) * 0.6)
+                half = keep // 2
+                trimmed_content = (
+                    content[:half]
+                    + "\n\n[... content trimmed for context window ...]"
+                    + content[-half:]
+                )
+                trimmed.append({**msg, "content": trimmed_content})
+                logger.info(
+                    "✂️  Trimmed message[%d] from %d → %d chars",
+                    i, len(content), len(trimmed_content),
+                )
+            else:
+                trimmed.append(msg)
+        return trimmed
 
-        LLMs often wrap their JSON in ```json ... ``` markers.
+    @staticmethod
+    def clean_json_response(raw: str) -> str:
+        """Strip markdown code fences and extract the FIRST complete JSON object.
+
+        LLMs often wrap their JSON in ```json ... ``` markers, or output
+        multiple JSON objects in one response.  We use brace-depth counting
+        to extract only the first complete {...} object.
         """
         # Strip markdown code blocks
         cleaned = re.sub(r"```(?:json)?\s*", "", raw)
         cleaned = re.sub(r"```\s*$", "", cleaned)
         cleaned = cleaned.strip()
 
-        # Try to find JSON object boundaries
+        # Find the first '{' and use brace-depth counting to find its match
         start = cleaned.find("{")
-        end = cleaned.rfind("}")
+        if start == -1:
+            return cleaned  # No JSON object at all
 
-        if start != -1 and end != -1 and end > start:
-            cleaned = cleaned[start : end + 1]
-        elif start != -1:
-            # Found start but no end - try to salvage what we can or just return as is
-            # expecting parser to fail later if it's incomplete
-            cleaned = cleaned[start:]
+        depth = 0
+        in_string = False
+        escape_next = False
+        end = -1
 
-        return cleaned
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+
+            if escape_next:
+                escape_next = False
+                continue
+
+            if ch == "\\":
+                escape_next = True
+                continue
+
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+
+        if end != -1:
+            return cleaned[start : end + 1]
+
+        # Incomplete object (truncated by max_tokens) — return what we have
+        return cleaned[start:]
 
     @staticmethod
     async def fetch_models(provider: str, base_url: str) -> list[str]:
