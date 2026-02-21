@@ -400,15 +400,93 @@ async def get_llm_config() -> dict:
 
 @app.put("/api/llm-config")
 async def update_llm_config(req: LLMConfigRequest) -> dict:
-    """Save new LLM settings + hot-patch the running config."""
+    """Save new LLM settings + hot-patch the running config.
+
+    For LM Studio: also reloads the model via /api/v1/models/load
+    with the new context_length, and returns the verified config
+    that LM Studio actually applied.
+    """
     data = {k: v for k, v in req.model_dump().items() if v is not None}
     merged = settings.update_llm_config(data)
     logger.info(
-        "LLM config updated: provider=%s model=%s",
+        "LLM config updated: provider=%s model=%s ctx=%s",
         merged.get("provider"),
         merged.get("model"),
+        merged.get("context_size"),
     )
-    return {"status": "updated", "config": merged}
+
+    result: dict = {"status": "updated", "config": merged}
+
+    # ── LM Studio: reload model with new context_length ──────────
+    provider = merged.get("provider", "")
+    if provider == "lmstudio":
+        lms_url = merged.get("lmstudio_url", "http://localhost:1234").rstrip("/")
+        model_id = merged.get("model", "")
+        ctx = merged.get("context_size", 8192)
+
+        if model_id:
+            import httpx as _httpx
+            load_payload = {
+                "model": model_id,
+                "context_length": ctx,
+                "echo_load_config": True,
+            }
+            try:
+                async with _httpx.AsyncClient(timeout=60.0) as client:
+                    # ── Step 1: Unload current model to avoid stacking ──
+                    try:
+                        await client.post(
+                            f"{lms_url}/api/v1/models/unload",
+                            json={"instance_id": model_id},
+                        )
+                        logger.info(
+                            "[LM Studio] Unloaded %s before reload", model_id,
+                        )
+                    except Exception:
+                        # Model might not be loaded yet — that's fine
+                        pass
+
+                    # ── Step 2: Load with new config ──
+                    resp = await client.post(
+                        f"{lms_url}/api/v1/models/load",
+                        json=load_payload,
+                    )
+                    resp.raise_for_status()
+                    load_result = resp.json()
+
+                # Extract the verified config LM Studio actually applied
+                load_config = load_result.get("load_config", {})
+                actual_ctx = load_config.get("context_length")
+                load_time = load_result.get("load_time_seconds")
+
+                result["lmstudio_verified"] = {
+                    "status": "model_reloaded",
+                    "model": model_id,
+                    "requested_context_length": ctx,
+                    "actual_context_length": actual_ctx,
+                    "context_match": actual_ctx == ctx if actual_ctx else None,
+                    "load_time_seconds": load_time,
+                    "full_load_config": load_config,
+                }
+                logger.info(
+                    "[LM Studio] Model reloaded: ctx requested=%d, "
+                    "actual=%s, load_time=%.1fs",
+                    ctx, actual_ctx, load_time or 0,
+                )
+            except Exception as exc:
+                result["lmstudio_verified"] = {
+                    "status": "reload_failed",
+                    "error": str(exc),
+                    "note": (
+                        "Config was saved but LM Studio model reload failed. "
+                        "You may need to reload the model manually in LM Studio."
+                    ),
+                }
+                logger.warning(
+                    "[LM Studio] Model reload failed: %s", exc,
+                )
+
+    return result
 
 
 @app.get("/api/llm-models")

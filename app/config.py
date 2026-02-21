@@ -41,6 +41,12 @@ class Settings:
     # OpenAI / LM Studio API key (LM Studio usually doesn't need one)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
+    # SEC EDGAR API — required User-Agent header
+    SEC_USER_AGENT: str = os.getenv(
+        "SEC_USER_AGENT",
+        "LazyTradingBot/1.0 (contact@example.com)",
+    )
+
     @property
     def LLM_BASE_URL(self) -> str:
         """Computed: returns the active provider URL based on LLM_PROVIDER."""

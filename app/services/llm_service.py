@@ -45,15 +45,36 @@ async def _get_shared_client() -> httpx.AsyncClient:
 
 
 class LLMService:
-    """Sends chat completion requests to Ollama or LM Studio (OpenAI-compatible)."""
+    """Sends chat completion requests to Ollama or LM Studio (OpenAI-compatible).
 
-    def __init__(self) -> None:
-        self.provider = settings.LLM_PROVIDER
-        self.base_url = settings.LLM_BASE_URL  # Computed property, already stripped
-        self.model = settings.LLM_MODEL
-        self.temperature = settings.LLM_TEMPERATURE
-        self.context_size = settings.LLM_CONTEXT_SIZE
-        self.api_key = settings.OPENAI_API_KEY
+    All config values (provider, model, context_size, temperature) are read
+    LIVE from settings on every call, so hot-patching via the Settings UI
+    takes effect immediately — no restart needed.
+    """
+
+    @property
+    def provider(self) -> str:
+        return settings.LLM_PROVIDER
+
+    @property
+    def base_url(self) -> str:
+        return settings.LLM_BASE_URL
+
+    @property
+    def model(self) -> str:
+        return settings.LLM_MODEL
+
+    @property
+    def temperature(self) -> float:
+        return settings.LLM_TEMPERATURE
+
+    @property
+    def context_size(self) -> int:
+        return settings.LLM_CONTEXT_SIZE
+
+    @property
+    def api_key(self) -> str:
+        return settings.OPENAI_API_KEY
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -145,9 +166,25 @@ class LLMService:
     ) -> str:
         """Call an OpenAI-compatible /v1/chat/completions endpoint.
 
-        On 400 errors (often prompt overflow), trims the longest message
-        and retries up to 2 times.
+        Pre-validates prompt size against context_size (from Settings UI)
+        and trims proactively. On 400 errors, retries up to 2 times.
         """
+        # ── Pre-validate prompt against configured context_size ──
+        # This makes the Settings UI context_size control effective
+        # for ALL providers including LM Studio.
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        est_tokens = total_chars // 4  # ~4 chars per token
+        ctx = self.context_size
+
+        if est_tokens > ctx and _retries == 0:
+            logger.warning(
+                "⚠️  Prompt (~%d tokens) exceeds context_size (%d), "
+                "pre-trimming before sending to %s",
+                est_tokens, ctx, self.provider,
+            )
+            messages = self._trim_messages(messages)
+            total_chars = sum(len(m.get("content", "")) for m in messages)
+            est_tokens = total_chars // 4
         url = f"{self.base_url}/v1/chat/completions"
         payload: dict = {
             "model": self.model,
@@ -165,13 +202,11 @@ class LLMService:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        est_tokens = self.estimate_tokens(str(total_chars))
         logger.info(
             "⏱️  OpenAI request START → %s model=%s provider=%s "
-            "(~%d chars, ~%d est tokens, retry=%d)",
+            "(~%d chars, ~%d est tokens, ctx=%d, retry=%d)",
             url, self.model, self.provider,
-            total_chars, est_tokens, _retries,
+            total_chars, est_tokens, ctx, _retries,
         )
         t0 = time.perf_counter()
 

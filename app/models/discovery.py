@@ -13,7 +13,10 @@ class ScoredTicker(BaseModel):
 
     ticker: str
     discovery_score: float = 0.0
-    source: Literal["youtube", "reddit", "reddit+youtube"] = "reddit"
+    source: Literal[
+        "youtube", "reddit", "reddit+youtube",
+        "sec_13f", "congress", "multi",
+    ] = "reddit"
     source_detail: str = ""  # channel name or subreddit
     sentiment_hint: Literal["bullish", "bearish", "neutral"] = "neutral"
     context_snippets: list[str] = Field(default_factory=list)

@@ -501,6 +501,63 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Phase 5: Smart Money tables (13F + Congressional) ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sec_13f_filers (
+            cik            VARCHAR PRIMARY KEY,
+            filer_name     VARCHAR NOT NULL,
+            last_checked   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active      BOOLEAN DEFAULT TRUE
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sec_13f_holdings (
+            cik            VARCHAR NOT NULL,
+            ticker         VARCHAR NOT NULL,
+            name_of_issuer VARCHAR,
+            cusip          VARCHAR,
+            value_usd      DOUBLE,
+            shares         BIGINT,
+            share_type     VARCHAR,
+            filing_quarter VARCHAR NOT NULL,
+            filing_date    DATE,
+            collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (cik, ticker, filing_quarter)
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS congressional_trades (
+            id             VARCHAR PRIMARY KEY,
+            member_name    VARCHAR NOT NULL,
+            chamber        VARCHAR NOT NULL,
+            ticker         VARCHAR,
+            asset_name     VARCHAR,
+            tx_type        VARCHAR NOT NULL,
+            tx_date        DATE,
+            filed_date     DATE,
+            amount_range   VARCHAR,
+            source_url     VARCHAR DEFAULT '',
+            collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS news_full_articles (
+            article_hash   VARCHAR PRIMARY KEY,
+            title          VARCHAR NOT NULL,
+            url            VARCHAR NOT NULL,
+            publisher      VARCHAR DEFAULT '',
+            published_at   TIMESTAMP,
+            summary        VARCHAR DEFAULT '',
+            content        TEXT NOT NULL,
+            content_length INTEGER DEFAULT 0,
+            tickers_found  VARCHAR DEFAULT '',
+            source_feed    VARCHAR DEFAULT '',
+            collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

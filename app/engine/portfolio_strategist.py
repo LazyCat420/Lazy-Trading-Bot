@@ -27,6 +27,8 @@ from app.collectors.yfinance_collector import YFinanceCollector
 from app.utils.logger import logger
 
 _MAX_TURNS = 15  # Safety cap on LLM action loops
+_SYSTEM_PROMPT_TOKENS = 2500  # Approx tokens used by system prompt + tools
+_TOKENS_PER_TURN = 1000  # Approx tokens per assistant+user pair (tool results)
 
 # ── Tool descriptions (sent to LLM in system prompt) ──────────────
 TOOL_DESCRIPTIONS = """\
@@ -110,6 +112,7 @@ class PortfolioStrategist:
         self._prompt_path = settings.PROMPTS_DIR / "portfolio_strategist.md"
         self._actions_log: list[dict] = []
         self._audit = audit or StrategistAudit()
+        self._action_memory: list[str] = []  # Compact log of every action this session
 
     async def run(self) -> dict:
         """Execute the full strategist loop — returns a summary dict."""
@@ -220,8 +223,19 @@ class PortfolioStrategist:
                 "result": result,
             })
 
-            # Audit: log this turn
             self._audit.log_turn(turn + 1, raw, action_name, params, result)
+
+            # ── Track action in compact memory ──
+            mem = f"{action_name}({json.dumps(params)[:80]})"
+            if result.get("status") == "filled":
+                side = result.get("side", "?")
+                mem = (
+                    f"{side.upper()} {result.get('ticker')} "
+                    f"x{result.get('qty')} @ ${result.get('price', 0):.2f}"
+                )
+            elif result.get("error"):
+                mem += f" → REJECTED: {result['error'][:60]}"
+            self._action_memory.append(mem)
 
             # Feed the result back to the LLM
             conversation.append({"role": "assistant", "content": raw})
@@ -229,6 +243,37 @@ class PortfolioStrategist:
                 "role": "user",
                 "content": f"Tool result:\n{json.dumps(result, indent=2)}",
             })
+
+            # ── Sliding window: keep conversation bounded ──
+            # Dynamic based on user's context_size setting so larger
+            # contexts retain more history and smaller ones stay safe.
+            ctx = settings.LLM_CONTEXT_SIZE
+            usable_tokens = max(ctx - _SYSTEM_PROMPT_TOKENS, 2000)
+            # Each turn pair is ~_TOKENS_PER_TURN tokens; keep 70% budget
+            # for conversation (30% reserved for next LLM response)
+            max_msgs = max(4, int(usable_tokens * 0.7 / _TOKENS_PER_TURN) * 2)
+            # conversation[0] = initial user prompt (always keep).
+            overflow = len(conversation) - 1
+            if overflow > max_msgs:
+                trim_count = overflow - max_msgs
+                conversation = [conversation[0]] + conversation[1 + trim_count:]
+
+            # ── Action memory: inject compact summary so LLM never forgets ──
+            if self._action_memory:
+                memory_text = (
+                    "ACTION MEMORY (what you have already done this session — "
+                    "do NOT repeat these actions):\n"
+                    + "\n".join(f"  • {m}" for m in self._action_memory)
+                )
+                # Replace or append memory in first user message
+                base_prompt = conversation[0]["content"]
+                # Strip any previous memory block
+                if "ACTION MEMORY" in base_prompt:
+                    base_prompt = base_prompt[:base_prompt.index("ACTION MEMORY")].rstrip()
+                conversation[0] = {
+                    "role": "user",
+                    "content": f"{base_prompt}\n\n{memory_text}",
+                }
         else:
             finish_summary = "Max turns reached — auto-finishing"
             logger.warning("[Strategist] Hit max turns (%d)", _MAX_TURNS)
@@ -553,6 +598,25 @@ class PortfolioStrategist:
                     f"Order too large: ${order_cost:.2f} is "
                     f"{order_cost / total_value * 100:.0f}% of portfolio. "
                     f"Max 40% per single order."
+                ),
+            }
+
+        # Safety: total position (including this order) can't exceed 25% of portfolio
+        positions = self._trader.get_positions()
+        existing_value = 0.0
+        for p in positions:
+            if p["ticker"] == ticker:
+                existing_value = p["qty"] * price
+                break
+        projected_position = existing_value + order_cost
+        if projected_position > total_value * 0.25:
+            return {
+                "error": (
+                    f"Position concentration limit: {ticker} would be "
+                    f"${projected_position:.0f} "
+                    f"({projected_position / total_value * 100:.0f}% of portfolio). "
+                    f"Max 25% per ticker. Current position: ${existing_value:.0f}, "
+                    f"this order: ${order_cost:.0f}."
                 ),
             }
 

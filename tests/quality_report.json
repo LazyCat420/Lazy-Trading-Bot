@@ -15,8 +15,8 @@
           "key_signals": [],
           "chart_pattern": null,
           "signal": "HOLD",
-          "confidence": 0.7,
-          "reasoning": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment and close to its 200-day moving average. The RSI is neutral at 49, MACD is bearish, and ADX indicates weak/no trend (range-bound). There are no recent crossovers detected. Support levels are identified at $612.97 (+3.0% away), $583.17 (+8.2% away), and $568.21 (+11.1% away). The Hurst Exponent is 0.86, indicating a trending regime. Given the mixed signals, the recommendation is to HOLD."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "fundamental": {
@@ -24,15 +24,15 @@
         "report": {
           "ticker": "VOO",
           "valuation_grade": "FAIR",
-          "financial_health": "STRONG",
-          "growth_trajectory": "STEADY",
+          "financial_health": "MODERATE",
+          "growth_trajectory": "ACCELERATING",
           "key_metrics": {},
           "strengths": [],
           "risks": [],
           "intrinsic_value_estimate": null,
           "signal": "HOLD",
-          "confidence": 0.7,
-          "reasoning": "VOO is a well-established ETF tracking the S&P 500 index, known for its strong financial health due to diversification and liquidity. Its steady growth trajectory reflects consistent performance aligned with broader market trends."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "sentiment": {
@@ -46,8 +46,8 @@
           "narrative_shift": null,
           "top_headlines": [],
           "signal": "HOLD",
-          "confidence": 0.3,
-          "reasoning": "No recent news or transcript data available for analysis."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "risk": {
@@ -55,15 +55,36 @@
         "report": {
           "ticker": "VOO",
           "volatility_rating": "MODERATE",
-          "max_position_size_pct": 3.4,
-          "suggested_stop_loss": 9.27,
-          "suggested_take_profit": 80.0,
-          "risk_reward_ratio": 1.67,
+          "max_position_size_pct": 0.0,
+          "entry_price": 0.0,
+          "suggested_stop_loss": 0.0,
+          "suggested_take_profit": 0.0,
+          "risk_reward_ratio": 0.0,
           "atr_based_stop": 0.0,
-          "downside_scenarios": [],
+          "downside_scenarios": [
+            "Fallback: LLM returned an invalid response structure."
+          ],
           "portfolio_impact": "",
-          "risk_grade": "MODERATE_RISK",
-          "reasoning": "Given the moderate risk tolerance and pre-computed Kelly Criterion recommendation of 3.4% of portfolio, this position size is suggested. The volatility rating is MODERATE due to the Sortino Ratio (0.67) indicating some risk-adjusted performance, but also significant drawdown risk (-18.7%). The ATR(14) of 7.51 suggests a moderate level of price fluctuation. Considering these factors and the base case (sideways), bear case (reversal), and bull case (trend continues), a stop-loss at 1.5x ATR (9.27) is proposed, aligning with nearby support levels. The take-profit target is set at a resistance level, maintaining a risk/reward ratio of at least 1.5:1."
+          "risk_grade": "LOW_RISK",
+          "reasoning": "Fallback: LLM returned an invalid response structure.",
+          "bull_case": {
+            "label": "Bull",
+            "probability": 0.3,
+            "description": "Trend continues with momentum.",
+            "price_target": null
+          },
+          "base_case": {
+            "label": "Base",
+            "probability": 0.45,
+            "description": "Sideways consolidation within current range.",
+            "price_target": null
+          },
+          "bear_case": {
+            "label": "Bear",
+            "probability": 0.25,
+            "description": "Reversal toward key support levels.",
+            "price_target": null
+          }
         }
       }
     },
@@ -156,8 +177,8 @@
           "key_signals": [],
           "chart_pattern": null,
           "signal": "HOLD",
-          "confidence": 0.7,
-          "reasoning": "The stock is currently in a sideways/transitional trend regime with mixed SMA alignment and a distance from SMA200 of -0.7%. The recent MACD bullish crossover suggests a potential upward momentum. However, the RSI (43) indicates neutral momentum. There are multiple support levels identified ($394.15, $331.99, and $318.23), with resistance at $449.36, $459.46, and $468.37. The Hurst Exponent (0.88) indicates a trending regime. Given the mixed signals, the signal is HOLD with moderate confidence."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "fundamental": {
@@ -166,14 +187,14 @@
           "ticker": "TSLA",
           "valuation_grade": "FAIR",
           "financial_health": "MODERATE",
-          "growth_trajectory": "STEADY",
+          "growth_trajectory": "ACCELERATING",
           "key_metrics": {},
           "strengths": [],
           "risks": [],
           "intrinsic_value_estimate": null,
           "signal": "HOLD",
-          "confidence": 0.5,
-          "reasoning": "Due to lack of available fundamental data, a comprehensive analysis cannot be conducted. However, based on general market knowledge, TSLA's financial health is considered moderate due to its high debt levels and fluctuating profitability. Its growth trajectory appears steady, with consistent revenue increases over the past few years."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "sentiment": {
@@ -187,24 +208,45 @@
           "narrative_shift": null,
           "top_headlines": [],
           "signal": "HOLD",
-          "confidence": 0.3,
-          "reasoning": "No recent news or transcript data available for analysis."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "risk": {
         "status": "ok",
         "report": {
           "ticker": "TSLA",
-          "volatility_rating": "HIGH",
-          "max_position_size_pct": 1.0,
-          "suggested_stop_loss": 30.2768,
-          "suggested_take_profit": 60.5536,
-          "risk_reward_ratio": 1.5,
+          "volatility_rating": "MODERATE",
+          "max_position_size_pct": 0.0,
+          "entry_price": 0.0,
+          "suggested_stop_loss": 0.0,
+          "suggested_take_profit": 0.0,
+          "risk_reward_ratio": 0.0,
           "atr_based_stop": 0.0,
-          "downside_scenarios": [],
+          "downside_scenarios": [
+            "Fallback: LLM returned an invalid response structure."
+          ],
           "portfolio_impact": "",
-          "risk_grade": "MODERATE_RISK",
-          "reasoning": "Given TSLA's high volatility and severe historical drawdowns, a conservative approach is warranted. The current Max Drawdown of -38.5% indicates significant risk. Despite the moderate risk tolerance, position sizing will be limited to 1% of the portfolio due to these factors. Stop-loss will be set at 2x ATR (14) below entry, aligning with typical risk management practices. Take-profit targets will be based on nearby resistance levels, aiming for a minimum 1.5:1 risk/reward ratio."
+          "risk_grade": "LOW_RISK",
+          "reasoning": "Fallback: LLM returned an invalid response structure.",
+          "bull_case": {
+            "label": "Bull",
+            "probability": 0.3,
+            "description": "Trend continues with momentum.",
+            "price_target": null
+          },
+          "base_case": {
+            "label": "Base",
+            "probability": 0.45,
+            "description": "Sideways consolidation within current range.",
+            "price_target": null
+          },
+          "bear_case": {
+            "label": "Bear",
+            "probability": 0.25,
+            "description": "Reversal toward key support levels.",
+            "price_target": null
+          }
         }
       }
     },
@@ -290,15 +332,15 @@
         "status": "ok",
         "report": {
           "ticker": "WMT",
-          "trend": "UPTREND",
-          "momentum": "BULLISH",
+          "trend": "SIDEWAYS",
+          "momentum": "NEUTRAL",
           "support_levels": [],
           "resistance_levels": [],
           "key_signals": [],
           "chart_pattern": null,
-          "signal": "BUY",
-          "confidence": 0.75,
-          "reasoning": "The stock is currently in a bullish momentum as indicated by the RSI at 55 and MACD being bullish with MACD (3.7383) > Signal (3.6580). The Hurst Exponent of 0.94 suggests a trending regime, further supported by the stock's recent price increase over the last month (6.7%) and three months (23.2%). Despite two RSI crossovers through 70 in the past 10 days, these are not strong enough to counteract the overall bullish momentum. The nearest support levels ($116.57, $111.92, and $101.25) provide additional confidence that the stock is likely to continue its upward trajectory."
+          "signal": "HOLD",
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "fundamental": {
@@ -307,14 +349,14 @@
           "ticker": "WMT",
           "valuation_grade": "FAIR",
           "financial_health": "MODERATE",
-          "growth_trajectory": "STEADY",
+          "growth_trajectory": "ACCELERATING",
           "key_metrics": {},
           "strengths": [],
           "risks": [],
           "intrinsic_value_estimate": null,
           "signal": "HOLD",
-          "confidence": 0.7,
-          "reasoning": "WMT has a moderate financial health due to manageable debt levels but could improve its cash position. Its growth trajectory is steady with consistent revenue and EPS increases over the past few years."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "sentiment": {
@@ -328,8 +370,8 @@
           "narrative_shift": null,
           "top_headlines": [],
           "signal": "HOLD",
-          "confidence": 0.3,
-          "reasoning": "No recent news or transcript data available for analysis."
+          "confidence": 0.0,
+          "reasoning": "Fallback: LLM returned an invalid response structure."
         }
       },
       "risk": {
@@ -337,15 +379,36 @@
         "report": {
           "ticker": "WMT",
           "volatility_rating": "MODERATE",
-          "max_position_size_pct": 3.25,
-          "suggested_stop_loss": 3.8,
-          "suggested_take_profit": 16.25,
-          "risk_reward_ratio": 1.49,
+          "max_position_size_pct": 0.0,
+          "entry_price": 0.0,
+          "suggested_stop_loss": 0.0,
+          "suggested_take_profit": 0.0,
+          "risk_reward_ratio": 0.0,
           "atr_based_stop": 0.0,
-          "downside_scenarios": [],
+          "downside_scenarios": [
+            "Fallback: LLM returned an invalid response structure."
+          ],
           "portfolio_impact": "",
-          "risk_grade": "MODERATE_RISK",
-          "reasoning": "Given WMT's moderate volatility and risk-adjusted returns, a position size of 3.25% is suggested based on the Half-Kelly criterion (3.3%). This allows for potential gains while maintaining a manageable risk level. The stop loss is set at 1.5x ATR to account for market volatility and nearby support levels. The take profit target is derived from recent resistance levels, aiming for a 1.5:1 risk/reward ratio."
+          "risk_grade": "LOW_RISK",
+          "reasoning": "Fallback: LLM returned an invalid response structure.",
+          "bull_case": {
+            "label": "Bull",
+            "probability": 0.3,
+            "description": "Trend continues with momentum.",
+            "price_target": null
+          },
+          "base_case": {
+            "label": "Base",
+            "probability": 0.45,
+            "description": "Sideways consolidation within current range.",
+            "price_target": null
+          },
+          "bear_case": {
+            "label": "Bear",
+            "probability": 0.25,
+            "description": "Reversal toward key support levels.",
+            "price_target": null
+          }
         }
       }
     },

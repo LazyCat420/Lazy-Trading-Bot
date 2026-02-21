@@ -47,6 +47,10 @@ class YouTubeCollector:
         "stocks to buy now",
         "best stocks this week",
         "stock market analysis today",
+        "top stocks to watch this week",
+        "stock market recap today",
+        "wall street week ahead",
+        "market movers today stocks",
     ]
 
     # Curated financial channels — prioritized in search results
@@ -239,13 +243,16 @@ class YouTubeCollector:
         return transcripts
 
     async def collect_general_market(
-        self, max_videos: int = 2,
+        self, max_videos: int = 5, min_duration_secs: int = 900,
     ) -> list[YouTubeTranscript]:
         """Scrape general market news videos to discover NEW tickers.
 
         Uses broad queries like 'stock market news today' instead of
         ticker-specific ones.  Transcripts are stored with
         ticker='__MARKET__' and later scanned by TickerScanner.
+
+        Only accepts videos >= min_duration_secs (default 900 = 15 min)
+        to ensure substantive analysis content rather than short clips.
 
         Has its own daily guard — skips if already scraped today.
         """
@@ -270,16 +277,17 @@ class YouTubeCollector:
 
         logger.info(
             "Collecting general market YouTube transcripts "
-            "(%d queries)...",
+            "(%d queries, min duration %ds)...",
             len(self.GENERAL_MARKET_QUERIES),
+            min_duration_secs,
         )
 
-        # Step 1: Search across general market queries
+        # Step 1: Search across general market queries (full metadata)
         all_videos: list[dict] = []
         seen_ids: set[str] = set()
 
         for query in self.GENERAL_MARKET_QUERIES:
-            results = self._search_videos(query, max_videos)
+            results = self._search_videos_full(query, max_videos)
             for vid in results:
                 vid_id = vid["id"]
                 if vid_id not in seen_ids:
@@ -293,9 +301,24 @@ class YouTubeCollector:
         if not all_videos:
             return []
 
-        # Step 2: Filter out already-collected videos
+        # Step 2: Filter by minimum duration (15+ min = in-depth content)
+        long_videos = [
+            v for v in all_videos
+            if v.get("duration", 0) >= min_duration_secs
+        ]
+        short_count = len(all_videos) - len(long_videos)
+        if short_count > 0:
+            logger.info(
+                "Filtered out %d short videos (< %ds), %d remain",
+                short_count, min_duration_secs, len(long_videos),
+            )
+        if not long_videos:
+            logger.info("No videos meet the %ds minimum duration", min_duration_secs)
+            return []
+
+        # Step 3: Filter out already-collected videos
         new_videos = []
-        for vid in all_videos:
+        for vid in long_videos:
             existing_vid = db.execute(
                 "SELECT 1 FROM youtube_transcripts "
                 "WHERE ticker = '__MARKET__' AND video_id = ?",
@@ -309,10 +332,11 @@ class YouTubeCollector:
             return []
 
         logger.info(
-            "%d new general market videos to process", len(new_videos),
+            "%d new general market videos to process (>= %ds)",
+            len(new_videos), min_duration_secs,
         )
 
-        # Step 3: Extract transcripts and persist
+        # Step 4: Extract transcripts and persist
         transcripts: list[YouTubeTranscript] = []
         for vid in new_videos:
             transcript_text = self._get_transcript(vid["id"])
@@ -349,7 +373,8 @@ class YouTubeCollector:
             )
 
         logger.info(
-            "Collected %d general market transcripts", len(transcripts),
+            "Collected %d general market transcripts (>= %ds)",
+            len(transcripts), min_duration_secs,
         )
         return transcripts
 
@@ -403,7 +428,11 @@ class YouTubeCollector:
     # ──────────────────────────────────────────────────────────────
 
     def _search_videos(self, query: str, max_results: int) -> list[dict]:
-        """Use yt-dlp to search YouTube and get video metadata."""
+        """Use yt-dlp to search YouTube and get video metadata.
+
+        Uses --flat-playlist for speed (no duration data).
+        For general market discovery, use _search_videos_full() instead.
+        """
         search_term = f"ytsearch{max_results}:{query}"
         logger.debug("yt-dlp search: %s", search_term)
 
@@ -421,47 +450,7 @@ class YouTubeCollector:
                 timeout=30,
             )
 
-            videos = []
-            for line in result.stdout.strip().split("\n"):
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    vid_id = data.get("id", data.get("url", ""))
-                    if not vid_id:
-                        continue
-
-                    pub_date = None
-                    upload = data.get("upload_date")
-                    if upload:
-                        try:
-                            pub_date = datetime.strptime(upload, "%Y%m%d").replace(
-                                tzinfo=timezone.utc
-                            )
-                        except ValueError:
-                            pass
-
-                    channel = data.get("channel", data.get("uploader", ""))
-
-                    videos.append(
-                        {
-                            "id": vid_id,
-                            "title": data.get("title", ""),
-                            "channel": channel,
-                            "duration": data.get("duration", 0) or 0,
-                            "published_at": pub_date,
-                            "view_count": data.get("view_count", 0) or 0,
-                            "is_curated": channel in self.CURATED_CHANNELS,
-                        }
-                    )
-                except json.JSONDecodeError:
-                    continue
-
-            # Prioritize curated channels
-            videos.sort(key=lambda v: (not v.get("is_curated", False), 0))
-
-            logger.debug("yt-dlp search '%s' returned %d videos", query, len(videos))
-            return videos
+            return self._parse_yt_dlp_output(result.stdout)
 
         except FileNotFoundError:
             logger.warning(
@@ -474,6 +463,88 @@ class YouTubeCollector:
         except Exception as e:
             logger.error("yt-dlp search failed: %s", e)
             return []
+
+    def _search_videos_full(self, query: str, max_results: int) -> list[dict]:
+        """Use yt-dlp with full metadata (includes duration).
+
+        Slower than _search_videos but returns duration field needed
+        for the 15+ minute filter in general market discovery.
+        """
+        search_term = f"ytsearch{max_results}:{query}"
+        logger.debug("yt-dlp full search: %s", search_term)
+
+        try:
+            result = subprocess.run(
+                [
+                    "yt-dlp",
+                    "--dump-json",
+                    "--no-download",
+                    "--no-warnings",
+                    search_term,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,  # Longer timeout — full metadata is slower
+            )
+
+            return self._parse_yt_dlp_output(result.stdout)
+
+        except FileNotFoundError:
+            logger.warning(
+                "yt-dlp not found — install it: pip install yt-dlp"
+            )
+            return []
+        except subprocess.TimeoutExpired:
+            logger.warning("yt-dlp full search timed out for: %s", query)
+            return []
+        except Exception as e:
+            logger.error("yt-dlp full search failed: %s", e)
+            return []
+
+    def _parse_yt_dlp_output(self, stdout: str) -> list[dict]:
+        """Parse yt-dlp JSON output lines into video dicts."""
+        videos = []
+        for line in stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                vid_id = data.get("id", data.get("url", ""))
+                if not vid_id:
+                    continue
+
+                pub_date = None
+                upload = data.get("upload_date")
+                if upload:
+                    try:
+                        pub_date = datetime.strptime(upload, "%Y%m%d").replace(
+                            tzinfo=timezone.utc
+                        )
+                    except ValueError:
+                        pass
+
+                channel = data.get("channel", data.get("uploader", ""))
+                duration = data.get("duration", 0) or 0
+
+                videos.append(
+                    {
+                        "id": vid_id,
+                        "title": data.get("title", ""),
+                        "channel": channel,
+                        "duration": duration,
+                        "published_at": pub_date,
+                        "view_count": data.get("view_count", 0) or 0,
+                        "is_curated": channel in self.CURATED_CHANNELS,
+                    }
+                )
+            except json.JSONDecodeError:
+                continue
+
+        # Prioritize curated channels
+        videos.sort(key=lambda v: (not v.get("is_curated", False), 0))
+
+        logger.debug("yt-dlp parsed %d videos", len(videos))
+        return videos
 
     # ──────────────────────────────────────────────────────────────
     # Transcript Extraction (Two-Tier) — NO TRUNCATION
@@ -504,13 +575,18 @@ class YouTubeCollector:
         return ""
 
     def _get_transcript_library(self, video_id: str) -> str:
-        """Tier 1: Fetch transcript using youtube-transcript-api."""
+        """Tier 1: Fetch transcript using youtube-transcript-api.
+
+        Uses the v1.x API: YouTubeTranscriptApi() instance + .fetch().
+        Snippet objects have .text attribute (not dict["text"]).
+        """
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
 
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            api = YouTubeTranscriptApi()
+            transcript = api.fetch(video_id)
             full_text = " ".join(
-                entry["text"] for entry in transcript_list
+                snippet.text for snippet in transcript
             )
             full_text = full_text.replace("\n", " ").strip()
 

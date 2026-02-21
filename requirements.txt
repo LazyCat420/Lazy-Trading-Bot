@@ -25,6 +25,7 @@ youtube-transcript-api>=0.6.3
 # News Scraping
 beautifulsoup4>=4.12.0
 requests>=2.32.0
+newspaper3k>=0.2.8
 
 # Dev Tools
 ruff>=0.9.0

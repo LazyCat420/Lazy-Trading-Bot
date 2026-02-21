@@ -2218,6 +2218,7 @@ const SettingsPage = () => {
     const [models, setModels] = useState([]);
     const [modelsFetching, setModelsFetching] = useState(false);
     const [llmConnected, setLlmConnected] = useState(null); // null = unknown, true/false
+    const [lmsVerification, setLmsVerification] = useState(null); // LM Studio reload result
 
     useEffect(() => {
         const load = async () => {
@@ -2277,18 +2278,24 @@ const SettingsPage = () => {
     const saveLlmConfig = async () => {
         RetroSFX.click();
         setSaveStatus("saving");
+        setLmsVerification(null);
         try {
-            await fetch("/api/llm-config", {
+            const res = await fetch("/api/llm-config", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(llmConfig),
             });
+            const data = await res.json();
             setSaveStatus("saved");
             RetroSFX.successChime();
+            // Show LM Studio verification result if present
+            if (data.lmstudio_verified) {
+                setLmsVerification(data.lmstudio_verified);
+            }
         } catch (e) {
             setSaveStatus("error");
         }
-        setTimeout(() => setSaveStatus(null), 2000);
+        setTimeout(() => setSaveStatus(null), 3000);
     };
 
     const saveStrategy = async () => {
@@ -2488,7 +2495,7 @@ const SettingsPage = () => {
                                 value={llmConfig.context_size}
                                 onChange={e => setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 }))}
                                 min={1024}
-                                max={131072}
+                                max={1048576}
                                 step={1024}
                                 className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
                             />
@@ -2535,6 +2542,64 @@ const SettingsPage = () => {
                                 ))}
                             </div>
                         </div>
+                    )}
+                    {/* LM Studio Verification Banner */}
+                    {lmsVerification && (
+                        React.createElement("div", {
+                            className: `mt-4 p-4 rounded-lg border ${lmsVerification.status === "model_reloaded" && lmsVerification.context_match
+                                ? "bg-emerald-500/10 border-emerald-500/30"
+                                : lmsVerification.status === "model_reloaded"
+                                    ? "bg-amber-500/10 border-amber-500/30"
+                                    : "bg-red-500/10 border-red-500/30"
+                                }`
+                        },
+                            React.createElement("div", { className: "flex items-center gap-2 mb-2" },
+                                React.createElement("span", {
+                                    className: `material-symbols-outlined text-lg ${lmsVerification.status === "model_reloaded" && lmsVerification.context_match
+                                        ? "text-emerald-400"
+                                        : lmsVerification.status === "model_reloaded"
+                                            ? "text-amber-400"
+                                            : "text-red-400"
+                                        }`
+                                }, lmsVerification.status === "model_reloaded" ? "verified" : "error"),
+                                React.createElement("span", { className: "text-sm font-bold text-white" },
+                                    lmsVerification.status === "model_reloaded"
+                                        ? "LM Studio Model Reloaded"
+                                        : "LM Studio Reload Failed"
+                                ),
+                                React.createElement("button", {
+                                    onClick: () => setLmsVerification(null),
+                                    className: "ml-auto text-text-muted hover:text-white text-xs"
+                                }, "✕")
+                            ),
+                            lmsVerification.status === "model_reloaded" && React.createElement("div", { className: "grid grid-cols-3 gap-4 text-xs" },
+                                React.createElement("div", null,
+                                    React.createElement("span", { className: "text-text-muted block" }, "Requested Context"),
+                                    React.createElement("span", { className: "text-white font-mono font-bold" },
+                                        (lmsVerification.requested_context_length || 0).toLocaleString()
+                                    )
+                                ),
+                                React.createElement("div", null,
+                                    React.createElement("span", { className: "text-text-muted block" }, "Actual Context"),
+                                    React.createElement("span", {
+                                        className: `font-mono font-bold ${lmsVerification.context_match ? "text-emerald-400" : "text-amber-400"
+                                            }`
+                                    },
+                                        (lmsVerification.actual_context_length || "?").toLocaleString(),
+                                        lmsVerification.context_match ? " ✓" : " ⚠"
+                                    )
+                                ),
+                                React.createElement("div", null,
+                                    React.createElement("span", { className: "text-text-muted block" }, "Load Time"),
+                                    React.createElement("span", { className: "text-white font-mono font-bold" },
+                                        (lmsVerification.load_time_seconds || 0).toFixed(1) + "s"
+                                    )
+                                )
+                            ),
+                            lmsVerification.status === "reload_failed" && React.createElement("p", {
+                                className: "text-xs text-red-300"
+                            }, lmsVerification.error || "Unknown error. Check LM Studio is running.")
+                        )
                     )}
                 </div>
 

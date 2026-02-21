@@ -12,8 +12,11 @@ from app.agents.fundamental_agent import FundamentalAgent
 from app.agents.risk_agent import RiskAgent
 from app.agents.sentiment_agent import SentimentAgent
 from app.agents.technical_agent import TechnicalAgent
+from app.collectors.congress_collector import CongressCollector
 from app.collectors.news_collector import NewsCollector
 from app.collectors.risk_computer import RiskComputer
+from app.collectors.rss_news_collector import RSSNewsCollector
+from app.collectors.sec_13f_collector import SEC13FCollector
 from app.collectors.technical_computer import TechnicalComputer
 from app.collectors.yfinance_collector import YFinanceCollector
 from app.collectors.youtube_collector import YouTubeCollector
@@ -87,6 +90,9 @@ class PipelineService:
         self.risk_computer = RiskComputer()
         self.news_collector = NewsCollector()
         self.yt_collector = YouTubeCollector()
+        self.sec_13f = SEC13FCollector()
+        self.congress = CongressCollector()
+        self.rss_news = RSSNewsCollector()
 
         # Agents
         self.technical_agent = TechnicalAgent()
@@ -138,6 +144,9 @@ class PipelineService:
         yt_transcripts: list = []
         industry_peers: list[str] = []
         peer_fundamentals: list = []
+        institutional_holders: list = []
+        congress_trades: list = []
+        news_articles: list = []
 
         # ----------------------------------------------------------
         # Parallel batch: Steps 1–9 run concurrently when possible
@@ -426,6 +435,56 @@ class PipelineService:
             logger.info("Data-only mode complete for %s", ticker)
             return result
 
+        # Step 14: Smart Money data (13F + Congressional trades)
+        if mode in ("full", "quick"):
+            try:
+                institutional_holders = await self.sec_13f.get_holdings_for_ticker(ticker)
+                result.status["institutional_holders"] = {
+                    "status": "ok",
+                    "holders": len(institutional_holders),
+                }
+                logger.info(
+                    "Step 14a: %d institutional holders for %s",
+                    len(institutional_holders), ticker,
+                )
+            except Exception as e:
+                result.status["institutional_holders"] = {
+                    "status": "error", "error": str(e),
+                }
+                logger.error("Step 14a (Institutional Holders) failed: %s", e)
+
+            try:
+                congress_trades = await self.congress.get_trades_for_ticker(ticker)
+                result.status["congress_trades"] = {
+                    "status": "ok",
+                    "trades": len(congress_trades),
+                }
+                logger.info(
+                    "Step 14b: %d congressional trades for %s",
+                    len(congress_trades), ticker,
+                )
+            except Exception as e:
+                result.status["congress_trades"] = {
+                    "status": "error", "error": str(e),
+                }
+                logger.error("Step 14b (Congressional Trades) failed: %s", e)
+
+            try:
+                news_articles = await self.rss_news.get_articles_for_ticker(ticker)
+                result.status["news_articles"] = {
+                    "status": "ok",
+                    "articles": len(news_articles),
+                }
+                logger.info(
+                    "Step 14c: %d news articles for %s",
+                    len(news_articles), ticker,
+                )
+            except Exception as e:
+                result.status["news_articles"] = {
+                    "status": "error", "error": str(e),
+                }
+                logger.error("Step 14c (News Articles) failed: %s", e)
+
         # Clear the ticker cache after data collection
         YFinanceCollector.clear_cache(ticker)
 
@@ -474,8 +533,15 @@ class PipelineService:
             "distilled_analysis": distilled_fundamentals,
             "industry_peers": industry_peers,
             "peer_fundamentals": peer_fundamentals,
+            "institutional_holders": institutional_holders,
         }
-        sa_context = {"news": news, "transcripts": yt_transcripts}
+        sa_context = {
+            "news": news,
+            "transcripts": yt_transcripts,
+            "institutional_holders": institutional_holders,
+            "congress_trades": congress_trades,
+            "news_articles": news_articles,
+        }
         ra_context = {
             "price_history": price_history,
             "technicals": technicals,

@@ -1,6 +1,6 @@
-"""Discovery Service — orchestrates Reddit + YouTube ticker discovery.
+"""Discovery Service — orchestrates Reddit + YouTube + SEC 13F + Congress + News ticker discovery.
 
-Runs both collectors, merges scores, persists to DuckDB.
+Runs all collectors, merges scores, persists to DuckDB.
 """
 
 from __future__ import annotations
@@ -8,7 +8,10 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+from app.collectors.congress_collector import CongressCollector
 from app.collectors.reddit_collector import RedditCollector
+from app.collectors.rss_news_collector import RSSNewsCollector
+from app.collectors.sec_13f_collector import SEC13FCollector
 from app.collectors.ticker_scanner import TickerScanner
 from app.collectors.youtube_collector import YouTubeCollector
 from app.database import get_db
@@ -23,6 +26,9 @@ class DiscoveryService:
         self.reddit = RedditCollector()
         self.youtube = TickerScanner()
         self.yt_collector = YouTubeCollector()
+        self.sec_13f = SEC13FCollector()
+        self.congress = CongressCollector()
+        self.rss_news = RSSNewsCollector()
         self._running: bool = False
         self._last_run_at: datetime | None = None
 
@@ -82,6 +88,9 @@ class DiscoveryService:
         *,
         enable_reddit: bool = True,
         enable_youtube: bool = True,
+        enable_sec_13f: bool = True,
+        enable_congress: bool = True,
+        enable_rss_news: bool = True,
         youtube_hours: int = 24,
         max_tickers: int | None = None,
     ) -> DiscoveryResult:
@@ -94,6 +103,9 @@ class DiscoveryService:
 
         reddit_tickers: list[ScoredTicker] = []
         youtube_tickers: list[ScoredTicker] = []
+        sec_13f_tickers: list[ScoredTicker] = []
+        congress_tickers: list[ScoredTicker] = []
+        rss_news_tickers: list[ScoredTicker] = []
 
         # Reddit collection
         if enable_reddit:
@@ -130,8 +142,44 @@ class DiscoveryService:
             except Exception as e:
                 logger.error("[Discovery] YouTube collection failed: %s", e)
 
-        # Merge scores from both sources
-        merged = self._merge_scores(reddit_tickers, youtube_tickers)
+        # SEC 13F institutional holdings collection
+        if enable_sec_13f:
+            try:
+                sec_13f_tickers = await self.sec_13f.collect_recent_holdings()
+                logger.info(
+                    "[Discovery] SEC 13F returned %d tickers", len(sec_13f_tickers)
+                )
+            except Exception as e:
+                logger.error("[Discovery] SEC 13F collection failed: %s", e)
+
+        # Congressional trades collection
+        if enable_congress:
+            try:
+                congress_tickers = await self.congress.collect_recent_trades()
+                logger.info(
+                    "[Discovery] Congress returned %d tickers", len(congress_tickers)
+                )
+            except Exception as e:
+                logger.error("[Discovery] Congress collection failed: %s", e)
+
+        # RSS news full-article collection
+        if enable_rss_news:
+            try:
+                # Scrape feeds (articles are also persisted for per-ticker use)
+                await self.rss_news.scrape_all_feeds()
+                # Generate discovery tickers from article content
+                rss_news_tickers = await self.rss_news.get_discovery_tickers()
+                logger.info(
+                    "[Discovery] RSS News returned %d tickers", len(rss_news_tickers)
+                )
+            except Exception as e:
+                logger.error("[Discovery] RSS News collection failed: %s", e)
+
+        # Merge scores from ALL sources
+        merged = self._merge_scores(
+            reddit_tickers, youtube_tickers, sec_13f_tickers,
+            congress_tickers, rss_news_tickers,
+        )
 
         # Cap results if max_tickers is set (for faster debugging)
         if max_tickers and len(merged) > max_tickers:
@@ -160,8 +208,9 @@ class DiscoveryService:
             len(merged), elapsed,
         )
         logger.info(
-            "[Discovery]   Reddit: %d, YouTube: %d, Transcripts scraped: %d",
-            result.reddit_count, result.youtube_count, transcript_count,
+            "[Discovery]   Reddit: %d, YouTube: %d, SEC 13F: %d, Congress: %d, Transcripts: %d",
+            result.reddit_count, result.youtube_count,
+            len(sec_13f_tickers), len(congress_tickers), transcript_count,
         )
         for t in merged[:10]:
             logger.info(
@@ -329,19 +378,36 @@ class DiscoveryService:
 
     def _merge_scores(
         self,
-        reddit: list[ScoredTicker],
-        youtube: list[ScoredTicker],
+        *ticker_lists: list[ScoredTicker],
     ) -> list[ScoredTicker]:
-        """Merge scores from Reddit + YouTube. Same ticker gets combined score."""
+        """Merge scores from all sources. Same ticker gets combined score."""
         combined: dict[str, ScoredTicker] = {}
 
-        for t in reddit + youtube:
+        all_tickers: list[ScoredTicker] = []
+        for lst in ticker_lists:
+            all_tickers.extend(lst)
+
+        for t in all_tickers:
             if t.ticker in combined:
                 existing = combined[t.ticker]
+                # Combine sources into a descriptive label
+                sources = {existing.source, t.source}
+                if len(sources) > 2 or "multi" in sources:
+                    merged_source = "multi"
+                else:
+                    merged_source = "+".join(sorted(sources))  # type: ignore[arg-type]
+                    # Ensure it's a valid Literal value
+                    valid = {
+                        "youtube", "reddit", "reddit+youtube",
+                        "sec_13f", "congress", "multi",
+                    }
+                    if merged_source not in valid:
+                        merged_source = "multi"
+
                 combined[t.ticker] = ScoredTicker(
                     ticker=t.ticker,
                     discovery_score=existing.discovery_score + t.discovery_score,
-                    source="reddit+youtube" if existing.source != t.source else t.source,
+                    source=merged_source,  # type: ignore[arg-type]
                     source_detail=f"{existing.source_detail}, {t.source_detail}",
                     sentiment_hint=t.sentiment_hint,
                     context_snippets=existing.context_snippets + t.context_snippets,
