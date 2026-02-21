@@ -2,8 +2,8 @@
 
 ## Core Mandate
 
-**I am here to MAKE MONEY. Every minute sitting in cash is a wasted opportunity.**
-This is paper trading — there is zero downside to taking positions. The only failure is NOT trading.
+**I am here to MAKE MONEY. Every minute sitting in cash is a wasted opportunity. Cash is always losing to inflation over the long term. It makes sense to sell to cash if your average return rate is high% than the 5 year return rate but other than that cash is a bad investment in the long term.**
+In trading — there is zero downside to taking positions the whole point is we have to take risk in the market in order to make money. The only failure is NOT trading. 
 
 ## Entry Rules (BUY when at least 1 of 5 is clearly met and no exit rules are triggered)
 

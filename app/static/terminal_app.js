@@ -628,7 +628,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
     );
 
     const fundas = overview?.fundamentals || {};
-    const rsi = technicals?.rsi_14 || technicals?.RSI_14 || null;
+    const rsi = technicals?.rsi || technicals?.rsi_14 || technicals?.RSI_14 || null;
 
     return (
         <div className="bg-onyx-panel border-t border-border-dark animate-fadeIn h-full flex flex-col">
@@ -792,13 +792,13 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
                         </div>
                         <div className="glass-card p-4 text-center">
                             <div className="text-3xl font-bold font-mono text-white mb-1">
-                                {fmt.num(technicals?.MACD_12_26_9 || technicals?.macd_12_26_9, 2)}
+                                {fmt.num(technicals?.macd || technicals?.MACD_12_26_9 || technicals?.macd_12_26_9, 2)}
                             </div>
                             <div className="text-xs text-text-muted uppercase">MACD</div>
                         </div>
                         <div className="glass-card p-4 text-center">
                             <div className="text-3xl font-bold font-mono text-white mb-1">
-                                {fmt.num(technicals?.ATRr_14 || technicals?.atr_14, 2)}
+                                {fmt.num(technicals?.atr || technicals?.ATRr_14 || technicals?.atr_14, 2)}
                             </div>
                             <div className="text-xs text-text-muted uppercase">ATR (14)</div>
                         </div>
