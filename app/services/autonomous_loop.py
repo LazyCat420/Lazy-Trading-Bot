@@ -209,27 +209,35 @@ class AutonomousLoop:
             metadata={"tickers": tickers, "count": len(tickers)},
         )
 
-        succeeded = []
-        for ticker in tickers:
-            try:
-                pipeline = PipelineService()
-                await pipeline.run(ticker, mode="data")
-                succeeded.append(ticker)
-                log_event(
-                    "collection",
-                    "collection_ticker_done",
-                    f"${ticker}: data collection complete",
-                    ticker=ticker,
-                )
-            except Exception as exc:
-                logger.warning("[AutoLoop] Collection failed for %s: %s", ticker, exc)
-                log_event(
-                    "collection",
-                    "collection_ticker_error",
-                    f"${ticker}: data collection failed — {exc}",
-                    ticker=ticker,
-                    status="error",
-                )
+        import asyncio
+
+        sem = asyncio.Semaphore(3)  # Up to 3 tickers concurrently
+
+        async def _collect_one(ticker: str) -> str | None:
+            async with sem:
+                try:
+                    pipeline = PipelineService()
+                    await pipeline.run(ticker, mode="data")
+                    log_event(
+                        "collection",
+                        "collection_ticker_done",
+                        f"${ticker}: data collection complete",
+                        ticker=ticker,
+                    )
+                    return ticker
+                except Exception as exc:
+                    logger.warning("[AutoLoop] Collection failed for %s: %s", ticker, exc)
+                    log_event(
+                        "collection",
+                        "collection_ticker_error",
+                        f"${ticker}: data collection failed — {exc}",
+                        ticker=ticker,
+                        status="error",
+                    )
+                    return None
+
+        results = await asyncio.gather(*[_collect_one(t) for t in tickers])
+        succeeded = [t for t in results if t is not None]
 
         self._log(f"Collection complete: {len(succeeded)}/{len(tickers)} succeeded")
         log_event(

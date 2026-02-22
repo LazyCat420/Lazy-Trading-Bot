@@ -1,0 +1,161 @@
+﻿D:\Github\Lazy-Trading-B
+ot\venv\Scripts\python.e
+xe : D:\Github\Lazy-Trad
+ing-Bot\venv\Lib\site-pa
+ckages\_pytest\unraisabl
+eexception.py:33: 
+RuntimeWarning: 
+coroutine 'TickerScanner
+.scan_recent_transcripts
+' was never awaited
+At line:1 char:1
++ D:\Github\Lazy-Trading
+-Bot\venv\Scripts\python
+.exe -m pytest tests/te 
+...
++ ~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo      
+        : NotSpecified  
+  : (D:\Github\Lazy-.   
+ ..s never awaited:S    
+tring) [], RemoteEx    
+ception
+    + FullyQualifiedErr 
+   orId : NativeComman  
+  dError
+ 
+  gc.collect()
+RuntimeWarning: Enable 
+tracemalloc to get the 
+object allocation 
+traceback
+..........F.............FFFFF............                                [100%]
+================================== FAILURES ===================================
+___________ TestTickerValidator.test_exclusion_list_rejects_jargon ____________
+
+self = <tests.test_discovery.TestTickerValidator object at 0x000001E6ACAA0CD0>
+
+    def test_exclusion_list_rejects_jargon(self) -> None:
+        """Common words and finance jargon should be rejected."""
+        jargon = ["YOLO", "DD", "ATH", "IMO", "CEO", "SEC", "AI", "TLDR"]
+        log.info("Testing exclusion list with: %s", jargon)
+        for word in jargon:
+            result = self.validator.validate(word)
+            log.info("  %s \u2192 rejected=%s", word, not result)
+>           assert not result, f"{word} should be rejected by exclusion list"
+E           AssertionError: AI should be rejected by exclusion list
+E           assert not True
+
+tests\test_discovery.py:45: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[2026-02-21 18:11:53] INFO     lazy_trader ù [Validator] AI VALIDATED ù price=$10.38
+------------------------------ Captured log call ------------------------------
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] YOLO REJECTED ù exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] DD REJECTED ù exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] ATH REJECTED ù exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] IMO REJECTED ù exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] CEO REJECTED ù exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] SEC REJECTED ù exclusion list
+INFO     lazy_trader:ticker_validator.py:265 [Validator] AI VALIDATED ù price=$10.38
+___________________ TestTickerScanner.test_extract_tickers ____________________
+
+self = <tests.test_discovery.TestTickerScanner object at 0x000001E6ACAA3610>
+
+    def test_extract_tickers(self) -> None:
+        """Regex should find tickers in text."""
+        text = "We're bullish on NVDA and TSLA. Also watch AAPL."
+>       result = self.scanner._extract_tickers(text)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'TickerScanner' object has no attribute '_extract_tickers'. Did you mean: '_llm_extract_tickers'?
+
+tests\test_discovery.py:274: AttributeError
+____________ TestTickerScanner.test_extract_tickers_filters_noise _____________
+
+self = <tests.test_discovery.TestTickerScanner object at 0x000001E6ACAA34D0>
+
+    def test_extract_tickers_filters_noise(self) -> None:
+        """Exclusion list words should not appear."""
+        text = "NVDA IS THE BEST AI CEO PICK FOR YOLO"
+>       result = self.scanner._extract_tickers(text)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'TickerScanner' object has no attribute '_extract_tickers'. Did you mean: '_llm_extract_tickers'?
+
+tests\test_discovery.py:283: AttributeError
+___________________ TestTickerScanner.test_context_snippet ____________________
+
+self = <tests.test_discovery.TestTickerScanner object at 0x000001E6ACB09CD0>
+
+    def test_context_snippet(self) -> None:
+        """Should return text window around first ticker mention."""
+        text = "xxxx " * 20 + "NVDA is amazing" + " xxxx" * 20
+>       snippet = self.scanner._get_context_snippet(text, "NVDA")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'TickerScanner' object has no attribute '_get_context_snippet'
+
+tests\test_discovery.py:293: AttributeError
+_________________ TestTickerScanner.test_scan_no_transcripts __________________
+
+self = <tests.test_discovery.TestTickerScanner object at 0x000001E6ACB09E00>
+mock_get_db = <MagicMock name='get_db' id='2090251494672'>
+
+    @patch("app.collectors.ticker_scanner.get_db")
+    def test_scan_no_transcripts(self, mock_get_db: MagicMock) -> None:
+        """No transcripts in DB should return empty list."""
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = []
+        mock_get_db.return_value = mock_db
+    
+        result = self.scanner.scan_recent_transcripts(hours=24)
+>       log.info("No transcripts \u2192 %d results", len(result))
+                                                ^^^^^^^^^^^
+E       TypeError: object of type 'coroutine' has no len()
+
+tests\test_discovery.py:306: TypeError
+_________________ TestTickerScanner.test_scan_with_transcript _________________
+
+self = <tests.test_discovery.TestTickerScanner object at 0x000001E6ACB3B9B0>
+mock_get_db = <MagicMock name='get_db' id='2090251498704'>
+mock_validate = <MagicMock name='validate_batch' id='2090251496016'>
+
+    @patch("app.collectors.ticker_scanner.TickerValidator.validate_batch")
+    @patch("app.collectors.ticker_scanner.get_db")
+    def test_scan_with_transcript(
+        self, mock_get_db: MagicMock, mock_validate: MagicMock
+    ) -> None:
+        """Should extract and score tickers from a transcript."""
+        mock_db = MagicMock()
+        mock_db.execute.return_value.fetchall.return_value = [
+            (
+                "NVDA",  # ticker column
+                "video123",
+                "NVDA Earnings Analysis",
+                "FinanceChannel",
+                "Buy NVDA because their GPU sales are incredible. "
+                "NVDA revenue up 200%. Also look at TSLA.",
+            ),
+        ]
+        mock_get_db.return_value = mock_db
+        mock_validate.return_value = ["NVDA", "TSLA"]
+    
+        result = self.scanner.scan_recent_transcripts(hours=24)
+>       log.info("Scan result: %d tickers", len(result))
+                                            ^^^^^^^^^^^
+E       TypeError: object of type 'coroutine' has no len()
+
+tests\test_discovery.py:330: TypeError
+============================== warnings summary ===============================
+tests/test_sec_13f.py::TestSEC13FDBIntegration::test_daily_guard
+  D:\Github\Lazy-Trading-Bot\tests\test_sec_13f.py:214: DeprecationWarning: There is no current event loop
+    result = asyncio.get_event_loop().run_until_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_discovery.py::TestTickerValidator::test_exclusion_list_rejects_jargon
+FAILED tests/test_discovery.py::TestTickerScanner::test_extract_tickers - Att...
+FAILED tests/test_discovery.py::TestTickerScanner::test_extract_tickers_filters_noise
+FAILED tests/test_discovery.py::TestTickerScanner::test_context_snippet - Att...
+FAILED tests/test_discovery.py::TestTickerScanner::test_scan_no_transcripts
+FAILED tests/test_discovery.py::TestTickerScanner::test_scan_with_transcript
+6 failed, 35 passed, 1 warning in 7.29s

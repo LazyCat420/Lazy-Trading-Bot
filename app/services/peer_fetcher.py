@@ -1,7 +1,6 @@
 """Service to fetch industry peers using the LLM and yfinance data."""
 
 import json
-from typing import cast
 
 from app.models.market_data import FundamentalSnapshot
 from app.services.llm_service import LLMService
@@ -39,7 +38,7 @@ class PeerFetcher:
             if isinstance(peers, list):
                 # Ensure they are strings and limit to 3
                 return [str(p).strip().upper() for p in peers][:3]
-        except Exception as e:
+        except Exception:
             # If the LLM fails, return empty list
             pass
         return []

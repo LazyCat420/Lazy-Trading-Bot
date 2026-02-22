@@ -2,10 +2,11 @@
   "test1_models": {
     "status": 200,
     "models": [
+      "text-embedding-nomic-embed-text-v1.5",
+      "ibm/granite-4-h-tiny",
       "ibm/granite-3.2-8b",
       "qwen2.5-coder-7b-instruct",
       "qwen/qwen3-4b-thinking-2507",
-      "ibm/granite-4-h-tiny",
       "zai-org/glm-4.7-flash",
       "qwen/qwen3-coder-30b",
       "allenai/olmocr-2-7b",
@@ -21,8 +22,7 @@
       "qwen3-vl-8b-instruct-abliterated-v2.0",
       "qwen/qwen3-vl-8b",
       "zai-org/glm-4.6v-flash",
-      "liquid/lfm2.5-1.2b",
-      "text-embedding-nomic-embed-text-v1.5"
+      "liquid/lfm2.5-1.2b"
     ],
     "match": true
   },

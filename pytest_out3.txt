@@ -1,0 +1,396 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0
+rootdir: D:\Github\Lazy-Trading-Bot
+configfile: pytest.ini
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 225 items / 6 errors
+
+<Dir Lazy-Trading-Bot>
+  <Package tests>
+    <Module test_agent_unwrap.py>
+      <Class TestTryUnwrapNested>
+        <Function test_flat_valid_response_returns_as_is>
+        <Function test_single_wrapper_unwrap>
+        <Function test_double_nested_unwrap>
+        <Function test_completely_wrong_returns_none>
+        <Function test_empty_dict_returns_none>
+        <Function test_depth_limit_prevents_infinite_recursion>
+      <Class TestUnwrapValidation>
+        <Function test_unwrapped_fundamental_validates>
+        <Function test_unwrapped_sentiment_validates>
+    <Module test_clear_data.py>
+      <Class TestClearData>
+        <Function test_clear_returns_cleared>
+        <Function test_clear_handles_error>
+        <Function test_clear_partial>
+        <Function test_clear_empty_tables>
+    <Module test_congress.py>
+      <Class TestCongressCSRF>
+        <Function test_csrf_extraction>
+      <Class TestCongressReportParsing>
+        <Function test_parse_report_with_trades>
+        <Function test_parse_report_pdf_skipped>
+        <Function test_parse_report_short_row>
+      <Class TestCongressDBIntegration>
+        <Function test_tickers_from_db>
+        <Function test_daily_guard>
+        <Function test_get_trades_for_ticker>
+        <Function test_save_trades>
+      <Class TestCongressModels>
+        <Function test_scored_ticker_congress_source>
+        <Function test_scored_ticker_sec_13f_source>
+        <Function test_scored_ticker_multi_source>
+    <Module test_data_pipeline.py>
+      <Class TestPhase8DBTables>
+        <Function test_all_new_tables_exist>
+        <Function test_news_articles_has_source_column>
+        <Function test_technicals_has_expanded_columns>
+      <Class TestYouTube24hFilter>
+        <Function test_curated_channels_exist>
+        <Function test_no_truncation_constant>
+        <Function test_full_transcript_stored>
+        <Coroutine test_24h_filter_skips_old_videos>
+      <Class TestYouTubeHistoricalRetrieval>
+        <Function test_insert_and_retrieve_transcripts>
+        <Function test_accumulation_across_runs>
+      <Class TestNewsHistoricalRetrieval>
+        <Function test_insert_and_retrieve_news>
+        <Function test_news_accumulation>
+      <Class TestAgentContextHistoricalData>
+        <Function test_sentiment_agent_formats_multi_source_news>
+        <Function test_sentiment_agent_handles_empty_data>
+      <Class TestRiskComputer>
+        <Function test_instantiation>
+        <Function test_risk_metrics_dataclass>
+      <Class TestFundamentalAgentNewData>
+        <Function test_formats_balance_sheet_data>
+        <Function test_formats_analyst_data>
+      <Class TestVTTParsing>
+        <Function test_basic_vtt>
+        <Function test_dedup_overlapping_segments>
+        <Function test_empty_vtt>
+    <Module test_discovery.py>
+      <Class TestTickerValidator>
+        <Function test_exclusion_list_rejects_jargon>
+        <Function test_exclusion_list_rejects_common_words>
+        <Function test_length_validation>
+        <Function test_yfinance_valid_ticker>
+        <Function test_yfinance_no_price>
+        <Function test_caching>
+        <Function test_batch_validate>
+      <Class TestRedditCollector>
+        <Function test_extract_tickers_basic>
+        <Function test_extract_tickers_dollar_sign>
+        <Function test_extract_tickers_empty>
+        <Function test_extract_tickers_deduplicates>
+        <Function test_fetch_subreddit_success>
+        <Function test_fetch_subreddit_rate_limit>
+        <Function test_get_thread_data>
+      <Class TestTickerScanner>
+        <Function test_extract_tickers>
+        <Function test_extract_tickers_filters_noise>
+        <Function test_context_snippet>
+        <Function test_scan_no_transcripts>
+        <Function test_scan_with_transcript>
+      <Class TestDiscoveryService>
+        <Function test_merge_scores_basic>
+        <Function test_merge_sorted_by_score>
+        <Function test_save_to_db_inserts>
+      <Class TestDiscoveryModels>
+        <Function test_scored_ticker_defaults>
+        <Function test_discovery_result_defaults>
+        <Function test_scored_ticker_serialization>
+        <Function test_discovery_result_transcript_count>
+        <Function test_discovery_result_transcript_count_default>
+      <Class TestTranscriptCollection>
+        <Function test_collect_transcripts_calls_youtube_collector>
+        <Function test_collect_transcripts_empty_list>
+      <Class TestYouTubeCollectorDiscoveryMode>
+        <Function test_discovery_mode_skips_daily_guard>
+        <Function test_normal_mode_uses_daily_guard>
+    <Module test_pipeline_freeze.py>
+      <Class TestHoldingsCap>
+        <Function test_max_holdings_constant_exists>
+        <Function test_per_filer_timeout_exists>
+        <Function test_scrape_filer_caps_holdings>
+      <Class TestNoYfinanceFallback>
+        <Function test_known_cusip_still_works>
+        <Function test_name_fallback_still_works>
+        <Function test_yfinance_never_called>
+        <Function test_unknown_cusip_returns_empty_fast>
+      <Class TestThreadExecutor>
+        <Function test_scrape_all_filers_method_exists>
+        <Function test_collect_recent_holdings_is_async>
+      <Class TestDiscoveryTimeout>
+        <Function test_timed_collect_handles_timeout>
+        <Function test_timed_collect_passes_results>
+    <Module test_portfolio_strategist.py>
+      <Class TestPortfolioStrategist>
+        <Function test_init>
+        <Coroutine test_tool_get_portfolio>
+        <Coroutine test_tool_get_all_candidates_no_dossiers>
+        <Coroutine test_tool_place_buy_insufficient_cash>
+        <Coroutine test_tool_place_buy_too_large>
+        <Coroutine test_tool_set_triggers_no_position>
+        <Coroutine test_run_finish_immediately>
+        <Coroutine test_run_buy_then_finish>
+      <Class TestLLMServiceRetry>
+        <Function test_estimate_tokens>
+        <Function test_trim_messages>
+        <Function test_trim_preserves_short_messages>
+      <Class TestCleanJsonMultiObject>
+        <Function test_extracts_first_json_from_multi_object>
+        <Function test_extracts_json_from_prose>
+        <Function test_handles_markdown_fences_multi_object>
+        <Function test_single_valid_json_unchanged>
+        <Function test_truncated_json_returns_best_effort>
+    <Module test_rss_news.py>
+      <Class TestTickerExtraction>
+        <Function test_dollar_sign_tickers>
+        <Function test_excludes_common_words>
+        <Function test_mixed_content>
+        <Function test_empty_text>
+        <Function test_limits_to_10>
+      <Class TestFeedParsing>
+        <Function test_scrape_feed_extracts_valid_entries>
+        <Function test_skips_short_content>
+        <Function test_deduplicates_by_hash>
+      <Class TestRSSDBIntegration>
+        <Function test_daily_guard>
+        <Function test_get_articles_for_ticker>
+        <Function test_get_discovery_tickers>
+      <Class TestYouTubeDurationFilter>
+        <Function test_duration_filter_logic>
+    <Module test_scheduler.py>
+      <Class TestMarketHours>
+        <Function test_now_et_returns_eastern>
+        <Function test_is_market_open_returns_bool>
+        <Function test_next_market_open_returns_datetime>
+        <Function test_next_market_close_returns_datetime>
+        <Function test_market_status_returns_dict>
+        <Function test_weekday_9_30_is_open>
+      <Class TestReportGenerator>
+        <Function test_instantiation>
+        <Function test_get_latest_returns_dict>
+      <Class TestTradingScheduler>
+        <Function test_instantiation>
+        <Function test_get_status_when_stopped>
+        <Function test_start_and_stop>
+        <Function test_double_start_returns_already>
+    <Module test_sec_13f.py>
+      <Class TestSEC13FParsing>
+        <Function test_parse_info_table_xml>
+        <Function test_cusip_to_ticker_known>
+        <Function test_cusip_to_ticker_name_fallback>
+        <Function test_cusip_to_ticker_unknown>
+      <Class TestSEC13FFilingDiscovery>
+        <Function test_find_latest_13f>
+        <Function test_find_latest_13f_no_filings>
+        <Function test_find_latest_13f_no_13f_forms>
+      <Class TestSEC13FDBIntegration>
+        <Function test_tickers_from_db>
+        <Function test_daily_guard>
+        <Function test_get_holdings_for_ticker>
+    <Module test_sentiment_validation.py>
+      <Class TestSentimentReportValidation>
+        <Function test_valid_report>
+        <Function test_clamped_score>
+        <Function test_invalid_sentiment_enum_defaults_to_neutral>
+        <Function test_wrong_structure_fails_validation>
+      <Class TestBaseAgentRescueHelpers>
+        <Function test_get_required_keys>
+        <Function test_diagnose_wrong_structure>
+        <Function test_diagnose_correct_structure_returns_none>
+        <Function test_diagnose_invalid_json_returns_none>
+        <Function test_fallback_report>
+        <Function test_rescue_prompt_contains_error_info>
+    <Module test_smoke.py>
+      <Class TestImports>
+        <Function test_config>
+        <Function test_database>
+        <Function test_market_data_models>
+        <Function test_agent_report_models>
+        <Function test_decision_model>
+        <Function test_llm_service>
+        <Function test_agents>
+        <Function test_engine>
+        <Function test_user_config_exists>
+    <Module test_strategist_audit.py>
+      <Class TestStrategistAudit>
+        <Function test_log_turn>
+        <Function test_log_bad_json>
+        <Function test_log_candidates_detects_gaps>
+        <Function test_generate_report>
+        <Function test_generate_report_with_orders>
+    <Module test_trading.py>
+      <Class TestModels>
+        <Function test_position_create>
+        <Function test_order_create>
+        <Function test_portfolio_snapshot>
+        <Function test_price_trigger>
+      <Class TestSignalRouter>
+        <Function test_buy_signal_high_conviction>
+        <Function test_sell_signal_low_conviction>
+        <Function test_hold_signal_mid_conviction>
+        <Function test_max_orders_per_day_guard>
+        <Function test_daily_loss_limit_guard>
+        <Function test_cooldown_guard>
+        <Function test_no_duplicate_buy>
+        <Function test_position_sizing_respects_limits>
+        <Function test_tiered_sizing_low_conviction>
+        <Function test_tiered_sizing_mid_conviction>
+        <Function test_buy_at_threshold_boundary>
+        <Function test_sell_no_position_returns_none>
+      <Class TestPaperTrader>
+        <Function test_initial_balance>
+        <Function test_buy_reduces_cash>
+        <Function test_buy_creates_position>
+        <Function test_sell_closes_position>
+        <Function test_insufficient_balance_rejected>
+        <Function test_dca_buy>
+        <Function test_sell_no_position_rejected>
+        <Function test_order_history>
+        <Function test_portfolio_summary>
+        <Function test_triggers_created>
+      <Class TestImports>
+        <Function test_import_models>
+        <Function test_import_signal_router>
+        <Function test_import_paper_trader>
+        <Function test_import_price_monitor>
+    <Module test_watchlist.py>
+      <Class TestWatchlistModels>
+        <Function test_entry_defaults>
+        <Function test_entry_custom_values>
+        <Function test_summary_defaults>
+        <Function test_summary_serialization>
+      <Class TestWatchlistManagerCRUD>
+        <Function test_add_ticker>
+        <Function test_add_duplicate>
+        <Function test_add_reactivate>
+        <Function test_add_empty_ticker>
+        <Function test_remove_ticker>
+        <Function test_remove_not_found>
+        <Function test_clear>
+      <Class TestWatchlistImport>
+        <Function test_import_from_discovery>
+        <Function test_import_empty>
+      <Class TestWatchlistAnalysis>
+        <Function test_analyze_ticker>
+        <Function test_analyze_ticker_error>
+        <Function test_analyze_all_empty>
+    <Module test_yfinance_live.py>
+      <Class TestLiveDataCollection>
+        <Coroutine test_yfinance_price_history_live>
+        <Coroutine test_yfinance_fundamentals_live>
+        <Coroutine test_yfinance_financial_history_live>
+        <Coroutine test_yfinance_balance_sheet_live>
+        <Coroutine test_yfinance_cash_flow_live>
+        <Coroutine test_yfinance_analyst_data_live>
+        <Coroutine test_google_news_live>
+    <Module test_youtube_collector.py>
+      <Class TestVTTParsing>
+        <Function test_basic_vtt>
+        <Function test_dedup_overlapping_segments>
+        <Function test_strips_html_tags>
+        <Function test_empty_vtt>
+        <Function test_skips_metadata_lines>
+      <Class TestNoTruncation>
+        <Function test_full_transcript_preserved>
+        <Function test_short_transcript_not_modified>
+      <Class TestSearchQueries>
+        <Function test_has_multiple_queries>
+        <Function test_queries_use_ticker_placeholder>
+        <Function test_curated_channels_list>
+      <Class TestGetTranscriptTiering>
+        <Function test_library_first_succeeds>
+        <Function test_fallback_to_ytdlp>
+        <Function test_both_fail_returns_empty>
+
+=================================== ERRORS ====================================
+______ ERROR collecting example_repos/Trading-Terminal/tests/test_api.py ______
+example_repos\Trading-Terminal\tests\test_api.py:2: in <module>
+    from app.main import app
+app\main.py:902: in <module>
+    _paper_trader = PaperTrader()
+                    ^^^^^^^^^^^^^
+app\services\paper_trader.py:24: in __init__
+    self._ensure_initial_balance()
+app\services\paper_trader.py:579: in _ensure_initial_balance
+    db = get_db()
+         ^^^^^^^^
+app\database.py:19: in get_db
+    _connection = duckdb.connect(db_path)
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+E   _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
+E   
+E   File is already open in 
+E   D:\Miniconda3\python.exe (PID 21140)
+------------------------------- Captured stdout -------------------------------
+[2026-02-21 22:42:44] INFO     lazy_trader — Log started: trading_bot_2026-02-21_22-42-44.log
+[2026-02-21 22:42:47] INFO     lazy_trader — Opening DuckDB at D:\Github\Lazy-Trading-Bot\data\trading_bot.duckdb
+______________ ERROR collecting scripts/test_ollama_parallel.py _______________
+ImportError while importing test module 'D:\Github\Lazy-Trading-Bot\scripts\test_ollama_parallel.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+D:\Miniconda3\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\test_ollama_parallel.py:15: in <module>
+    import aiohttp
+E   ModuleNotFoundError: No module named 'aiohttp'
+__________________ ERROR collecting test_freeze_results.txt ___________________
+D:\Miniconda3\Lib\pathlib\_local.py:546: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Miniconda3\Lib\pathlib\_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+<frozen codecs>:325: in decode
+    ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+___________________ ERROR collecting test_import_output.txt ___________________
+D:\Miniconda3\Lib\pathlib\_local.py:546: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Miniconda3\Lib\pathlib\_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+<frozen codecs>:325: in decode
+    ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+__________________ ERROR collecting test_lmstudio_output.txt __________________
+D:\Miniconda3\Lib\pathlib\_local.py:546: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Miniconda3\Lib\pathlib\_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+<frozen codecs>:325: in decode
+    ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+__________________ ERROR collecting test_result_json_fix.txt __________________
+D:\Miniconda3\Lib\pathlib\_local.py:546: in read_text
+    return PathBase.read_text(self, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Miniconda3\Lib\pathlib\_abc.py:633: in read_text
+    return f.read()
+           ^^^^^^^^
+<frozen codecs>:325: in decode
+    ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+============================== warnings summary ===============================
+venv\Lib\site-packages\pandas_ta\__init__.py:37
+  D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pandas_ta\__init__.py:37: Pandas4Warning: The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be disabled (it is always enabled with pandas >= 3.0), and setting the option has no impact. This option will be removed in pandas 4.0.
+    from pandas_ta.core import AnalysisIndicators
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR example_repos/Trading-Terminal/tests/test_api.py - _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
+ERROR scripts/test_ollama_parallel.py
+ERROR test_freeze_results.txt - UnicodeDecodeError: 'utf-8' codec can't decod...
+ERROR test_import_output.txt - UnicodeDecodeError: 'utf-8' codec can't decode...
+ERROR test_lmstudio_output.txt - UnicodeDecodeError: 'utf-8' codec can't deco...
+ERROR test_result_json_fix.txt - UnicodeDecodeError: 'utf-8' codec can't deco...
+!!!!!!!!!!!!!!!!!!! Interrupted: 6 errors during collection !!!!!!!!!!!!!!!!!!!
+=================== 225 tests collected, 6 errors in 23.34s ===================

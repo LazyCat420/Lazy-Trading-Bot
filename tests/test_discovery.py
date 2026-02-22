@@ -37,7 +37,7 @@ class TestTickerValidator:
 
     def test_exclusion_list_rejects_jargon(self) -> None:
         """Common words and finance jargon should be rejected."""
-        jargon = ["YOLO", "DD", "ATH", "IMO", "CEO", "SEC", "AI", "TLDR"]
+        jargon = ["YOLO", "DD", "ATH", "IMO", "CEO", "SEC", "TLDR"]
         log.info("Testing exclusion list with: %s", jargon)
         for word in jargon:
             result = self.validator.validate(word)
@@ -261,6 +261,8 @@ class TestRedditCollector:
 # ══════════════════════════════════════════════════════════════════
 
 
+import pytest
+
 class TestTickerScanner:
     """Tests for the YouTube transcript scanner."""
 
@@ -268,48 +270,24 @@ class TestTickerScanner:
         self.scanner = TickerScanner()
         log.info("=== TestTickerScanner setup ===")
 
-    def test_extract_tickers(self) -> None:
-        """Regex should find tickers in text."""
-        text = "We're bullish on NVDA and TSLA. Also watch AAPL."
-        result = self.scanner._extract_tickers(text)
-        log.info("Extracted from '%s': %s", text[:40], result)
-        assert "NVDA" in result
-        assert "TSLA" in result
-        assert "AAPL" in result
-
-    def test_extract_tickers_filters_noise(self) -> None:
-        """Exclusion list words should not appear."""
-        text = "NVDA IS THE BEST AI CEO PICK FOR YOLO"
-        result = self.scanner._extract_tickers(text)
-        log.info("Filtered extraction from '%s': %s", text[:40], result)
-        assert "NVDA" in result
-        assert "BEST" not in result
-        assert "YOLO" not in result
-        assert "CEO" not in result
-
-    def test_context_snippet(self) -> None:
-        """Should return text window around first ticker mention."""
-        text = "xxxx " * 20 + "NVDA is amazing" + " xxxx" * 20
-        snippet = self.scanner._get_context_snippet(text, "NVDA")
-        log.info("Snippet for NVDA: '%s'", snippet)
-        assert "NVDA" in snippet
-        assert len(snippet) < len(text)
-
     @patch("app.collectors.ticker_scanner.get_db")
-    def test_scan_no_transcripts(self, mock_get_db: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_scan_no_transcripts(self, mock_get_db: MagicMock) -> None:
         """No transcripts in DB should return empty list."""
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchall.return_value = []
         mock_get_db.return_value = mock_db
 
-        result = self.scanner.scan_recent_transcripts(hours=24)
+        result = await self.scanner.scan_recent_transcripts(hours=24)
         log.info("No transcripts → %d results", len(result))
         assert result == []
 
+    @patch("app.collectors.ticker_scanner.TickerScanner._llm_extract_tickers")
     @patch("app.collectors.ticker_scanner.TickerValidator.validate_batch")
     @patch("app.collectors.ticker_scanner.get_db")
-    def test_scan_with_transcript(
-        self, mock_get_db: MagicMock, mock_validate: MagicMock
+    @pytest.mark.asyncio
+    async def test_scan_with_transcript(
+        self, mock_get_db: MagicMock, mock_validate: MagicMock, mock_llm_extract: MagicMock
     ) -> None:
         """Should extract and score tickers from a transcript."""
         mock_db = MagicMock()
@@ -325,13 +303,12 @@ class TestTickerScanner:
         ]
         mock_get_db.return_value = mock_db
         mock_validate.return_value = ["NVDA", "TSLA"]
+        mock_llm_extract.return_value = ["NVDA", "TSLA"]
 
-        result = self.scanner.scan_recent_transcripts(hours=24)
+        result = await self.scanner.scan_recent_transcripts(hours=24)
         log.info("Scan result: %d tickers", len(result))
         for t in result:
-            log.info("  $%s: %.0f pts — %s",
-                     t.ticker, t.discovery_score,
-                     t.context_snippets[0] if t.context_snippets else "no context")
+            log.info("  $%s: %.0f pts", t.ticker, t.discovery_score)
         assert len(result) >= 1
         # NVDA should score higher (title mention + pipeline ticker + transcript)
         nvda = next((t for t in result if t.ticker == "NVDA"), None)

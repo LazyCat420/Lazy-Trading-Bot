@@ -50,17 +50,17 @@ for ticker, data in all_reports.items():
         if "rationale" in report:
             rat = report["rationale"]
             # Show first 300 chars
-            print(f"    rationale preview:")
+            print("    rationale preview:")
             print(f"      {rat[:400]}...")
 
     # Decision
     decision = data.get("agents", {}).get("decision", {})
     if decision:
-        print(f"\n  [FINAL DECISION]")
+        print("\n  [FINAL DECISION]")
         for key in ["action", "confidence", "conviction_score"]:
             if key in decision:
                 print(f"    {key}: {decision[key]}")
         if "reasoning" in decision:
             print(f"    reasoning: {decision['reasoning'][:300]}...")
 
-print(f"\nFull reports saved to tests/quality_report.json")
+print("\nFull reports saved to tests/quality_report.json")

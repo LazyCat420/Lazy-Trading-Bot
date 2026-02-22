@@ -1,5 +1,4 @@
 """Quick validation — check cached reports for all 3 tickers."""
-import json
 import requests
 
 BASE = "http://localhost:8000"
@@ -30,7 +29,7 @@ for ticker in ["VOO", "TSLA", "WMT"]:
     km = fa.get("key_metrics", {})
     ds = ra.get("downside_scenarios", [])
 
-    print(f"  Fix 2:")
+    print("  Fix 2:")
     print(f"    support_levels: {len(sl)} -> {sl[:3]}")
     print(f"    resistance_levels: {len(rl)} -> {rl[:3]}")
     print(f"    key_signals: {len(ks)} items")
@@ -42,7 +41,7 @@ for ticker in ["VOO", "TSLA", "WMT"]:
     print(f"    downside_scenarios: {len(ds)} items")
 
     # Fix 4 checks
-    print(f"  Fix 4:")
+    print("  Fix 4:")
     for cn in ["bull_case", "base_case", "bear_case"]:
         c = ra.get(cn)
         if c:
@@ -51,13 +50,13 @@ for ticker in ["VOO", "TSLA", "WMT"]:
             print(f"    {cn}: MISSING")
 
     # Fix 5 checks
-    print(f"  Fix 5:")
+    print("  Fix 5:")
     print(f"    entry_price: ${ra.get('entry_price', 0):,.2f}")
     print(f"    stop_loss: ${ra.get('suggested_stop_loss', 0):,.2f}")
     print(f"    take_profit: ${ra.get('suggested_take_profit', 0):,.2f}")
 
     # Fix 1 checks
-    print(f"  Fix 1:")
+    print("  Fix 1:")
     er = dec.get("entry_rules_evaluated", [])
     print(f"    {len(er)} entry rules evaluated:")
     for rule in er[:5]:

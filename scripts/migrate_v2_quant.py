@@ -1,5 +1,4 @@
 import duckdb
-import os
 
 DB_PATH = "data/trading_bot.duckdb"
 

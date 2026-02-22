@@ -1,0 +1,78 @@
+...........................................F.............FFFFF.......... [ 32%]
+........................................................................ [ 64%]
+.F....F................................................................. [ 96%]
+.........                                                                [100%]D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\unraisableexception.py:33: RuntimeWarning: coroutine 'TickerScanner.scan_recent_transcripts' was never awaited
+  gc.collect()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+
+================================== FAILURES ===================================
+___________ TestTickerValidator.test_exclusion_list_rejects_jargon ____________
+tests\test_discovery.py:45: in test_exclusion_list_rejects_jargon
+    assert not result, f"{word} should be rejected by exclusion list"
+E   AssertionError: AI should be rejected by exclusion list
+E   assert not True
+---------------------------- Captured stdout call -----------------------------
+[2026-02-21 22:45:49] INFO     lazy_trader — [Validator] AI VALIDATED — price=$10.38
+------------------------------ Captured log call ------------------------------
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] YOLO REJECTED — exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] DD REJECTED — exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] ATH REJECTED — exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] IMO REJECTED — exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] CEO REJECTED — exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] SEC REJECTED — exclusion list
+INFO     lazy_trader:ticker_validator.py:265 [Validator] AI VALIDATED — price=$10.38
+___________________ TestTickerScanner.test_extract_tickers ____________________
+tests\test_discovery.py:274: in test_extract_tickers
+    result = self.scanner._extract_tickers(text)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'TickerScanner' object has no attribute '_extract_tickers'. Did you mean: '_llm_extract_tickers'?
+____________ TestTickerScanner.test_extract_tickers_filters_noise _____________
+tests\test_discovery.py:283: in test_extract_tickers_filters_noise
+    result = self.scanner._extract_tickers(text)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'TickerScanner' object has no attribute '_extract_tickers'. Did you mean: '_llm_extract_tickers'?
+___________________ TestTickerScanner.test_context_snippet ____________________
+tests\test_discovery.py:293: in test_context_snippet
+    snippet = self.scanner._get_context_snippet(text, "NVDA")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'TickerScanner' object has no attribute '_get_context_snippet'
+_________________ TestTickerScanner.test_scan_no_transcripts __________________
+tests\test_discovery.py:306: in test_scan_no_transcripts
+    log.info("No transcripts \u2192 %d results", len(result))
+                                            ^^^^^^^^^^^
+E   TypeError: object of type 'coroutine' has no len()
+_________________ TestTickerScanner.test_scan_with_transcript _________________
+tests\test_discovery.py:330: in test_scan_with_transcript
+    log.info("Scan result: %d tickers", len(result))
+                                        ^^^^^^^^^^^
+E   TypeError: object of type 'coroutine' has no len()
+___________________________ TestImports.test_config ___________________________
+tests\test_smoke.py:12: in test_config
+    assert settings.LLM_PROVIDER in ("ollama", "openai")
+E   AssertionError: assert 'lmstudio' in ('ollama', 'openai')
+E    +  where 'lmstudio' = <app.config.Settings object at 0x0000027E0808D940>.LLM_PROVIDER
+________________________ TestImports.test_llm_service _________________________
+tests\test_smoke.py:70: in test_llm_service
+    assert llm.provider in ("ollama", "openai")
+E   AssertionError: assert 'lmstudio' in ('ollama', 'openai')
+E    +  where 'lmstudio' = <app.services.llm_service.LLMService object at 0x0000027E08BA90E0>.provider
+============================== warnings summary ===============================
+tests/test_congress.py::TestCongressDBIntegration::test_daily_guard
+  D:\Github\Lazy-Trading-Bot\tests\test_congress.py:231: DeprecationWarning: There is no current event loop
+    result = asyncio.get_event_loop().run_until_complete(
+
+tests/test_watchlist.py::TestWatchlistManagerCRUD::test_add_ticker
+  D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pandas_ta\__init__.py:37: Pandas4Warning: The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be disabled (it is always enabled with pandas >= 3.0), and setting the option has no impact. This option will be removed in pandas 4.0.
+    from pandas_ta.core import AnalysisIndicators
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_discovery.py::TestTickerValidator::test_exclusion_list_rejects_jargon
+FAILED tests/test_discovery.py::TestTickerScanner::test_extract_tickers - Att...
+FAILED tests/test_discovery.py::TestTickerScanner::test_extract_tickers_filters_noise
+FAILED tests/test_discovery.py::TestTickerScanner::test_context_snippet - Att...
+FAILED tests/test_discovery.py::TestTickerScanner::test_scan_no_transcripts
+FAILED tests/test_discovery.py::TestTickerScanner::test_scan_with_transcript
+FAILED tests/test_smoke.py::TestImports::test_config - AssertionError: assert...
+FAILED tests/test_smoke.py::TestImports::test_llm_service - AssertionError: a...
+8 failed, 217 passed, 2 warnings in 15.94s

@@ -8,7 +8,6 @@ Checks:
   Fix 5 — entry_price non-zero in risk report
   Fix 6 — quant signals cited in key_metrics
 """
-import json
 import requests
 import sys
 import time
@@ -131,7 +130,7 @@ def main():
             if errors:
                 print(f"  ⚠️  Pipeline errors: {errors}")
             else:
-                print(f"  ✅ Pipeline completed with 0 errors")
+                print("  ✅ Pipeline completed with 0 errors")
         except Exception as e:
             print(f"  ❌ Pipeline FAILED: {e}")
             all_issues.append(f"{ticker}: Pipeline failed — {e}")
@@ -144,7 +143,7 @@ def main():
         try:
             cached = fetch_cached(ticker)
             if not cached.get("cached"):
-                print(f"  ⚠️  No cached reports found")
+                print("  ⚠️  No cached reports found")
                 all_issues.append(f"{ticker}: No cached reports after analysis")
                 continue
             reports = cached.get("agents", {})
@@ -175,7 +174,7 @@ def main():
         ta = reports.get("technical", {})
         fa = reports.get("fundamental", {})
         ra = reports.get("risk", {})
-        print(f"\n  📊 Key Fields:")
+        print("\n  📊 Key Fields:")
         print(f"    support_levels: {ta.get('support_levels', 'MISSING')}")
         print(f"    resistance_levels: {ta.get('resistance_levels', 'MISSING')}")
         print(f"    key_signals: {len(ta.get('key_signals', []))} items")
@@ -194,7 +193,7 @@ def main():
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"  BATTLE TEST SUMMARY")
+    print("  BATTLE TEST SUMMARY")
     print(f"{'='*60}")
     if all_issues:
         print(f"  ❌ {len(all_issues)} issues found:")

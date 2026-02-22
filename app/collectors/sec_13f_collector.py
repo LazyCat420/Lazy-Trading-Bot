@@ -14,23 +14,30 @@ Auth: User-Agent header only (required by SEC).
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
+import warnings
 from datetime import datetime
 from typing import Any
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from app.config import settings
 from app.database import get_db
 from app.models.discovery import ScoredTicker
 from app.utils.logger import logger
 
+# Suppress XML-parsed-as-HTML warnings from BeautifulSoup
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+
 # SEC requires a descriptive User-Agent header
 SEC_BASE_URL = "https://data.sec.gov"
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
-RATE_LIMIT_SECS = 0.15  # 6–7 req/sec, well within 10/s limit
+RATE_LIMIT_SECS = 0.15  # 6-7 req/sec, well within 10/s limit
+MAX_HOLDINGS_PER_FILER = 500  # Cap to prevent massive saves (Elliott=34K+)
+PER_FILER_TIMEOUT_SECS = 60  # Skip filers that take too long
 
 # ── Default watchlist of major institutional filers ─────────────────
 # CIK numbers for well-known hedge funds / institutional investors.
@@ -59,10 +66,12 @@ class SEC13FCollector:
 
     def __init__(self) -> None:
         self._session = requests.Session()
-        self._session.headers.update({
-            "User-Agent": settings.SEC_USER_AGENT,
-            "Accept-Encoding": "gzip, deflate",
-        })
+        self._session.headers.update(
+            {
+                "User-Agent": settings.SEC_USER_AGENT,
+                "Accept-Encoding": "gzip, deflate",
+            }
+        )
 
     # ── Public: Discovery integration ────────────────────────────────
 
@@ -71,19 +80,33 @@ class SEC13FCollector:
 
         This is called during the Discovery phase. Returns unique tickers
         from the most recent filings, scored by how many institutions hold them.
+
+        IMPORTANT: All scraping runs in a thread executor to avoid blocking
+        the asyncio event loop (scraping uses synchronous requests).
         """
         db = get_db()
 
         # Daily guard: skip if we already scraped today
         row = db.execute(
-            "SELECT COUNT(*) FROM sec_13f_holdings "
-            "WHERE collected_at >= CURRENT_DATE"
+            "SELECT COUNT(*) FROM sec_13f_holdings WHERE collected_at >= CURRENT_DATE"
         ).fetchone()
         if row and row[0] > 0:
-            logger.info("[SEC 13F] Already collected today (%d rows), using cache", row[0])
+            logger.info(
+                "[SEC 13F] Already collected today (%d rows), using cache", row[0]
+            )
             return self._tickers_from_db()
 
-        logger.info("[SEC 13F] Starting 13F collection for %d filers", len(DEFAULT_FILERS))
+        # Run the synchronous scraping in a thread so we don't block the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._scrape_all_filers, db)
+
+        return self._tickers_from_db()
+
+    def _scrape_all_filers(self, db: Any) -> None:
+        """Synchronous method that scrapes all filers (runs in thread executor)."""
+        logger.info(
+            "[SEC 13F] Starting 13F collection for %d filers", len(DEFAULT_FILERS)
+        )
 
         # Ensure filers are in the DB
         self._ensure_filers(db)
@@ -95,14 +118,23 @@ class SEC13FCollector:
 
         total_holdings = 0
         for cik, name in filers:
+            t0 = time.time()
             try:
                 count = self._scrape_filer(db, cik, name)
                 total_holdings += count
+                elapsed = time.time() - t0
+                if elapsed > PER_FILER_TIMEOUT_SECS:
+                    logger.warning(
+                        "[SEC 13F] %s took %.1fs — remaining filers may be skipped",
+                        name,
+                        elapsed,
+                    )
             except Exception as e:
                 logger.error("[SEC 13F] Failed to scrape %s (%s): %s", name, cik, e)
 
-        logger.info("[SEC 13F] Collection complete: %d total holdings saved", total_holdings)
-        return self._tickers_from_db()
+        logger.info(
+            "[SEC 13F] Collection complete: %d total holdings saved", total_holdings
+        )
 
     async def get_holdings_for_ticker(self, ticker: str) -> list[dict[str, Any]]:
         """Get institutional holders for a specific ticker (pipeline step).
@@ -176,7 +208,12 @@ class SEC13FCollector:
             [cik, quarter],
         ).fetchone()
         if existing and existing[0] > 0:
-            logger.info("[SEC 13F] %s Q%s already in DB (%d holdings)", name, quarter, existing[0])
+            logger.info(
+                "[SEC 13F] %s Q%s already in DB (%d holdings)",
+                name,
+                quarter,
+                existing[0],
+            )
             return 0
 
         # Fetch and parse the information table
@@ -184,6 +221,20 @@ class SEC13FCollector:
         if not holdings:
             logger.warning("[SEC 13F] No holdings parsed for %s", name)
             return 0
+
+        # Filter out holdings with no ticker resolved
+        holdings = [h for h in holdings if h.get("ticker")]
+
+        # Cap holdings per filer to prevent massive saves
+        if len(holdings) > MAX_HOLDINGS_PER_FILER:
+            logger.info(
+                "[SEC 13F] Capping %s from %d to %d holdings (by value)",
+                name,
+                len(holdings),
+                MAX_HOLDINGS_PER_FILER,
+            )
+            holdings.sort(key=lambda h: h.get("value_usd", 0), reverse=True)
+            holdings = holdings[:MAX_HOLDINGS_PER_FILER]
 
         # Persist
         saved = 0
@@ -193,12 +244,13 @@ class SEC13FCollector:
                     """
                     INSERT INTO sec_13f_holdings
                         (cik, ticker, name_of_issuer, cusip, value_usd,
-                         shares, share_type, filing_quarter, filing_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         shares, share_type, filing_quarter, filing_date,
+                         collected_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
                     ON CONFLICT (cik, ticker, filing_quarter) DO UPDATE SET
                         value_usd = EXCLUDED.value_usd,
                         shares = EXCLUDED.shares,
-                        collected_at = CURRENT_TIMESTAMP
+                        collected_at = EXCLUDED.collected_at
                     """,
                     [
                         cik,
@@ -222,7 +274,13 @@ class SEC13FCollector:
             [cik],
         )
 
-        logger.info("[SEC 13F] Saved %d/%d holdings for %s (%s)", saved, len(holdings), name, quarter)
+        logger.info(
+            "[SEC 13F] Saved %d/%d holdings for %s (%s)",
+            saved,
+            len(holdings),
+            name,
+            quarter,
+        )
         return saved
 
     def _get_submissions(self, cik: str) -> dict[str, Any] | None:
@@ -236,13 +294,17 @@ class SEC13FCollector:
             resp = self._session.get(url, timeout=15)
             if resp.status_code == 200:
                 return resp.json()
-            logger.warning("[SEC 13F] Submissions %s returned %d", url, resp.status_code)
+            logger.warning(
+                "[SEC 13F] Submissions %s returned %d", url, resp.status_code
+            )
         except Exception as e:
             logger.error("[SEC 13F] Submissions request failed: %s", e)
         return None
 
     def _find_latest_13f(
-        self, submissions: dict[str, Any], cik: str,
+        self,
+        submissions: dict[str, Any],
+        cik: str,
     ) -> dict[str, Any] | None:
         """Find the most recent 13F-HR filing from the submissions data."""
         recent = submissions.get("filings", {}).get("recent", {})
@@ -292,8 +354,7 @@ class SEC13FCollector:
                     f"{accession}-index.htm"
                 ),
                 "filing_url": (
-                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/{file_accession}/"
-                    f"{primary_doc}"
+                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/{file_accession}/{primary_doc}"
                 ),
                 "cik": stripped_cik,
                 "file_accession": file_accession,
@@ -302,72 +363,124 @@ class SEC13FCollector:
         return None
 
     def _get_holdings(
-        self, filing: dict[str, Any], cik: str,
+        self,
+        filing: dict[str, Any],
+        cik: str,
     ) -> list[dict[str, Any]]:
-        """Fetch and parse holdings from a 13F filing's information table."""
+        """Fetch and parse holdings from a 13F filing's information table.
+
+        Uses the EDGAR index.json API to find the info-table XML file,
+        which is typically the non-primary_doc.xml XML file in the filing.
+        """
         stripped_cik = cik.lstrip("0")
         file_accession = filing["file_accession"]
 
-        # First, get the filing index to find the info table XML
-        index_url = filing["index_url"]
+        # ── Strategy 1: Use index.json to find the info table XML ──
+        index_json_url = (
+            f"{SEC_ARCHIVES_URL}/{stripped_cik}/{file_accession}/index.json"
+        )
         time.sleep(RATE_LIMIT_SECS)
-        try:
-            resp = self._session.get(index_url, timeout=15)
-            if resp.status_code != 200:
-                logger.warning("[SEC 13F] Index page %d for %s", resp.status_code, index_url)
-                return []
-        except Exception as e:
-            logger.error("[SEC 13F] Index fetch failed: %s", e)
-            return []
-
-        # Find the information table document (XML or HTML)
-        soup = BeautifulSoup(resp.text, "lxml")
         info_table_url = None
-
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            text = link.get_text(strip=True).lower()
-            # Look for common info table filenames
-            if any(
-                x in text or x in href.lower()
-                for x in ("infotable", "information table", "informationtable")
-            ):
-                if href.startswith("/"):
-                    info_table_url = f"https://www.sec.gov{href}"
-                elif href.startswith("http"):
-                    info_table_url = href
-                else:
+        try:
+            resp = self._session.get(index_json_url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("directory", {}).get("item", [])
+                # The info table is the XML file that ISN'T primary_doc.xml
+                xml_files = [
+                    item["name"]
+                    for item in items
+                    if item.get("name", "").endswith(".xml")
+                    and item.get("name") != "primary_doc.xml"
+                ]
+                if xml_files:
+                    # Pick the first non-primary XML (info table)
                     info_table_url = (
                         f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
-                        f"{file_accession}/{href}"
+                        f"{file_accession}/{xml_files[0]}"
                     )
-                break
+                    logger.debug(
+                        "[SEC 13F] Found info table via JSON index: %s",
+                        xml_files[0],
+                    )
+        except Exception as e:
+            logger.warning("[SEC 13F] index.json fetch failed: %s", e)
+
+        # ── Strategy 2: Scrape the index HTML page for links ──
+        if not info_table_url:
+            index_url = filing["index_url"]
+            time.sleep(RATE_LIMIT_SECS)
+            try:
+                resp = self._session.get(index_url, timeout=15)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "lxml")
+                    for link in soup.find_all("a", href=True):
+                        href = link["href"]
+                        text = link.get_text(strip=True).lower()
+                        # Match known info table patterns
+                        if any(
+                            x in text or x in href.lower()
+                            for x in (
+                                "infotable",
+                                "information table",
+                                "informationtable",
+                            )
+                        ):
+                            if href.startswith("/"):
+                                info_table_url = f"https://www.sec.gov{href}"
+                            elif href.startswith("http"):
+                                info_table_url = href
+                            else:
+                                info_table_url = (
+                                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
+                                    f"{file_accession}/{href}"
+                                )
+                            break
+
+                    # Fallback: grab any XML that isn't primary_doc.xml
+                    if not info_table_url:
+                        for link in soup.find_all("a", href=True):
+                            href = link["href"]
+                            fname = href.split("/")[-1] if "/" in href else href
+                            if (
+                                fname.endswith(".xml")
+                                and fname != "primary_doc.xml"
+                                and not fname.startswith("R")
+                            ):
+                                if href.startswith("/"):
+                                    info_table_url = f"https://www.sec.gov{href}"
+                                elif href.startswith("http"):
+                                    info_table_url = href
+                                else:
+                                    info_table_url = (
+                                        f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
+                                        f"{file_accession}/{fname}"
+                                    )
+                                logger.debug(
+                                    "[SEC 13F] Found info table via HTML fallback: %s",
+                                    fname,
+                                )
+                                break
+            except Exception as e:
+                logger.error("[SEC 13F] Index HTML fetch failed: %s", e)
 
         if not info_table_url:
-            # Fallback: try common filename patterns
-            for fname in ("infotable.xml", "informationtable.xml", "primary_doc.xml"):
-                fallback_url = (
-                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
-                    f"{file_accession}/{fname}"
-                )
-                time.sleep(RATE_LIMIT_SECS)
-                try:
-                    r = self._session.head(fallback_url, timeout=10)
-                    if r.status_code == 200:
-                        info_table_url = fallback_url
-                        break
-                except Exception:
-                    pass
-
-        if not info_table_url:
-            logger.warning("[SEC 13F] No info table found for %s", filing["accession"])
+            logger.warning(
+                "[SEC 13F] No info table found for %s",
+                filing["accession"],
+            )
             return []
 
-        # Fetch the info table
+        # Fetch the info table XML
         time.sleep(RATE_LIMIT_SECS)
         try:
             resp = self._session.get(info_table_url, timeout=30)
             if resp.status_code != 200:
+                logger.warning(
+                    "[SEC 13F] Info table fetch returned %d: %s",
+                    resp.status_code,
+                    info_table_url,
+                )
                 return []
         except Exception as e:
             logger.error("[SEC 13F] Info table fetch failed: %s", e)
@@ -376,11 +489,32 @@ class SEC13FCollector:
         return self._parse_info_table(resp.text)
 
     def _parse_info_table(self, content: str) -> list[dict[str, Any]]:
-        """Parse a 13F information table (XML or HTML) into holdings dicts."""
-        holdings: list[dict[str, Any]] = []
-        soup = BeautifulSoup(content, "lxml")
+        """Parse a 13F information table (XML) into holdings dicts.
 
-        # Try XML format first (most common for 13F)
+        Uses the proper XML parser to handle SEC infoTable entries.
+        """
+        holdings: list[dict[str, Any]] = []
+
+        # ── Try with proper XML parser first ──
+        try:
+            soup = BeautifulSoup(content, "xml")
+            info_entries = soup.find_all("infoTable")
+            if info_entries:
+                for entry in info_entries:
+                    holding = self._parse_xml_entry(entry)
+                    if holding and holding.get("ticker"):
+                        holdings.append(holding)
+                if holdings:
+                    logger.info(
+                        "[SEC 13F] XML parser found %d holdings",
+                        len(holdings),
+                    )
+                    return holdings
+        except Exception as e:
+            logger.debug("[SEC 13F] XML parser failed: %s", e)
+
+        # ── Fallback: HTML parser with regex tag matching ──
+        soup = BeautifulSoup(content, "lxml")
         info_entries = soup.find_all(re.compile(r"infotable", re.IGNORECASE))
         if info_entries:
             for entry in info_entries:
@@ -389,7 +523,7 @@ class SEC13FCollector:
                     holdings.append(holding)
             return holdings
 
-        # Fallback: try HTML table format
+        # ── Fallback: HTML table format ──
         rows = soup.find_all("tr")
         for row in rows:
             cells = row.find_all("td")
@@ -402,6 +536,7 @@ class SEC13FCollector:
 
     def _parse_xml_entry(self, entry: Any) -> dict[str, Any] | None:
         """Parse a single <infoTable> XML entry."""
+
         def _get_text(tag_name: str) -> str:
             tag = entry.find(re.compile(tag_name, re.IGNORECASE))
             return tag.get_text(strip=True) if tag else ""
@@ -465,12 +600,14 @@ class SEC13FCollector:
             return None
 
     def _cusip_to_ticker(self, cusip: str, name: str, title: str) -> str:
-        """Best-effort CUSIP/name → ticker symbol resolution.
+        """Best-effort CUSIP/name -> ticker symbol resolution.
 
-        Uses a built-in mapping of well-known CUSIPs and falls back
-        to extracting ticker patterns from the issuer name.
+        Strategy:
+        1. Check hardcoded CUSIP map (most common large-cap)
+        2. Check company name map (well-known names)
+        3. Use yfinance CUSIP lookup as dynamic fallback
         """
-        # Well-known CUSIP → ticker mapping (top holdings)
+        # Well-known CUSIP -> ticker mapping (top holdings)
         cusip_map: dict[str, str] = {
             "594918104": "MSFT",
             "037833100": "AAPL",
@@ -498,28 +635,121 @@ class SEC13FCollector:
             "260557103": "DOW",
             "111320107": "BA",
             "09247X101": "BLK",
+            # Additional frequently held stocks
+            "02005N100": "ALLY",
+            "172967424": "C",
+            "084670702": "BRK-B",
+            "78462F103": "SPY",
+            "464287655": "IWM",
+            "808513105": "SCHW",
+            "369604103": "GE",
+            "459200101": "IBM",
+            "31620M106": "FANG",
+            "48203R104": "JNPR",
+            "585055106": "MDT",
+            "571903202": "MA",
+            "00206R102": "T",
+            "92343V104": "VZ",
+            "12504L109": "CSIQ",
+            "002824100": "ABT",
+            "026874784": "AIG",
+            "00287Y109": "ABBV",
+            "718172109": "PFE",
+            "68389X105": "ORCL",
+            "11135F101": "CRM",
+            "64110L106": "NFLX",
+            "007903107": "AMD",
+            "458140100": "INTC",
+            "747525103": "QCOM",
+            "70450Y103": "PYPL",
+            "191216100": "KO",
+            "713448108": "PEP",
+            "166764100": "CVX",
+            "30231G102": "XOM",
         }
 
         clean_cusip = cusip.strip()
         if clean_cusip in cusip_map:
             return cusip_map[clean_cusip]
 
-        # Try to extract from issuer name (e.g., "APPLE INC" → search via heuristics)
-        # Use common company name → ticker shortcuts
+        # Try to extract from issuer name (e.g., "APPLE INC" -> search via heuristics)
         name_map: dict[str, str] = {
-            "APPLE": "AAPL", "MICROSOFT": "MSFT", "AMAZON": "AMZN",
-            "ALPHABET": "GOOGL", "GOOGLE": "GOOGL", "META PLATFORMS": "META",
-            "FACEBOOK": "META", "NVIDIA": "NVDA", "TESLA": "TSLA",
-            "BERKSHIRE": "BRK-B", "JPMORGAN": "JPM", "JOHNSON": "JNJ",
-            "UNITEDHEALTH": "UNH", "VISA": "V", "PROCTER": "PG",
-            "ELI LILLY": "LLY", "MASTERCARD": "MA", "WALMART": "WMT",
-            "BROADCOM": "AVGO", "COSTCO": "COST", "CISCO": "CSCO",
-            "ABBVIE": "ABBV", "PFIZER": "PFE", "ORACLE": "ORCL",
-            "SALESFORCE": "CRM", "NETFLIX": "NFLX", "ADOBE": "ADBE",
-            "AMD": "AMD", "INTEL": "INTC", "QUALCOMM": "QCOM",
-            "PAYPAL": "PYPL", "BOEING": "BA", "DISNEY": "DIS",
-            "COCA-COLA": "KO", "PEPSICO": "PEP", "MERCK": "MRK",
-            "CHEVRON": "CVX", "EXXON": "XOM",
+            "APPLE": "AAPL",
+            "MICROSOFT": "MSFT",
+            "AMAZON": "AMZN",
+            "ALPHABET": "GOOGL",
+            "GOOGLE": "GOOGL",
+            "META PLATFORMS": "META",
+            "FACEBOOK": "META",
+            "NVIDIA": "NVDA",
+            "TESLA": "TSLA",
+            "BERKSHIRE": "BRK-B",
+            "JPMORGAN": "JPM",
+            "JOHNSON": "JNJ",
+            "UNITEDHEALTH": "UNH",
+            "VISA": "V",
+            "PROCTER": "PG",
+            "ELI LILLY": "LLY",
+            "MASTERCARD": "MA",
+            "WALMART": "WMT",
+            "BROADCOM": "AVGO",
+            "COSTCO": "COST",
+            "CISCO": "CSCO",
+            "ABBVIE": "ABBV",
+            "PFIZER": "PFE",
+            "ORACLE": "ORCL",
+            "SALESFORCE": "CRM",
+            "NETFLIX": "NFLX",
+            "ADOBE": "ADBE",
+            "AMD": "AMD",
+            "INTEL": "INTC",
+            "QUALCOMM": "QCOM",
+            "PAYPAL": "PYPL",
+            "BOEING": "BA",
+            "DISNEY": "DIS",
+            "COCA-COLA": "KO",
+            "PEPSICO": "PEP",
+            "MERCK": "MRK",
+            "CHEVRON": "CVX",
+            "EXXON": "XOM",
+            "ALLY": "ALLY",
+            "GENERAL ELECTRIC": "GE",
+            "GENERAL MOTORS": "GM",
+            "CITIGROUP": "C",
+            "BANK OF AMERICA": "BAC",
+            "WELLS FARGO": "WFC",
+            "GOLDMAN": "GS",
+            "MORGAN STANLEY": "MS",
+            "COCA COLA": "KO",
+            "HOME DEPOT": "HD",
+            "MCDONALD": "MCD",
+            "NIKE": "NKE",
+            "STARBUCKS": "SBUX",
+            "UBER": "UBER",
+            "AIRBNB": "ABNB",
+            "SNOWFLAKE": "SNOW",
+            "PALANTIR": "PLTR",
+            "CROWDSTRIKE": "CRWD",
+            "DATADOG": "DDOG",
+            "SERVICENOW": "NOW",
+            "SHOPIFY": "SHOP",
+            "ADVANCED MICRO": "AMD",
+            "TAIWAN SEMI": "TSM",
+            "ASML": "ASML",
+            "CATERPILLAR": "CAT",
+            "DEERE": "DE",
+            "LOCKHEED": "LMT",
+            "RAYTHEON": "RTX",
+            "AMERICAN EXPRESS": "AXP",
+            "CAPITAL ONE": "COF",
+            "T-MOBILE": "TMUS",
+            "VERIZON": "VZ",
+            "AT&T": "T",
+            "COMCAST": "CMCSA",
+            "TARGET": "TGT",
+            "FEDEX": "FDX",
+            "SCHWAB": "SCHW",
+            "BLACKROCK": "BLK",
         }
 
         upper_name = name.upper()
@@ -527,7 +757,38 @@ class SEC13FCollector:
             if pattern in upper_name:
                 return tick
 
-        # Last resort: return empty (will be filtered out)
+        # NOTE: yfinance fallback removed — it was making thousands of slow
+        # network calls per filer (e.g., Elliott has 34K holdings). The
+        # hardcoded CUSIP + name maps cover all major stocks. Unknown
+        # CUSIPs return empty string and are filtered out.
+        return ""
+
+    @staticmethod
+    def _name_to_ticker_yf(name: str) -> str:
+        """Try to resolve company name to ticker via yfinance search."""
+        try:
+            import yfinance as yf
+
+            # Simplify name for search (remove "INC", "CORP", etc.)
+            search_name = (
+                name.upper()
+                .replace(" INC", "")
+                .replace(" CORP", "")
+                .replace(" LTD", "")
+                .replace(" LLC", "")
+                .replace(" CO", "")
+                .replace("  ", " ")
+                .strip()
+            )
+            if len(search_name) < 3:
+                return ""
+            # Use yfinance search
+            results = yf.Search(search_name)
+            if hasattr(results, "quotes") and results.quotes:
+                # Return the first match's symbol
+                return results.quotes[0].get("symbol", "")
+        except Exception:
+            pass
         return ""
 
     # ── Private: DB queries ──────────────────────────────────────────

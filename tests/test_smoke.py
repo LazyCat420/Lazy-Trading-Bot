@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 
 class TestImports:
@@ -10,7 +9,7 @@ class TestImports:
 
     def test_config(self) -> None:
         from app.config import settings
-        assert settings.LLM_PROVIDER in ("ollama", "openai")
+        assert settings.LLM_PROVIDER in ("ollama", "openai", "lmstudio")
         assert settings.DB_PATH is not None
         assert settings.PROMPTS_DIR.exists()
 
@@ -29,12 +28,7 @@ class TestImports:
 
     def test_market_data_models(self) -> None:
         from app.models.market_data import (
-            FundamentalSnapshot,
-            FinancialHistoryRow,
-            NewsArticle,
             OHLCVRow,
-            TechnicalRow,
-            YouTubeTranscript,
         )
         # Verify models can be instantiated
         from datetime import date
@@ -47,9 +41,6 @@ class TestImports:
 
     def test_agent_report_models(self) -> None:
         from app.models.agent_reports import (
-            FundamentalReport,
-            RiskReport,
-            SentimentReport,
             TechnicalReport,
         )
         report = TechnicalReport(
@@ -64,7 +55,7 @@ class TestImports:
         assert 0 <= report.confidence <= 1
 
     def test_decision_model(self) -> None:
-        from app.models.decision import FinalDecision, RuleEvaluation
+        from app.models.decision import RuleEvaluation
         rule = RuleEvaluation(
             rule_text="RSI between 40-65",
             is_met=True,
@@ -76,7 +67,7 @@ class TestImports:
     def test_llm_service(self) -> None:
         from app.services.llm_service import LLMService
         llm = LLMService()
-        assert llm.provider in ("ollama", "openai")
+        assert llm.provider in ("ollama", "openai", "lmstudio")
 
         # Test JSON cleaning
         raw = '```json\n{"signal": "BUY"}\n```'
@@ -101,8 +92,7 @@ class TestImports:
         assert ra.prompt_path.exists()
 
     def test_engine(self) -> None:
-        from app.engine.aggregator import Aggregator, PooledAnalysis
-        from app.engine.rules_engine import RulesEngine
+        from app.engine.aggregator import Aggregator
 
         agg = Aggregator()
         pooled = agg.pool("NVDA")

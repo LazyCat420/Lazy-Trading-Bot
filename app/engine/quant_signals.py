@@ -518,7 +518,6 @@ class QuantSignalEngine:
             return QuantScorecard(ticker=ticker, computed_at=now, flags=["insufficient_data"])
 
         # Unpack columns
-        opens = [float(r[0]) for r in rows]
         highs = [float(r[1]) for r in rows]
         lows = [float(r[2]) for r in rows]
         closes = [float(r[3]) for r in rows]

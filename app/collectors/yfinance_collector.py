@@ -281,16 +281,18 @@ class YFinanceCollector:
         """Fetch multi-year income statement data from yfinance."""
         logger.info("Collecting financial history for %s", ticker)
 
-        # Daily guard — skip if already collected today
+        # Weekly guard — financial statements only change quarterly,
+        # so re-fetching daily is wasteful
         db = get_db()
-        today = date.today()
         existing = db.execute(
-            "SELECT COUNT(*) FROM financial_history WHERE ticker = ? "
-            "AND year = EXTRACT(YEAR FROM CAST(? AS DATE))",
-            [ticker, today],
+            "SELECT COUNT(*), MAX(year) FROM financial_history WHERE ticker = ?",
+            [ticker],
         ).fetchone()
-        if existing and existing[0] > 0:
-            logger.info("Financial history for %s already has current-year data, skipping", ticker)
+        if existing and existing[0] >= 4:
+            logger.info(
+                "Financial history for %s already has %d years (latest: %s), skipping",
+                ticker, existing[0], existing[1],
+            )
             rows_raw = db.execute(
                 "SELECT ticker, year, revenue, net_income, gross_margin, "
                 "operating_margin, net_margin, eps "
@@ -374,16 +376,17 @@ class YFinanceCollector:
         """Fetch multi-year balance sheet data from yfinance."""
         logger.info("Collecting balance sheet for %s", ticker)
 
-        # Daily guard — skip if already collected today
+        # Weekly guard — balance sheets only change quarterly
         db = get_db()
-        today = date.today()
         existing = db.execute(
-            "SELECT COUNT(*) FROM balance_sheet WHERE ticker = ? "
-            "AND year = EXTRACT(YEAR FROM CAST(? AS DATE))",
-            [ticker, today],
+            "SELECT COUNT(*), MAX(year) FROM balance_sheet WHERE ticker = ?",
+            [ticker],
         ).fetchone()
-        if existing and existing[0] > 0:
-            logger.info("Balance sheet for %s already has current-year data, skipping", ticker)
+        if existing and existing[0] >= 4:
+            logger.info(
+                "Balance sheet for %s already has %d years (latest: %s), skipping",
+                ticker, existing[0], existing[1],
+            )
             rows_raw = db.execute(
                 "SELECT ticker, year, total_assets, total_liabilities, "
                 "stockholders_equity, current_assets, current_liabilities, "
@@ -498,16 +501,17 @@ class YFinanceCollector:
         """Fetch multi-year cash flow statement data from yfinance."""
         logger.info("Collecting cash flow data for %s", ticker)
 
-        # Daily guard — skip if already collected today
+        # Weekly guard — cash flow statements only change quarterly
         db = get_db()
-        today = date.today()
         existing = db.execute(
-            "SELECT COUNT(*) FROM cash_flows WHERE ticker = ? "
-            "AND year = EXTRACT(YEAR FROM CAST(? AS DATE))",
-            [ticker, today],
+            "SELECT COUNT(*), MAX(year) FROM cash_flows WHERE ticker = ?",
+            [ticker],
         ).fetchone()
-        if existing and existing[0] > 0:
-            logger.info("Cash flow for %s already has current-year data, skipping", ticker)
+        if existing and existing[0] >= 4:
+            logger.info(
+                "Cash flow for %s already has %d years (latest: %s), skipping",
+                ticker, existing[0], existing[1],
+            )
             rows_raw = db.execute(
                 "SELECT ticker, year, operating_cashflow, capital_expenditures, "
                 "free_cashflow, financing_cashflow, investing_cashflow, "

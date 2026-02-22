@@ -149,18 +149,22 @@ class PipelineService:
         news_articles: list = []
 
         # ----------------------------------------------------------
+        # Helper for parallel steps
+        # ----------------------------------------------------------
+        async def _step(name: str, coro):  # noqa: ANN001
+            try:
+                data = await coro
+                return name, data, None
+            except Exception as exc:
+                return name, None, exc
+
+        # ----------------------------------------------------------
         # Parallel batch: Steps 1–9 run concurrently when possible
         # (Steps 4 & 10 depend on price data — they run after)
         # ----------------------------------------------------------
         if mode == "full":
             # All 9 yfinance steps can run in parallel (daily guards
             # ensure only new data hits Yahoo).
-            async def _step(name: str, coro):  # noqa: ANN001
-                try:
-                    data = await coro
-                    return name, data, None
-                except Exception as exc:
-                    return name, None, exc
 
             parallel_tasks = [
                 _step("price_history", self.yf_collector.collect_price_history(ticker)),
@@ -342,77 +346,85 @@ class PipelineService:
                 result.errors.append(f"Technicals: {e}")
                 logger.error("Step 4 (Technicals) failed: %s", e)
 
-        # Step 10: Risk Metrics (depends on price data)
-        if mode != "news" and price_history:
-            try:
-                risk_metrics = await self.risk_computer.compute(ticker)
-                result.status["risk_metrics"] = {"status": "ok"}
-            except Exception as e:
-                result.status["risk_metrics"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"Risk metrics: {e}")
-                logger.error("Step 10 (Risk Metrics) failed: %s", e)
-
-        # Step 10b: Quant Scorecard (PhD-level signals from Phase 1A)
+        # ----------------------------------------------------------
+        # Parallel batch: Steps 10, 10b, 11, 12 run concurrently
+        # (All depend only on price_history which is already available)
+        # ----------------------------------------------------------
         quant_scorecard = None
+
         if mode != "news" and price_history:
-            try:
-                quant_scorecard = QuantSignalEngine().compute(ticker)
+            # Steps 10 + 10b run in parallel (both pure-compute, no I/O conflict)
+            async def _step_risk():
+                return await self.risk_computer.compute(ticker)
+
+            async def _step_quant():
+                return QuantSignalEngine().compute(ticker)
+
+            logger.info("Running Steps 10+10b in parallel for %s …", ticker)
+            risk_result, quant_result = await asyncio.gather(
+                _step("risk_metrics", _step_risk()),
+                _step("quant_scorecard", _step_quant()),
+            )
+            # Unpack risk metrics
+            r_name, r_data, r_exc = risk_result
+            if r_exc:
+                result.status["risk_metrics"] = {"status": "error", "error": str(r_exc)}
+                result.errors.append(f"Risk metrics: {r_exc}")
+                logger.error("Step 10 (Risk Metrics) failed: %s", r_exc)
+            else:
+                risk_metrics = r_data
+                result.status["risk_metrics"] = {"status": "ok"}
+            # Unpack quant scorecard
+            q_name, q_data, q_exc = quant_result
+            if q_exc:
+                result.status["quant_scorecard"] = {"status": "error", "error": str(q_exc)}
+                result.errors.append(f"Quant scorecard: {q_exc}")
+                logger.error("Step 10b (Quant Scorecard) failed: %s", q_exc)
+            else:
+                quant_scorecard = q_data
                 result.status["quant_scorecard"] = {
                     "status": "ok",
-                    "flags": quant_scorecard.flags,
+                    "flags": quant_scorecard.flags if quant_scorecard else [],
                 }
-                logger.info(
-                    "📊 Quant scorecard for %s: %d flags",
-                    ticker, len(quant_scorecard.flags),
-                )
-            except Exception as e:
-                result.status["quant_scorecard"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"Quant scorecard: {e}")
-                logger.error("Step 10b (Quant Scorecard) failed: %s", e)
+                if quant_scorecard:
+                    logger.info(
+                        "📊 Quant scorecard for %s: %d flags",
+                        ticker, len(quant_scorecard.flags),
+                    )
 
-        # Step 11: News — scrape fresh, then retrieve ALL historical
+        # Steps 11 + 12: News and YouTube scraping run in parallel
         if mode in ("full", "news"):
-            try:
+            async def _step_news():
                 await self.news_collector.collect(ticker)
-                result.status["news_scrape"] = {"status": "ok"}
-            except Exception as e:
-                result.status["news_scrape"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"News scrape: {e}")
-                logger.error("Step 11a (News Scrape) failed: %s", e)
+                return await self.news_collector.get_all_historical(ticker)
 
-            # Always retrieve ALL historical news for agent context
-            try:
-                news = await self.news_collector.get_all_historical(ticker)
+            async def _step_youtube():
+                await self.yt_collector.collect(ticker)
+                return await self.yt_collector.get_all_historical(ticker)
+
+            logger.info("Running Steps 11+12 (News+YouTube) in parallel for %s …", ticker)
+            news_result, yt_result = await asyncio.gather(
+                _step("news", _step_news()),
+                _step("youtube", _step_youtube()),
+            )
+            # Unpack news
+            n_name, n_data, n_exc = news_result
+            if n_exc:
+                result.status["news"] = {"status": "error", "error": str(n_exc)}
+                result.errors.append(f"News: {n_exc}")
+                logger.error("Step 11 (News) failed: %s", n_exc)
+            else:
+                news = n_data or []
                 result.status["news"] = {"status": "ok", "articles": len(news)}
-            except Exception as e:
-                result.status["news"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"News retrieval: {e}")
-                logger.error("Step 11b (News Retrieval) failed: %s", e)
-
-        # Step 12: YouTube — scrape 24h only, then retrieve ALL historical
-        if mode in ("full", "news"):
-            try:
-                new_transcripts = await self.yt_collector.collect(ticker)
-                result.status["youtube_scrape"] = {
-                    "status": "ok",
-                    "new_videos": len(new_transcripts),
-                }
-            except Exception as e:
-                result.status["youtube_scrape"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"YouTube scrape: {e}")
-                logger.error("Step 12a (YouTube Scrape) failed: %s", e)
-
-            # Always retrieve ALL historical transcripts for agent context
-            try:
-                yt_transcripts = await self.yt_collector.get_all_historical(ticker)
-                result.status["youtube"] = {
-                    "status": "ok",
-                    "total_transcripts": len(yt_transcripts),
-                }
-            except Exception as e:
-                result.status["youtube"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"YouTube retrieval: {e}")
-                logger.error("Step 12b (YouTube Retrieval) failed: %s", e)
+            # Unpack YouTube
+            y_name, y_data, y_exc = yt_result
+            if y_exc:
+                result.status["youtube"] = {"status": "error", "error": str(y_exc)}
+                result.errors.append(f"YouTube: {y_exc}")
+                logger.error("Step 12 (YouTube) failed: %s", y_exc)
+            else:
+                yt_transcripts = y_data or []
+                result.status["youtube"] = {"status": "ok", "total_transcripts": len(yt_transcripts)}
 
         # Step 13: Fetch Industry Peers and their Fundamentals
         if mode in ("full", "data"):
@@ -435,55 +447,32 @@ class PipelineService:
             logger.info("Data-only mode complete for %s", ticker)
             return result
 
-        # Step 14: Smart Money data (13F + Congressional trades)
+        # Step 14: Smart Money data (13F + Congress + RSS News) — parallel
         if mode in ("full", "quick"):
-            try:
-                institutional_holders = await self.sec_13f.get_holdings_for_ticker(ticker)
-                result.status["institutional_holders"] = {
-                    "status": "ok",
-                    "holders": len(institutional_holders),
-                }
-                logger.info(
-                    "Step 14a: %d institutional holders for %s",
-                    len(institutional_holders), ticker,
-                )
-            except Exception as e:
-                result.status["institutional_holders"] = {
-                    "status": "error", "error": str(e),
-                }
-                logger.error("Step 14a (Institutional Holders) failed: %s", e)
-
-            try:
-                congress_trades = await self.congress.get_trades_for_ticker(ticker)
-                result.status["congress_trades"] = {
-                    "status": "ok",
-                    "trades": len(congress_trades),
-                }
-                logger.info(
-                    "Step 14b: %d congressional trades for %s",
-                    len(congress_trades), ticker,
-                )
-            except Exception as e:
-                result.status["congress_trades"] = {
-                    "status": "error", "error": str(e),
-                }
-                logger.error("Step 14b (Congressional Trades) failed: %s", e)
-
-            try:
-                news_articles = await self.rss_news.get_articles_for_ticker(ticker)
-                result.status["news_articles"] = {
-                    "status": "ok",
-                    "articles": len(news_articles),
-                }
-                logger.info(
-                    "Step 14c: %d news articles for %s",
-                    len(news_articles), ticker,
-                )
-            except Exception as e:
-                result.status["news_articles"] = {
-                    "status": "error", "error": str(e),
-                }
-                logger.error("Step 14c (News Articles) failed: %s", e)
+            logger.info("Running Steps 14a+14b+14c (Smart Money) in parallel for %s …", ticker)
+            sm_results = await asyncio.gather(
+                _step("institutional_holders", self.sec_13f.get_holdings_for_ticker(ticker)),
+                _step("congress_trades", self.congress.get_trades_for_ticker(ticker)),
+                _step("news_articles", self.rss_news.get_articles_for_ticker(ticker)),
+            )
+            for sm_name, sm_data, sm_exc in sm_results:
+                if sm_exc:
+                    result.status[sm_name] = {"status": "error", "error": str(sm_exc)}
+                    result.errors.append(f"{sm_name}: {sm_exc}")
+                    logger.error("Step 14 (%s) failed: %s", sm_name, sm_exc)
+                else:
+                    if sm_name == "institutional_holders":
+                        institutional_holders = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "holders": len(institutional_holders)}
+                        logger.info("Step 14a: %d institutional holders for %s", len(institutional_holders), ticker)
+                    elif sm_name == "congress_trades":
+                        congress_trades = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "trades": len(congress_trades)}
+                        logger.info("Step 14b: %d congressional trades for %s", len(congress_trades), ticker)
+                    elif sm_name == "news_articles":
+                        news_articles = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "articles": len(news_articles)}
+                        logger.info("Step 14c: %d news articles for %s", len(news_articles), ticker)
 
         # Clear the ticker cache after data collection
         YFinanceCollector.clear_cache(ticker)
@@ -877,7 +866,50 @@ class PipelineService:
             await _emit({"type": "done", "pipeline_status": result.status, "errors": result.errors})
             return result
 
+        # Step 14: Smart Money data (parallel) — same as non-streaming run()
+        institutional_holders: list = []
+        congress_trades: list = []
+        news_articles: list = []
+        if mode in ("full", "quick"):
+            logger.info("Running Steps 14a+14b+14c (Smart Money) in parallel for %s …", ticker)
+            sm_results = await asyncio.gather(
+                _tracked_step("institutional_holders", self.sec_13f.get_holdings_for_ticker(ticker)),
+                _tracked_step("congress_trades", self.congress.get_trades_for_ticker(ticker)),
+                _tracked_step("news_articles", self.rss_news.get_articles_for_ticker(ticker)),
+            )
+            for sm_name, sm_data, sm_exc in sm_results:
+                if sm_exc:
+                    result.status[sm_name] = {"status": "error", "error": str(sm_exc)}
+                    result.errors.append(f"{sm_name}: {sm_exc}")
+                else:
+                    if sm_name == "institutional_holders":
+                        institutional_holders = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "holders": len(institutional_holders)}
+                    elif sm_name == "congress_trades":
+                        congress_trades = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "trades": len(congress_trades)}
+                    elif sm_name == "news_articles":
+                        news_articles = sm_data or []
+                        result.status[sm_name] = {"status": "ok", "articles": len(news_articles)}
+
         YFinanceCollector.clear_cache(ticker)
+
+        # ── Data Distillation (same as non-streaming run) ──
+        quant_scorecard = None
+        if price_history:
+            try:
+                quant_scorecard = QuantSignalEngine().compute(ticker)
+            except Exception as e:
+                logger.error("Quant scorecard (streaming) failed: %s", e)
+
+        distiller = DataDistiller()
+        distilled_price = distiller.distill_price_action(
+            price_history, technicals, quant_scorecard
+        )
+        distilled_fundamentals = distiller.distill_fundamentals(
+            fundamentals, fin_history, balance_sheet, cashflow, quant_scorecard
+        )
+        distilled_risk = distiller.distill_risk(risk_metrics, quant_scorecard)
 
         # ── Phase 2: Agent Analysis ──
         risk_params_path = settings.USER_CONFIG_DIR / "risk_params.json"
@@ -885,20 +917,36 @@ class PipelineService:
         if risk_params_path.exists():
             risk_params = json.loads(risk_params_path.read_text(encoding="utf-8"))
 
-        ta_context = {"price_history": price_history, "technicals": technicals}
+        ta_context = {
+            "price_history": price_history,
+            "technicals": technicals,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_price,
+        }
         fa_context = {
             "fundamentals": fundamentals, "financial_history": fin_history,
             "balance_sheet": balance_sheet, "cashflow": cashflow,
             "analyst_data": analyst_data, "insider_activity": insider_activity,
             "earnings_calendar": earnings_calendar,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_fundamentals,
             "industry_peers": industry_peers,
             "peer_fundamentals": peer_fundamentals,
+            "institutional_holders": institutional_holders,
         }
-        sa_context = {"news": news, "transcripts": yt_transcripts}
+        sa_context = {
+            "news": news,
+            "transcripts": yt_transcripts,
+            "institutional_holders": institutional_holders,
+            "congress_trades": congress_trades,
+            "news_articles": news_articles,
+        }
         ra_context = {
             "price_history": price_history, "technicals": technicals,
             "fundamentals": fundamentals, "risk_metrics": risk_metrics,
             "risk_params": risk_params,
+            "quant_scorecard": quant_scorecard,
+            "distilled_analysis": distilled_risk,
         }
 
         def _dump_report(report: Any) -> dict | None:

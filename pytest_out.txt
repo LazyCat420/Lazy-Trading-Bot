@@ -1,78 +1,236 @@
-﻿============================= test session starts =============================
-platform win32 -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- D:\Github\Lazy-Trading-Bot\venv\Scripts\python.exe
-cachedir: .pytest_cache
+1. Importing database...
+   FAILED: ImportError: cannot import name 'init_db' from 'app.database' (D:\Github\Lazy-Trading-Bot\app\database.py)
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0
 rootdir: D:\Github\Lazy-Trading-Bot
 configfile: pytest.ini
 plugins: anyio-4.12.1, asyncio-1.3.0
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 67 items
+collected 74 items / 7 errors
 
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_flat_valid_response_returns_as_is PASSED [  1%]
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_single_wrapper_unwrap PASSED [  2%]
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_double_nested_unwrap PASSED [  4%]
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_completely_wrong_returns_none PASSED [  5%]
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_empty_dict_returns_none PASSED [  7%]
-tests/test_agent_unwrap.py::TestTryUnwrapNested::test_depth_limit_prevents_infinite_recursion PASSED [  8%]
-tests/test_agent_unwrap.py::TestUnwrapValidation::test_unwrapped_fundamental_validates PASSED [ 10%]
-tests/test_agent_unwrap.py::TestUnwrapValidation::test_unwrapped_sentiment_validates PASSED [ 11%]
-tests/test_data_pipeline.py::TestPhase8DBTables::test_all_new_tables_exist PASSED [ 13%]
-tests/test_data_pipeline.py::TestPhase8DBTables::test_news_articles_has_source_column PASSED [ 14%]
-tests/test_data_pipeline.py::TestPhase8DBTables::test_technicals_has_expanded_columns PASSED [ 16%]
-tests/test_data_pipeline.py::TestYouTube24hFilter::test_curated_channels_exist PASSED [ 17%]
-tests/test_data_pipeline.py::TestYouTube24hFilter::test_no_truncation_constant PASSED [ 19%]
-tests/test_data_pipeline.py::TestYouTube24hFilter::test_full_transcript_stored PASSED [ 20%]
-tests/test_data_pipeline.py::TestYouTube24hFilter::test_24h_filter_skips_old_videos PASSED [ 22%]
-tests/test_data_pipeline.py::TestYouTubeHistoricalRetrieval::test_insert_and_retrieve_transcripts PASSED [ 23%]
-tests/test_data_pipeline.py::TestYouTubeHistoricalRetrieval::test_accumulation_across_runs PASSED [ 25%]
-tests/test_data_pipeline.py::TestNewsHistoricalRetrieval::test_insert_and_retrieve_news PASSED [ 26%]
-tests/test_data_pipeline.py::TestNewsHistoricalRetrieval::test_news_accumulation PASSED [ 28%]
-tests/test_data_pipeline.py::TestAgentContextHistoricalData::test_sentiment_agent_formats_multi_source_news PASSED [ 29%]
-tests/test_data_pipeline.py::TestAgentContextHistoricalData::test_sentiment_agent_handles_empty_data PASSED [ 31%]
-tests/test_data_pipeline.py::TestRiskComputer::test_instantiation PASSED [ 32%]
-tests/test_data_pipeline.py::TestRiskComputer::test_risk_metrics_dataclass PASSED [ 34%]
-tests/test_data_pipeline.py::TestFundamentalAgentNewData::test_formats_balance_sheet_data PASSED [ 35%]
-tests/test_data_pipeline.py::TestFundamentalAgentNewData::test_formats_analyst_data PASSED [ 37%]
-tests/test_data_pipeline.py::TestVTTParsing::test_basic_vtt PASSED       [ 38%]
-tests/test_data_pipeline.py::TestVTTParsing::test_dedup_overlapping_segments PASSED [ 40%]
-tests/test_data_pipeline.py::TestVTTParsing::test_empty_vtt PASSED       [ 41%]
-tests/test_sentiment_validation.py::TestSentimentReportValidation::test_valid_report PASSED [ 43%]
-tests/test_sentiment_validation.py::TestSentimentReportValidation::test_clamped_score PASSED [ 44%]
-tests/test_sentiment_validation.py::TestSentimentReportValidation::test_invalid_sentiment_enum_defaults_to_neutral PASSED [ 46%]
-tests/test_sentiment_validation.py::TestSentimentReportValidation::test_wrong_structure_fails_validation PASSED [ 47%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_get_required_keys PASSED [ 49%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_diagnose_wrong_structure PASSED [ 50%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_diagnose_correct_structure_returns_none PASSED [ 52%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_diagnose_invalid_json_returns_none PASSED [ 53%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_fallback_report PASSED [ 55%]
-tests/test_sentiment_validation.py::TestBaseAgentRescueHelpers::test_rescue_prompt_contains_error_info PASSED [ 56%]
-tests/test_smoke.py::TestImports::test_config PASSED                     [ 58%]
-tests/test_smoke.py::TestImports::test_database PASSED                   [ 59%]
-tests/test_smoke.py::TestImports::test_market_data_models PASSED         [ 61%]
-tests/test_smoke.py::TestImports::test_agent_report_models PASSED        [ 62%]
-tests/test_smoke.py::TestImports::test_decision_model PASSED             [ 64%]
-tests/test_smoke.py::TestImports::test_llm_service PASSED                [ 65%]
-tests/test_smoke.py::TestImports::test_agents PASSED                     [ 67%]
-tests/test_smoke.py::TestImports::test_engine PASSED                     [ 68%]
-tests/test_smoke.py::TestImports::test_user_config_exists PASSED         [ 70%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_price_history_live PASSED [ 71%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_fundamentals_live PASSED [ 73%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_financial_history_live PASSED [ 74%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_balance_sheet_live PASSED [ 76%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_cash_flow_live PASSED [ 77%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_yfinance_analyst_data_live PASSED [ 79%]
-tests/test_yfinance_live.py::TestLiveDataCollection::test_google_news_live PASSED [ 80%]
-tests/test_youtube_collector.py::TestVTTParsing::test_basic_vtt PASSED   [ 82%]
-tests/test_youtube_collector.py::TestVTTParsing::test_dedup_overlapping_segments PASSED [ 83%]
-tests/test_youtube_collector.py::TestVTTParsing::test_strips_html_tags PASSED [ 85%]
-tests/test_youtube_collector.py::TestVTTParsing::test_empty_vtt PASSED   [ 86%]
-tests/test_youtube_collector.py::TestVTTParsing::test_skips_metadata_lines PASSED [ 88%]
-tests/test_youtube_collector.py::TestNoTruncation::test_full_transcript_preserved PASSED [ 89%]
-tests/test_youtube_collector.py::TestNoTruncation::test_short_transcript_not_modified PASSED [ 91%]
-tests/test_youtube_collector.py::TestSearchQueries::test_has_multiple_queries PASSED [ 92%]
-tests/test_youtube_collector.py::TestSearchQueries::test_queries_use_ticker_placeholder PASSED [ 94%]
-tests/test_youtube_collector.py::TestSearchQueries::test_curated_channels_list PASSED [ 95%]
-tests/test_youtube_collector.py::TestGetTranscriptTiering::test_library_first_succeeds PASSED [ 97%]
-tests/test_youtube_collector.py::TestGetTranscriptTiering::test_fallback_to_ytdlp PASSED [ 98%]
-tests/test_youtube_collector.py::TestGetTranscriptTiering::test_both_fail_returns_empty PASSED [100%]
+<Dir Lazy-Trading-Bot>
+  <Package tests>
+    <Module test_agent_unwrap.py>
+      <Class TestTryUnwrapNested>
+        <Function test_flat_valid_response_returns_as_is>
+        <Function test_single_wrapper_unwrap>
+        <Function test_double_nested_unwrap>
+        <Function test_completely_wrong_returns_none>
+        <Function test_empty_dict_returns_none>
+        <Function test_depth_limit_prevents_infinite_recursion>
+      <Class TestUnwrapValidation>
+        <Function test_unwrapped_fundamental_validates>
+        <Function test_unwrapped_sentiment_validates>
+    <Module test_clear_data.py>
+      <Class TestClearData>
+        <Function test_clear_returns_cleared>
+        <Function test_clear_handles_error>
+        <Function test_clear_partial>
+        <Function test_clear_empty_tables>
+    <Module test_congress.py>
+      <Class TestCongressCSRF>
+        <Function test_csrf_extraction>
+      <Class TestCongressReportParsing>
+        <Function test_parse_report_with_trades>
+        <Function test_parse_report_pdf_skipped>
+        <Function test_parse_report_short_row>
+      <Class TestCongressDBIntegration>
+        <Function test_tickers_from_db>
+        <Function test_daily_guard>
+        <Function test_get_trades_for_ticker>
+        <Function test_save_trades>
+      <Class TestCongressModels>
+        <Function test_scored_ticker_congress_source>
+        <Function test_scored_ticker_sec_13f_source>
+        <Function test_scored_ticker_multi_source>
+    <Module test_data_pipeline.py>
+      <Class TestPhase8DBTables>
+        <Function test_all_new_tables_exist>
+        <Function test_news_articles_has_source_column>
+        <Function test_technicals_has_expanded_columns>
+      <Class TestYouTube24hFilter>
+        <Function test_curated_channels_exist>
+        <Function test_no_truncation_constant>
+        <Function test_full_transcript_stored>
+        <Coroutine test_24h_filter_skips_old_videos>
+      <Class TestYouTubeHistoricalRetrieval>
+        <Function test_insert_and_retrieve_transcripts>
+        <Function test_accumulation_across_runs>
+      <Class TestNewsHistoricalRetrieval>
+        <Function test_insert_and_retrieve_news>
+        <Function test_news_accumulation>
+      <Class TestAgentContextHistoricalData>
+        <Function test_sentiment_agent_formats_multi_source_news>
+        <Function test_sentiment_agent_handles_empty_data>
+      <Class TestRiskComputer>
+        <Function test_instantiation>
+        <Function test_risk_metrics_dataclass>
+      <Class TestFundamentalAgentNewData>
+        <Function test_formats_balance_sheet_data>
+        <Function test_formats_analyst_data>
+      <Class TestVTTParsing>
+        <Function test_basic_vtt>
+        <Function test_dedup_overlapping_segments>
+        <Function test_empty_vtt>
+    <Module test_discovery.py>
+      <Class TestTickerValidator>
+        <Function test_exclusion_list_rejects_jargon>
+        <Function test_exclusion_list_rejects_common_words>
+        <Function test_length_validation>
+        <Function test_yfinance_valid_ticker>
+        <Function test_yfinance_no_price>
+        <Function test_caching>
+        <Function test_batch_validate>
+      <Class TestRedditCollector>
+        <Function test_extract_tickers_basic>
+        <Function test_extract_tickers_dollar_sign>
+        <Function test_extract_tickers_empty>
+        <Function test_extract_tickers_deduplicates>
+        <Function test_fetch_subreddit_success>
+        <Function test_fetch_subreddit_rate_limit>
+        <Function test_get_thread_data>
+      <Class TestTickerScanner>
+        <Function test_extract_tickers>
+        <Function test_extract_tickers_filters_noise>
+        <Function test_context_snippet>
+        <Function test_scan_no_transcripts>
+        <Function test_scan_with_transcript>
+      <Class TestDiscoveryService>
+        <Function test_merge_scores_basic>
+        <Function test_merge_sorted_by_score>
+        <Function test_save_to_db_inserts>
+      <Class TestDiscoveryModels>
+        <Function test_scored_ticker_defaults>
+        <Function test_discovery_result_defaults>
+        <Function test_scored_ticker_serialization>
+        <Function test_discovery_result_transcript_count>
+        <Function test_discovery_result_transcript_count_default>
+      <Class TestTranscriptCollection>
+        <Function test_collect_transcripts_calls_youtube_collector>
+        <Function test_collect_transcripts_empty_list>
+      <Class TestYouTubeCollectorDiscoveryMode>
+        <Function test_discovery_mode_skips_daily_guard>
+        <Function test_normal_mode_uses_daily_guard>
+INTERNALERROR> Traceback (most recent call last):
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\tests\test_import.py", line 7, in <module>
+INTERNALERROR>     from app.database import get_db, init_db
+INTERNALERROR> ImportError: cannot import name 'init_db' from 'app.database' (D:\Github\Lazy-Trading-Bot\app\database.py)
+INTERNALERROR> 
+INTERNALERROR> During handling of the above exception, another exception occurred:
+INTERNALERROR> 
+INTERNALERROR> Traceback (most recent call last):
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 318, in wrap_session
+INTERNALERROR>     session.exitstatus = doit(config, session) or 0
+INTERNALERROR>                          ~~~~^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 371, in _main
+INTERNALERROR>     config.hook.pytest_collection(session=session)
+INTERNALERROR>     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+INTERNALERROR>     return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+INTERNALERROR>            ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+INTERNALERROR>     return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+INTERNALERROR>            ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 167, in _multicall
+INTERNALERROR>     raise exception
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+INTERNALERROR>     teardown.throw(exception)
+INTERNALERROR>     ~~~~~~~~~~~~~~^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\logging.py", line 788, in pytest_collection
+INTERNALERROR>     return (yield)
+INTERNALERROR>             ^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+INTERNALERROR>     teardown.throw(exception)
+INTERNALERROR>     ~~~~~~~~~~~~~~^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\warnings.py", line 98, in pytest_collection
+INTERNALERROR>     return (yield)
+INTERNALERROR>             ^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+INTERNALERROR>     teardown.throw(exception)
+INTERNALERROR>     ~~~~~~~~~~~~~~^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\config\__init__.py", line 1403, in pytest_collection
+INTERNALERROR>     return (yield)
+INTERNALERROR>             ^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+INTERNALERROR>     res = hook_impl.function(*args)mainloop: caught unexpected SystemExit!
 
-============================= 67 passed in 7.43s ==============================
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 382, in pytest_collection
+INTERNALERROR>     session.perform_collect()
+INTERNALERROR>     ~~~~~~~~~~~~~~~~~~~~~~~^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 857, in perform_collect
+INTERNALERROR>     self.items.extend(self.genitems(node))
+INTERNALERROR>     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 1023, in genitems
+INTERNALERROR>     yield from self.genitems(subnode)
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 1023, in genitems
+INTERNALERROR>     yield from self.genitems(subnode)
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 1020, in genitems
+INTERNALERROR>     rep, duplicate = self._collect_one_node(node, handle_dupes)
+INTERNALERROR>                      ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\main.py", line 883, in _collect_one_node
+INTERNALERROR>     rep = collect_one_node(node)
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\runner.py", line 576, in collect_one_node
+INTERNALERROR>     rep: CollectReport = ihook.pytest_make_collect_report(collector=collector)
+INTERNALERROR>                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+INTERNALERROR>     return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+INTERNALERROR>            ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+INTERNALERROR>     return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+INTERNALERROR>            ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 167, in _multicall
+INTERNALERROR>     raise exception
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 139, in _multicall
+INTERNALERROR>     teardown.throw(exception)
+INTERNALERROR>     ~~~~~~~~~~~~~~^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\capture.py", line 880, in pytest_make_collect_report
+INTERNALERROR>     rep = yield
+INTERNALERROR>           ^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+INTERNALERROR>     res = hook_impl.function(*args)
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\runner.py", line 400, in pytest_make_collect_report
+INTERNALERROR>     call = CallInfo.from_call(
+INTERNALERROR>         collect, "collect", reraise=(KeyboardInterrupt, SystemExit)
+INTERNALERROR>     )
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\runner.py", line 353, in from_call
+INTERNALERROR>     result: TResult | None = func()
+INTERNALERROR>                              ~~~~^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\runner.py", line 398, in collect
+INTERNALERROR>     return list(collector.collect())
+INTERNALERROR>                 ~~~~~~~~~~~~~~~~~^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\python.py", line 563, in collect
+INTERNALERROR>     self._register_setup_module_fixture()
+INTERNALERROR>     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\python.py", line 576, in _register_setup_module_fixture
+INTERNALERROR>     self.obj, ("setUpModule", "setup_module")
+INTERNALERROR>     ^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\python.py", line 289, in obj
+INTERNALERROR>     self._obj = obj = self._getobj()
+INTERNALERROR>                       ~~~~~~~~~~~~^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\python.py", line 560, in _getobj
+INTERNALERROR>     return importtestmodule(self.path, self.config)
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\python.py", line 507, in importtestmodule
+INTERNALERROR>     mod = import_path(
+INTERNALERROR>         path,
+INTERNALERROR>     ...<2 lines>...
+INTERNALERROR>         consider_namespace_packages=config.getini("consider_namespace_packages"),
+INTERNALERROR>     )
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\pathlib.py", line 587, in import_path
+INTERNALERROR>     importlib.import_module(module_name)
+INTERNALERROR>     ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Miniconda3\Lib\importlib\__init__.py", line 88, in import_module
+INTERNALERROR>     return _bootstrap._gcd_import(name[level:], package, level)
+INTERNALERROR>            ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+INTERNALERROR>   File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+INTERNALERROR>   File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+INTERNALERROR>   File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\_pytest\assertion\rewrite.py", line 197, in exec_module
+INTERNALERROR>     exec(co, module.__dict__)
+INTERNALERROR>     ~~~~^^^^^^^^^^^^^^^^^^^^^
+INTERNALERROR>   File "D:\Github\Lazy-Trading-Bot\tests\test_import.py", line 11, in <module>
+INTERNALERROR>     sys.exit(1)
+INTERNALERROR>     ~~~~~~~~^^^
+INTERNALERROR> SystemExit: 1
+
+=================== 74 tests collected, 7 errors in 52.70s ====================

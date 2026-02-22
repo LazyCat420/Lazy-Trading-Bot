@@ -1,12 +1,15 @@
 """Discovery Service — orchestrates Reddit + YouTube + SEC 13F + Congress + News ticker discovery.
 
-Runs all collectors, merges scores, persists to DuckDB.
+Runs all collectors IN PARALLEL, merges scores, persists to DuckDB.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import time
 from datetime import datetime
+from typing import Any
 
 from app.collectors.congress_collector import CongressCollector
 from app.collectors.reddit_collector import RedditCollector
@@ -41,16 +44,12 @@ class DiscoveryService:
         db = get_db()
 
         # Log pre-clear counts for diagnostics
-        dt_before = db.execute(
-            "SELECT COUNT(*) FROM discovered_tickers"
-        ).fetchone()[0]
-        ts_before = db.execute(
-            "SELECT COUNT(*) FROM ticker_scores"
-        ).fetchone()[0]
+        dt_before = db.execute("SELECT COUNT(*) FROM discovered_tickers").fetchone()[0]
+        ts_before = db.execute("SELECT COUNT(*) FROM ticker_scores").fetchone()[0]
         logger.info(
-            "[Discovery] clear_data called — "
-            "discovered_tickers=%d, ticker_scores=%d",
-            dt_before, ts_before,
+            "[Discovery] clear_data called — discovered_tickers=%d, ticker_scores=%d",
+            dt_before,
+            ts_before,
         )
 
         try:
@@ -61,23 +60,21 @@ class DiscoveryService:
             return {"status": "error", "error": str(e)}
 
         # Verify the tables are actually empty
-        dt_after = db.execute(
-            "SELECT COUNT(*) FROM discovered_tickers"
-        ).fetchone()[0]
-        ts_after = db.execute(
-            "SELECT COUNT(*) FROM ticker_scores"
-        ).fetchone()[0]
+        dt_after = db.execute("SELECT COUNT(*) FROM discovered_tickers").fetchone()[0]
+        ts_after = db.execute("SELECT COUNT(*) FROM ticker_scores").fetchone()[0]
         remaining = dt_after + ts_after
 
         logger.info(
             "[Discovery] clear_data complete — "
             "remaining: discovered_tickers=%d, ticker_scores=%d",
-            dt_after, ts_after,
+            dt_after,
+            ts_after,
         )
 
         if remaining > 0:
             logger.warning(
-                "[Discovery] clear_data: %d rows still remain!", remaining,
+                "[Discovery] clear_data: %d rows still remain!",
+                remaining,
             )
             return {"status": "partial", "remaining": remaining}
 
@@ -98,7 +95,9 @@ class DiscoveryService:
         self._running = True
         start = time.time()
         logger.info("=" * 70)
-        logger.info("[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers)
+        logger.info(
+            "[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers
+        )
         logger.info("=" * 70)
 
         reddit_tickers: list[ScoredTicker] = []
@@ -107,19 +106,53 @@ class DiscoveryService:
         congress_tickers: list[ScoredTicker] = []
         rss_news_tickers: list[ScoredTicker] = []
 
-        # Reddit collection
-        if enable_reddit:
-            try:
-                reddit_tickers = await self.reddit.collect()
-                logger.info(
-                    "[Discovery] Reddit returned %d tickers", len(reddit_tickers)
-                )
-            except Exception as e:
-                logger.error("[Discovery] Reddit collection failed: %s", e)
+        # ── Per-collector timeout (5 min) to prevent any single collector
+        #    from blocking the entire discovery phase.
+        COLLECTOR_TIMEOUT_SECS = 300  # 5 minutes
 
-        # YouTube collection
-        if enable_youtube:
-            # Step 1: Scrape general market news for new ticker leads
+        async def _timed_collect(
+            name: str,
+            coro: Any,
+        ) -> list[ScoredTicker]:
+            """Run a collector with timeout and timing."""
+            t0 = time.time()
+            try:
+                result = await asyncio.wait_for(coro, timeout=COLLECTOR_TIMEOUT_SECS)
+                elapsed = time.time() - t0
+                logger.info(
+                    "[Discovery] %s returned %d tickers in %.1fs",
+                    name,
+                    len(result),
+                    elapsed,
+                )
+                return result
+            except asyncio.TimeoutError:
+                elapsed = time.time() - t0
+                logger.error(
+                    "[Discovery] %s TIMED OUT after %.1fs — skipping",
+                    name,
+                    elapsed,
+                )
+                return []
+            except Exception as e:
+                elapsed = time.time() - t0
+                logger.error(
+                    "[Discovery] %s failed after %.1fs: %s",
+                    name,
+                    elapsed,
+                    e,
+                )
+                return []
+
+        # ── Run ALL enabled collectors IN PARALLEL ────────────────
+        async def _collect_reddit() -> list[ScoredTicker]:
+            if not enable_reddit:
+                return []
+            return await self.reddit.collect()
+
+        async def _collect_youtube() -> list[ScoredTicker]:
+            if not enable_youtube:
+                return []
             try:
                 market_transcripts = await self.yt_collector.collect_general_market()
                 logger.info(
@@ -127,63 +160,57 @@ class DiscoveryService:
                     len(market_transcripts),
                 )
             except Exception as e:
-                logger.error(
-                    "[Discovery] General market scrape failed: %s", e,
-                )
+                logger.error("[Discovery] General market scrape failed: %s", e)
+            result = await self.youtube.scan_recent_transcripts(
+                hours=youtube_hours,
+            )
+            return result
 
-            # Step 2: Scan all un-scanned transcripts for ticker mentions
-            try:
-                youtube_tickers = await self.youtube.scan_recent_transcripts(
-                    hours=youtube_hours
-                )
-                logger.info(
-                    "[Discovery] YouTube returned %d tickers", len(youtube_tickers)
-                )
-            except Exception as e:
-                logger.error("[Discovery] YouTube collection failed: %s", e)
+        async def _collect_sec_13f() -> list[ScoredTicker]:
+            if not enable_sec_13f:
+                return []
+            return await self.sec_13f.collect_recent_holdings()
 
-        # SEC 13F institutional holdings collection
-        if enable_sec_13f:
-            try:
-                sec_13f_tickers = await self.sec_13f.collect_recent_holdings()
-                logger.info(
-                    "[Discovery] SEC 13F returned %d tickers", len(sec_13f_tickers)
-                )
-            except Exception as e:
-                logger.error("[Discovery] SEC 13F collection failed: %s", e)
+        async def _collect_congress() -> list[ScoredTicker]:
+            if not enable_congress:
+                return []
+            return await self.congress.collect_recent_trades()
 
-        # Congressional trades collection
-        if enable_congress:
-            try:
-                congress_tickers = await self.congress.collect_recent_trades()
-                logger.info(
-                    "[Discovery] Congress returned %d tickers", len(congress_tickers)
-                )
-            except Exception as e:
-                logger.error("[Discovery] Congress collection failed: %s", e)
+        async def _collect_rss_news() -> list[ScoredTicker]:
+            if not enable_rss_news:
+                return []
+            await self.rss_news.scrape_all_feeds()
+            return await self.rss_news.get_discovery_tickers()
 
-        # RSS news full-article collection
-        if enable_rss_news:
-            try:
-                # Scrape feeds (articles are also persisted for per-ticker use)
-                await self.rss_news.scrape_all_feeds()
-                # Generate discovery tickers from article content
-                rss_news_tickers = await self.rss_news.get_discovery_tickers()
-                logger.info(
-                    "[Discovery] RSS News returned %d tickers", len(rss_news_tickers)
-                )
-            except Exception as e:
-                logger.error("[Discovery] RSS News collection failed: %s", e)
+        logger.info("[Discovery] Running all collectors in PARALLEL …")
+        (
+            reddit_tickers,
+            youtube_tickers,
+            sec_13f_tickers,
+            congress_tickers,
+            rss_news_tickers,
+        ) = await asyncio.gather(
+            _timed_collect("Reddit", _collect_reddit()),
+            _timed_collect("YouTube", _collect_youtube()),
+            _timed_collect("SEC 13F", _collect_sec_13f()),
+            _timed_collect("Congress", _collect_congress()),
+            _timed_collect("RSS News", _collect_rss_news()),
+        )
 
         # Merge scores from ALL sources
         merged = self._merge_scores(
-            reddit_tickers, youtube_tickers, sec_13f_tickers,
-            congress_tickers, rss_news_tickers,
+            reddit_tickers,
+            youtube_tickers,
+            sec_13f_tickers,
+            congress_tickers,
+            rss_news_tickers,
         )
 
         # Cap results if max_tickers is set (for faster debugging)
         if max_tickers and len(merged) > max_tickers:
-            logger.info("[Discovery] Capping results from %d to %d", len(merged), max_tickers)
+            logger.info(
+                "[Discovery] Capping results from %d to %d", len(merged), max_tickers
+            )
             merged = merged[:max_tickers]
 
         # Persist to DuckDB
@@ -205,17 +232,23 @@ class DiscoveryService:
         logger.info("=" * 70)
         logger.info(
             "[Discovery] Complete: %d unique tickers in %.1fs",
-            len(merged), elapsed,
+            len(merged),
+            elapsed,
         )
         logger.info(
             "[Discovery]   Reddit: %d, YouTube: %d, SEC 13F: %d, Congress: %d, Transcripts: %d",
-            result.reddit_count, result.youtube_count,
-            len(sec_13f_tickers), len(congress_tickers), transcript_count,
+            result.reddit_count,
+            result.youtube_count,
+            len(sec_13f_tickers),
+            len(congress_tickers),
+            transcript_count,
         )
         for t in merged[:10]:
             logger.info(
                 "[Discovery]   $%s: %.1f pts (source: %s)",
-                t.ticker, t.discovery_score, t.source,
+                t.ticker,
+                t.discovery_score,
+                t.source,
             )
         logger.info("=" * 70)
 
@@ -228,9 +261,7 @@ class DiscoveryService:
         db = get_db()
 
         # Total unique tickers
-        total_row = db.execute(
-            "SELECT COUNT(*) FROM ticker_scores"
-        ).fetchone()
+        total_row = db.execute("SELECT COUNT(*) FROM ticker_scores").fetchone()
         total_discovered = total_row[0] if total_row else 0
 
         # Source counts from discovered_tickers
@@ -254,7 +285,8 @@ class DiscoveryService:
         return {
             "is_running": self._running,
             "last_run_at": (
-                self._last_run_at.isoformat() if self._last_run_at
+                self._last_run_at.isoformat()
+                if self._last_run_at
                 else (str(last_row[0]) if last_row and last_row[0] else None)
             ),
             "total_discovered": total_discovered,
@@ -263,7 +295,9 @@ class DiscoveryService:
             "top_ticker": {
                 "ticker": top_row[0],
                 "score": top_row[1],
-            } if top_row else None,
+            }
+            if top_row
+            else None,
         }
 
     def get_latest_scores(self, limit: int = 20) -> list[dict]:
@@ -326,7 +360,8 @@ class DiscoveryService:
     # ── Private: transcript collection ───────────────────────────────
 
     async def _collect_transcripts(
-        self, tickers: list[ScoredTicker],
+        self,
+        tickers: list[ScoredTicker],
     ) -> int:
         """Search YouTube and grab one transcript per discovered ticker.
 
@@ -343,34 +378,46 @@ class DiscoveryService:
             len(tickers),
         )
 
-        total_collected = 0
-        for scored in tickers:
-            ticker = scored.ticker
-            try:
-                transcripts = await self.yt_collector.collect(
-                    ticker, max_videos=1, discovery_mode=True,
-                )
-                count = len(transcripts)
-                total_collected += count
-                if count:
-                    logger.info(
-                        "[Discovery]   $%s: collected %d transcript(s) — '%s'",
-                        ticker, count,
-                        transcripts[0].title[:60] if transcripts else "",
+        sem = asyncio.Semaphore(3)  # Limit concurrent YouTube lookups
+
+        async def _fetch_one(scored: ScoredTicker) -> int:
+            async with sem:
+                tk = scored.ticker
+                try:
+                    transcripts = await self.yt_collector.collect(
+                        tk,
+                        max_videos=1,
+                        discovery_mode=True,
                     )
-                else:
-                    logger.info(
-                        "[Discovery]   $%s: no transcript found", ticker,
+                    count = len(transcripts)
+                    if count:
+                        logger.info(
+                            "[Discovery]   $%s: collected %d transcript(s) — '%s'",
+                            tk,
+                            count,
+                            transcripts[0].title[:60] if transcripts else "",
+                        )
+                    else:
+                        logger.info(
+                            "[Discovery]   $%s: no transcript found",
+                            tk,
+                        )
+                    return count
+                except Exception as e:
+                    logger.error(
+                        "[Discovery]   $%s: transcript collection failed: %s",
+                        tk,
+                        e,
                     )
-            except Exception as e:
-                logger.error(
-                    "[Discovery]   $%s: transcript collection failed: %s",
-                    ticker, e,
-                )
+                    return 0
+
+        results = await asyncio.gather(*[_fetch_one(s) for s in tickers])
+        total_collected = sum(results)
 
         logger.info(
             "[Discovery] Transcript collection done: %d/%d tickers got transcripts",
-            total_collected, len(tickers),
+            total_collected,
+            len(tickers),
         )
         return total_collected
 
@@ -398,8 +445,12 @@ class DiscoveryService:
                     merged_source = "+".join(sorted(sources))  # type: ignore[arg-type]
                     # Ensure it's a valid Literal value
                     valid = {
-                        "youtube", "reddit", "reddit+youtube",
-                        "sec_13f", "congress", "multi",
+                        "youtube",
+                        "reddit",
+                        "reddit+youtube",
+                        "sec_13f",
+                        "congress",
+                        "multi",
                     }
                     if merged_source not in valid:
                         merged_source = "multi"
@@ -419,7 +470,9 @@ class DiscoveryService:
                 combined[t.ticker] = t
 
         # Sort by total score descending
-        result = sorted(combined.values(), key=lambda x: x.discovery_score, reverse=True)
+        result = sorted(
+            combined.values(), key=lambda x: x.discovery_score, reverse=True
+        )
         return result
 
     def _save_to_db(self, tickers: list[ScoredTicker]) -> None:
@@ -475,8 +528,13 @@ class DiscoveryService:
                     WHERE ticker = ?
                     """,
                     [
-                        t.discovery_score, reddit_score, youtube_score,
-                        now, t.sentiment_hint, now, t.ticker,
+                        t.discovery_score,
+                        reddit_score,
+                        youtube_score,
+                        now,
+                        t.sentiment_hint,
+                        now,
+                        t.ticker,
                     ],
                 )
             else:
@@ -489,8 +547,14 @@ class DiscoveryService:
                     VALUES (?, ?, ?, ?, 1, ?, ?, ?, TRUE, ?)
                     """,
                     [
-                        t.ticker, t.discovery_score, youtube_score, reddit_score,
-                        now, now, t.sentiment_hint, now,
+                        t.ticker,
+                        t.discovery_score,
+                        youtube_score,
+                        reddit_score,
+                        now,
+                        now,
+                        t.sentiment_hint,
+                        now,
                     ],
                 )
 

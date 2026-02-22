@@ -1,7 +1,5 @@
 import asyncio
-import json
 from app.services.pipeline_service import PipelineService
-from app.utils.logger import logger
 
 async def run_test():
     svc = PipelineService()
