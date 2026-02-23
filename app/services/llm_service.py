@@ -358,6 +358,65 @@ class LLMService:
         except Exception:
             return []
 
+    @staticmethod
+    async def load_model_with_config(
+        base_url: str, model: str, config: dict,
+    ) -> dict:
+        """Load a model via LM Studio v1 API with specific parameters.
+
+        POST /api/v1/models/load with echo_load_config=true.
+        Returns the actual load config applied by LM Studio.
+        """
+        url = f"{base_url.rstrip('/')}/api/v1/models/load"
+        payload: dict = {
+            "model": model,
+            "echo_load_config": True,
+        }
+        # Only include optional params if set
+        if config.get("context_length"):
+            payload["context_length"] = int(config["context_length"])
+        if config.get("eval_batch_size"):
+            payload["eval_batch_size"] = int(config["eval_batch_size"])
+        if "flash_attention" in config:
+            payload["flash_attention"] = bool(config["flash_attention"])
+        if config.get("num_experts"):
+            payload["num_experts"] = int(config["num_experts"])
+        if "offload_kv_cache_to_gpu" in config:
+            payload["offload_kv_cache_to_gpu"] = bool(config["offload_kv_cache_to_gpu"])
+
+        logger.info("[LLM] Loading model %s with config: %s", model, payload)
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        api_key = settings.OPENAI_API_KEY
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            result = resp.json()
+            logger.info(
+                "[LLM] Model loaded: %s (%.1fs)",
+                model, result.get("load_time_seconds", 0),
+            )
+            return result
+
+    @staticmethod
+    async def get_loaded_model_info(base_url: str) -> list[dict]:
+        """GET /v1/models — returns currently loaded model details."""
+        url = f"{base_url.rstrip('/')}/v1/models"
+        headers: dict[str, str] = {}
+        api_key = settings.OPENAI_API_KEY
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                return resp.json().get("data", [])
+        except Exception:
+            return []
+
     async def health_check(self) -> dict:
         """Check connectivity to the LLM backend."""
         try:

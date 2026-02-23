@@ -6,8 +6,11 @@ Chains:  Discovery → Auto-Import → Data Collection → Deep Analysis → Tra
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+# Tickers analyzed within this window are skipped by collection / analysis.
+_ANALYSIS_CACHE_TTL = timedelta(hours=24)
 
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.discovery_service import DiscoveryService
@@ -22,10 +25,11 @@ from app.utils.logger import logger
 class AutonomousLoop:
     """Run every phase of the bot in one call."""
 
-    def __init__(self, *, max_tickers: int = 10) -> None:
+    def __init__(self, *, max_tickers: int = 10, bot_id: str = "default") -> None:
+        self.bot_id = bot_id
         self.discovery = DiscoveryService()
-        self.watchlist = WatchlistManager()
-        self.paper_trader = PaperTrader()
+        self.watchlist = WatchlistManager(bot_id=bot_id)
+        self.paper_trader = PaperTrader(bot_id=bot_id)
         self.deep_analysis = DeepAnalysisService()
         self.max_tickers = max_tickers  # Cap discovery results for faster runs
         self.price_monitor = PriceMonitor(self.paper_trader)
@@ -36,6 +40,7 @@ class AutonomousLoop:
             "phase": None,
             "phases": {},
             "started_at": None,
+            "bot_id": bot_id,
             "log": [],
         }
 
@@ -152,6 +157,9 @@ class AutonomousLoop:
                 "tickers": ticker_count,
                 "reddit_count": result.reddit_count,
                 "youtube_count": result.youtube_count,
+                "sec_13f_count": result.sec_13f_count,
+                "congress_count": result.congress_count,
+                "rss_news_count": result.rss_news_count,
                 "transcripts": result.transcript_count,
                 "duration_s": result.duration_seconds,
             },
@@ -189,9 +197,13 @@ class AutonomousLoop:
         return result
 
     async def _do_collection(self) -> dict:
-        """Step 2.5: Collect financial data for active watchlist tickers."""
-        tickers = self.watchlist.get_active_tickers()
-        if not tickers:
+        """Step 2.5: Collect financial data for active watchlist tickers.
+
+        Skips tickers whose data was collected less than 24 hours ago
+        to avoid redundant API calls.
+        """
+        all_entries = self.watchlist.get_active_tickers_with_staleness()
+        if not all_entries:
             self._log("No active tickers to collect data for")
             log_event(
                 "collection",
@@ -200,6 +212,28 @@ class AutonomousLoop:
                 status="skipped",
             )
             return {"collected": 0, "tickers": []}
+
+        # 24-hour cache: skip tickers analyzed within the last day
+        now = datetime.now()
+        stale_cutoff = now - _ANALYSIS_CACHE_TTL
+        tickers: list[str] = []
+        cached: list[str] = []
+        for entry in all_entries:
+            la = entry["last_analyzed"]
+            if la and isinstance(la, datetime) and la > stale_cutoff:
+                cached.append(entry["ticker"])
+            else:
+                tickers.append(entry["ticker"])
+
+        if cached:
+            self._log(
+                f"Skipping {len(cached)} recently-analyzed tickers: "
+                f"{', '.join(cached)}"
+            )
+
+        if not tickers:
+            self._log("All tickers were recently analyzed — nothing to collect")
+            return {"collected": 0, "cached": len(cached), "tickers": []}
 
         self._log(f"Collecting data for {len(tickers)} tickers: {', '.join(tickers)}")
         log_event(
@@ -249,9 +283,13 @@ class AutonomousLoop:
         return {"collected": len(succeeded), "total": len(tickers), "tickers": succeeded}
 
     async def _do_deep_analysis(self) -> dict:
-        """Step 3: Run 4-layer analysis on every active watchlist ticker."""
-        tickers = self.watchlist.get_active_tickers()
-        if not tickers:
+        """Step 3: Run 4-layer analysis on every active watchlist ticker.
+
+        Skips tickers analyzed within the last 24 hours to avoid
+        redundant LLM calls.
+        """
+        all_entries = self.watchlist.get_active_tickers_with_staleness()
+        if not all_entries:
             self._log("No active tickers to analyze")
             log_event(
                 "analysis",
@@ -260,6 +298,27 @@ class AutonomousLoop:
                 status="skipped",
             )
             return {"analyzed": 0, "tickers": []}
+
+        now = datetime.now()
+        stale_cutoff = now - _ANALYSIS_CACHE_TTL
+        tickers: list[str] = []
+        cached: list[str] = []
+        for entry in all_entries:
+            la = entry["last_analyzed"]
+            if la and isinstance(la, datetime) and la > stale_cutoff:
+                cached.append(entry["ticker"])
+            else:
+                tickers.append(entry["ticker"])
+
+        if cached:
+            self._log(
+                f"Skipping {len(cached)} recently-analyzed tickers: "
+                f"{', '.join(cached)}"
+            )
+
+        if not tickers:
+            self._log("All tickers were recently analyzed — nothing to analyze")
+            return {"analyzed": 0, "cached": len(cached), "tickers": []}
 
         # Build portfolio context for the LLM synthesis
         portfolio = self.paper_trader.get_portfolio()

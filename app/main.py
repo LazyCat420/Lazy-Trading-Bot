@@ -417,6 +417,57 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
     result: dict = {"status": "updated", "config": merged}
 
+    # ── Auto-register bot for this model ──────────────────────────
+    model_id = merged.get("model", "")
+    if model_id:
+        from app.services.bot_registry import BotRegistry as _BReg
+        # Check if a bot already exists for this model
+        existing_bots = _BReg.list_bots(include_inactive=True)
+        bot_for_model = None
+        for b in existing_bots:
+            if b.get("model_name") == model_id:
+                bot_for_model = b
+                break
+
+        if not bot_for_model:
+            # Auto-create a bot entry for this model
+            bot_for_model = _BReg.register_bot(
+                model_name=model_id,
+                display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
+                provider=merged.get("provider", "lmstudio"),
+                provider_url=merged.get("lmstudio_url", "http://localhost:1234"),
+                context_length=merged.get("context_size", 8192),
+                temperature=merged.get("temperature", 0.3),
+                top_p=merged.get("top_p", 1.0),
+                max_tokens=merged.get("max_tokens", 0),
+                eval_batch_size=merged.get("eval_batch_size", 512),
+                flash_attention=merged.get("flash_attention", True),
+            )
+            logger.info(
+                "[BotAutoReg] Created bot %s for model %s",
+                bot_for_model["bot_id"], model_id,
+            )
+        else:
+            # Update existing bot settings
+            _BReg.update_bot_settings(bot_for_model["bot_id"], {
+                "context_length": merged.get("context_size", 8192),
+                "temperature": merged.get("temperature", 0.3),
+                "top_p": merged.get("top_p", 1.0),
+            })
+            # Re-activate if inactive
+            if bot_for_model.get("status") == "inactive":
+                db = get_db()
+                db.execute(
+                    "UPDATE bots SET status = 'active' WHERE bot_id = ?",
+                    [bot_for_model["bot_id"]],
+                )
+                db.commit()
+
+        # Set this as the active bot
+        _set_active_bot(bot_for_model["bot_id"])
+        result["active_bot_id"] = bot_for_model["bot_id"]
+        result["active_bot_name"] = bot_for_model.get("display_name", model_id)
+
     # ── LM Studio: reload model with new context_length ──────────
     provider = merged.get("provider", "")
     if provider == "lmstudio":
@@ -866,6 +917,7 @@ async def dashboard_db_stats() -> dict:
         "financial_history",
         "technicals",
         "news_articles",
+        "news_full_articles",
         "youtube_transcripts",
         "risk_metrics",
         "balance_sheet",
@@ -899,14 +951,56 @@ async def dashboard_db_stats() -> dict:
 from app.services.paper_trader import PaperTrader  # noqa: E402
 from app.services.price_monitor import PriceMonitor  # noqa: E402
 
-_paper_trader = PaperTrader()
+# ── Active Bot Tracking ───────────────────────────────────────────
+# The "active bot" is the bot whose data the frontend sees via the
+# standard /api/portfolio, /api/orders, /api/triggers endpoints.
+# It auto-switches when the user saves a new LLM config.
+
+_active_bot_id: str = "default"
+
+
+def _get_active_bot_id() -> str:
+    return _active_bot_id
+
+
+def _set_active_bot(bot_id: str) -> None:
+    global _active_bot_id  # noqa: PLW0603
+    _active_bot_id = bot_id
+    logger.info("[ActiveBot] Switched to bot_id=%s", bot_id)
+
+
+def _active_trader() -> PaperTrader:
+    """Return a PaperTrader scoped to the active bot."""
+    return PaperTrader(bot_id=_active_bot_id)
+
+
+_paper_trader = PaperTrader()  # Default trader for price monitor
 _price_monitor = PriceMonitor(_paper_trader)
+
+
+@app.get("/api/active-bot")
+async def get_active_bot() -> dict:
+    """Which bot is currently selected in the frontend."""
+    from app.services.bot_registry import BotRegistry as _BReg
+    bot = _BReg.get_bot(_active_bot_id)
+    return {
+        "bot_id": _active_bot_id,
+        "bot": bot,
+    }
+
+
+@app.put("/api/active-bot")
+async def set_active_bot(req: dict) -> dict:
+    """Switch the active bot. Body: {"bot_id": "..."}."""
+    bid = req.get("bot_id", "default")
+    _set_active_bot(bid)
+    return {"status": "ok", "active_bot_id": bid}
 
 
 @app.get("/api/portfolio")
 async def get_portfolio() -> dict:
-    """Current cash + positions + total value."""
-    return _paper_trader.get_portfolio()
+    """Current cash + positions + total value (active bot)."""
+    return _active_trader().get_portfolio()
 
 
 @app.get("/api/portfolio/history")
@@ -914,14 +1008,14 @@ async def get_portfolio_history(
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict:
     """Portfolio snapshots over time (equity curve data)."""
-    snapshots = _paper_trader.get_portfolio_history(limit=limit)
+    snapshots = _active_trader().get_portfolio_history(limit=limit)
     return {"count": len(snapshots), "snapshots": snapshots}
 
 
 @app.get("/api/positions")
 async def get_positions() -> dict:
-    """All open positions with entry details."""
-    positions = _paper_trader.get_positions()
+    """All open positions with entry details (active bot)."""
+    positions = _active_trader().get_positions()
     return {"count": len(positions), "positions": positions}
 
 
@@ -936,7 +1030,8 @@ async def close_position(ticker: str) -> dict:
             status_code=400, detail=f"Could not fetch price for {ticker}"
         )
 
-    positions = _paper_trader.get_positions()
+    trader = _active_trader()
+    positions = trader.get_positions()
     qty = 0
     for p in positions:
         if p["ticker"] == ticker:
@@ -946,7 +1041,7 @@ async def close_position(ticker: str) -> dict:
     if qty <= 0:
         raise HTTPException(status_code=404, detail=f"No open position for {ticker}")
 
-    order = _paper_trader.sell(
+    order = trader.sell(
         ticker=ticker,
         qty=qty,
         price=price,
@@ -968,15 +1063,15 @@ async def close_position(ticker: str) -> dict:
 async def get_orders(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> dict:
-    """Order history."""
-    orders = _paper_trader.get_orders(limit=limit)
+    """Order history (active bot)."""
+    orders = _active_trader().get_orders(limit=limit)
     return {"count": len(orders), "orders": orders}
 
 
 @app.get("/api/triggers")
 async def get_triggers() -> dict:
-    """Active price triggers (stop-loss, take-profit, trailing)."""
-    triggers = _paper_trader.get_triggers()
+    """Active price triggers (active bot)."""
+    triggers = _active_trader().get_triggers()
     return {"count": len(triggers), "triggers": triggers}
 
 
@@ -998,7 +1093,7 @@ async def reset_portfolio(req: PortfolioResetRequest | None = None) -> dict:
     If balance is provided, uses that. Otherwise reads from risk_params.json.
     """
     balance = req.balance if req and req.balance else None
-    result = _paper_trader.reset_portfolio(new_balance=balance)
+    result = _active_trader().reset_portfolio(new_balance=balance)
     return result
 
 
@@ -1038,6 +1133,9 @@ async def run_discovery(
         "tickers": [t.model_dump() for t in result.tickers],
         "reddit_count": result.reddit_count,
         "youtube_count": result.youtube_count,
+        "sec_13f_count": result.sec_13f_count,
+        "congress_count": result.congress_count,
+        "rss_news_count": result.rss_news_count,
         "transcript_count": result.transcript_count,
         "duration_seconds": round(result.duration_seconds, 1),
     }
@@ -1045,11 +1143,21 @@ async def run_discovery(
 
 @app.get("/api/discovery/results")
 async def get_discovery_results(
-    limit: int = Query(default=20),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    """Get latest scored tickers from the aggregated table."""
-    scores = _discovery.get_latest_scores(limit=limit)
-    return {"scores": scores}
+    """Get latest scored tickers from the aggregated table (paginated)."""
+    offset = (page - 1) * page_size
+    result = _discovery.get_latest_scores(limit=page_size, offset=offset)
+    total = result["total"]
+    pages = max(1, -(-total // page_size))  # ceil division
+    return {
+        "scores": result["scores"],
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "page_size": page_size,
+    }
 
 
 @app.get("/api/discovery/history")
@@ -1171,25 +1279,34 @@ _loop_task: asyncio.Task | None = None
 
 @app.post("/api/bot/run-loop")
 async def run_full_loop(max_tickers: int = 10) -> dict:
-    """Trigger the full autonomous loop: Discovery → Import → Deep Analysis."""
+    """Trigger the full autonomous loop using the active bot."""
     global _loop, _loop_task  # noqa: PLW0603
 
     if _loop._state["running"]:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
-    # Re-create the loop with the requested max_tickers
-    _loop = AutonomousLoop(max_tickers=max_tickers)
+    bot_id = _get_active_bot_id()
+    # Re-create the loop scoped to the active bot
+    _loop = AutonomousLoop(max_tickers=max_tickers, bot_id=bot_id)
 
     async def _run() -> None:
         try:
             await _loop.run_full_loop()
+            # Update bot stats after loop completes
+            from app.services.bot_registry import BotRegistry as _BReg
+            try:
+                _BReg.update_stats(bot_id)
+                _BReg.record_run(bot_id)
+            except Exception:
+                pass
         except Exception:
             logger.exception("[AutoLoop] Unhandled error in background loop")
 
     _loop_task = asyncio.create_task(_run())
     return {
         "status": "started",
-        "message": f"Full loop is running (max_tickers={max_tickers})",
+        "bot_id": bot_id,
+        "message": f"Full loop running (max_tickers={max_tickers}, bot={bot_id})",
     }
 
 
@@ -1421,4 +1538,237 @@ from app.utils.market_hours import market_status as _market_status  # noqa: E402
 async def get_market_status() -> dict:
     """Current NYSE market status (open/closed, countdown)."""
     return _market_status()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# MULTI-BOT LEADERBOARD API
+# ══════════════════════════════════════════════════════════════════════
+
+from app.services.bot_registry import BotRegistry  # noqa: E402
+
+
+class BotCreateRequest(BaseModel):
+    """Request body for creating a new bot."""
+    model_name: str
+    display_name: str = ""
+    provider: str = "lmstudio"
+    provider_url: str = "http://localhost:1234"
+    context_length: int = 8192
+    temperature: float = 0.3
+    top_p: float = 1.0
+    max_tokens: int = 0
+    eval_batch_size: int = 512
+    flash_attention: bool = True
+    num_experts: int = 0
+    gpu_offload: bool = True
+
+
+class BotSettingsUpdate(BaseModel):
+    """Request body for updating bot settings."""
+    display_name: str | None = None
+    provider: str | None = None
+    provider_url: str | None = None
+    context_length: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    eval_batch_size: int | None = None
+    flash_attention: bool | None = None
+    num_experts: int | None = None
+    gpu_offload: bool | None = None
+
+
+class ModelLoadRequest(BaseModel):
+    """Request body for loading a model via LM Studio API."""
+    model: str
+    base_url: str = "http://localhost:1234"
+    context_length: int = 0
+    eval_batch_size: int = 0
+    flash_attention: bool = True
+    num_experts: int = 0
+    gpu_offload: bool = True
+
+
+@app.get("/api/bots")
+async def list_bots(
+    include_inactive: bool = Query(default=False),
+) -> dict:
+    """List all registered bots."""
+    bots = BotRegistry.list_bots(include_inactive=include_inactive)
+    return {"count": len(bots), "bots": bots}
+
+
+@app.post("/api/bots")
+async def create_bot(req: BotCreateRequest) -> dict:
+    """Register a new bot with its LLM settings."""
+    bot = BotRegistry.register_bot(
+        model_name=req.model_name,
+        display_name=req.display_name,
+        provider=req.provider,
+        provider_url=req.provider_url,
+        context_length=req.context_length,
+        temperature=req.temperature,
+        top_p=req.top_p,
+        max_tokens=req.max_tokens,
+        eval_batch_size=req.eval_batch_size,
+        flash_attention=req.flash_attention,
+        num_experts=req.num_experts,
+        gpu_offload=req.gpu_offload,
+    )
+    return {"status": "created", "bot": bot}
+
+
+@app.get("/api/bots/{bot_id}")
+async def get_bot(bot_id: str) -> dict:
+    """Get a single bot with its config and stats."""
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return bot
+
+
+@app.put("/api/bots/{bot_id}/settings")
+async def update_bot_settings(bot_id: str, req: BotSettingsUpdate) -> dict:
+    """Update LLM settings for a specific bot."""
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not data:
+        raise HTTPException(status_code=400, detail="No settings to update")
+    bot = BotRegistry.update_bot_settings(bot_id, data)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return {"status": "updated", "bot": bot}
+
+
+@app.delete("/api/bots/{bot_id}")
+async def deactivate_bot(bot_id: str) -> dict:
+    """Deactivate (soft-delete) a bot."""
+    BotRegistry.deactivate_bot(bot_id)
+    return {"status": "deactivated", "bot_id": bot_id}
+
+
+@app.get("/api/leaderboard")
+async def get_leaderboard() -> dict:
+    """Get all bots ranked by total P&L."""
+    # Recalculate stats for all active bots
+    bots = BotRegistry.list_bots()
+    for bot in bots:
+        try:
+            BotRegistry.update_stats(bot["bot_id"])
+        except Exception:
+            pass  # Skip bots with no data yet
+    rankings = BotRegistry.get_leaderboard()
+    return {"count": len(rankings), "leaderboard": rankings}
+
+
+@app.get("/api/bots/{bot_id}/portfolio")
+async def get_bot_portfolio(bot_id: str) -> dict:
+    """Get portfolio for a specific bot."""
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    trader = PaperTrader(bot_id=bot_id)
+    return trader.get_portfolio()
+
+
+@app.get("/api/bots/{bot_id}/orders")
+async def get_bot_orders(
+    bot_id: str,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """Get order history for a specific bot."""
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    trader = PaperTrader(bot_id=bot_id)
+    orders = trader.get_orders(limit=limit)
+    return {"count": len(orders), "orders": orders}
+
+
+@app.get("/api/bots/{bot_id}/watchlist")
+async def get_bot_watchlist(bot_id: str) -> dict:
+    """Get watchlist for a specific bot."""
+    from app.services.watchlist_manager import WatchlistManager
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    wm = WatchlistManager(bot_id=bot_id)
+    watchlist = wm.get_watchlist()
+    return {"count": len(watchlist), "watchlist": watchlist}
+
+
+@app.post("/api/bots/{bot_id}/run")
+async def run_bot_loop(bot_id: str, max_tickers: int = 10) -> dict:
+    """Trigger a full trading loop for a specific bot."""
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+
+    loop = AutonomousLoop(max_tickers=max_tickers, bot_id=bot_id)
+    BotRegistry.record_run(bot_id)
+
+    async def _run() -> None:
+        try:
+            await loop.run_full_loop()
+            BotRegistry.update_stats(bot_id)
+        except Exception:
+            logger.exception("[BotAPI] Loop error for bot %s", bot_id)
+
+    asyncio.create_task(_run())
+    return {
+        "status": "started",
+        "bot_id": bot_id,
+        "message": f"Full loop running for bot {bot['display_name']}",
+    }
+
+
+@app.post("/api/bots/{bot_id}/reset")
+async def reset_bot_portfolio(
+    bot_id: str,
+    req: PortfolioResetRequest | None = None,
+) -> dict:
+    """Reset portfolio for a specific bot."""
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    balance = req.balance if req and req.balance else None
+    trader = PaperTrader(bot_id=bot_id)
+    return trader.reset_portfolio(new_balance=balance)
+
+
+# ── LM Studio Model Management ────────────────────────────────────
+
+
+@app.post("/api/llm/load-model")
+async def load_lm_model(req: ModelLoadRequest) -> dict:
+    """Load a model via the LM Studio v1 API.
+
+    Returns the actual configuration applied by LM Studio.
+    """
+    from app.services.llm_service import LLMService
+    config = {
+        "context_length": req.context_length,
+        "eval_batch_size": req.eval_batch_size,
+        "flash_attention": req.flash_attention,
+        "num_experts": req.num_experts,
+        "offload_kv_cache_to_gpu": req.gpu_offload,
+    }
+    try:
+        result = await LLMService.load_model_with_config(
+            base_url=req.base_url,
+            model=req.model,
+            config=config,
+        )
+        return {"status": "loaded", "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/api/llm/model-info")
+async def get_loaded_model_info(
+    base_url: str = Query(default="http://localhost:1234"),
+) -> dict:
+    """Get currently loaded model details from LM Studio."""
+    from app.services.llm_service import LLMService
+    models = await LLMService.get_loaded_model_info(base_url)
+    return {"count": len(models), "models": models}
 

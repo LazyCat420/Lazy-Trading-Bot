@@ -2,6 +2,9 @@
 
 All state is stored in DuckDB so the portfolio survives server restarts.
 Uses yfinance fast_info for live price updates when calculating P&L.
+
+Multi-bot support: Each PaperTrader instance is scoped to a bot_id.
+All queries filter by bot_id so multiple bots have isolated portfolios.
 """
 
 from __future__ import annotations
@@ -19,8 +22,13 @@ from app.utils.logger import logger
 class PaperTrader:
     """Simulated trading engine — buys/sells are recorded but never real."""
 
-    def __init__(self, starting_balance: float | None = None) -> None:
+    def __init__(
+        self,
+        starting_balance: float | None = None,
+        bot_id: str = "default",
+    ) -> None:
         self._starting_balance = starting_balance
+        self.bot_id = bot_id
         self._ensure_initial_balance()
 
     # ------------------------------------------------------------------
@@ -72,26 +80,26 @@ class PaperTrader:
                 """
                 UPDATE positions
                 SET qty = ?, avg_entry_price = ?, last_updated = ?
-                WHERE ticker = ?
+                WHERE ticker = ? AND bot_id = ?
                 """,
-                [new_qty, new_avg, now, ticker],
+                [new_qty, new_avg, now, ticker, self.bot_id],
             )
             logger.info(
-                "[PaperTrader] BUY %s: DCA %d+%d=%d shares @ avg $%.2f",
-                ticker, old_qty, qty, new_qty, new_avg,
+                "[PaperTrader:%s] BUY %s: DCA %d+%d=%d shares @ avg $%.2f",
+                self.bot_id, ticker, old_qty, qty, new_qty, new_avg,
             )
         else:
             # New position
             db.execute(
                 """
-                INSERT INTO positions (ticker, qty, avg_entry_price, opened_at, last_updated)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO positions (ticker, qty, avg_entry_price, opened_at, last_updated, bot_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                [ticker, qty, price, now, now],
+                [ticker, qty, price, now, now, self.bot_id],
             )
             logger.info(
-                "[PaperTrader] BUY %s: %d shares @ $%.2f ($%.2f)",
-                ticker, qty, price, cost,
+                "[PaperTrader:%s] BUY %s: %d shares @ $%.2f ($%.2f)",
+                self.bot_id, ticker, qty, price, cost,
             )
 
         # Deduct cash
@@ -148,23 +156,26 @@ class PaperTrader:
         remaining = existing["qty"] - sell_qty
         if remaining <= 0:
             # Close entire position
-            db.execute("DELETE FROM positions WHERE ticker = ?", [ticker])
+            db.execute(
+                "DELETE FROM positions WHERE ticker = ? AND bot_id = ?",
+                [ticker, self.bot_id],
+            )
             logger.info(
-                "[PaperTrader] SELL %s: closed %d shares @ $%.2f (P&L=$%.2f)",
-                ticker, sell_qty, price, realized_pnl,
+                "[PaperTrader:%s] SELL %s: closed %d shares @ $%.2f (P&L=$%.2f)",
+                self.bot_id, ticker, sell_qty, price, realized_pnl,
             )
         else:
             # Partial close
             db.execute(
                 """
                 UPDATE positions SET qty = ?, last_updated = ?
-                WHERE ticker = ?
+                WHERE ticker = ? AND bot_id = ?
                 """,
-                [remaining, now, ticker],
+                [remaining, now, ticker, self.bot_id],
             )
             logger.info(
-                "[PaperTrader] SELL %s: %d/%d shares @ $%.2f (P&L=$%.2f, %d remaining)",
-                ticker, sell_qty, existing["qty"], price, realized_pnl, remaining,
+                "[PaperTrader:%s] SELL %s: %d/%d shares @ $%.2f (P&L=$%.2f, %d remaining)",
+                self.bot_id, ticker, sell_qty, existing["qty"], price, realized_pnl, remaining,
             )
 
         # Add proceeds to cash
@@ -176,8 +187,9 @@ class PaperTrader:
         # Cancel any active triggers for this ticker if fully closed
         if remaining <= 0:
             db.execute(
-                "UPDATE price_triggers SET status = 'cancelled' WHERE ticker = ? AND status = 'active'",
-                [ticker],
+                "UPDATE price_triggers SET status = 'cancelled' "
+                "WHERE ticker = ? AND bot_id = ? AND status = 'active'",
+                [ticker, self.bot_id],
             )
 
         # Record the order
@@ -206,7 +218,9 @@ class PaperTrader:
         """Return current cash balance."""
         db = get_db()
         row = db.execute(
-            "SELECT cash_balance FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1"
+            "SELECT cash_balance FROM portfolio_snapshots "
+            "WHERE bot_id = ? ORDER BY timestamp DESC LIMIT 1",
+            [self.bot_id],
         ).fetchone()
         if row:
             return float(row[0])
@@ -218,7 +232,9 @@ class PaperTrader:
         db = get_db()
         rows = db.execute(
             "SELECT ticker, qty, avg_entry_price, stop_loss, take_profit, "
-            "trailing_stop_pct, opened_at, last_updated FROM positions"
+            "trailing_stop_pct, opened_at, last_updated FROM positions "
+            "WHERE bot_id = ?",
+            [self.bot_id],
         ).fetchall()
 
         positions = []
@@ -260,8 +276,8 @@ class PaperTrader:
         rows = db.execute(
             "SELECT id, ticker, side, qty, price, order_type, status, "
             "conviction_score, signal, filled_at, created_at "
-            "FROM orders ORDER BY created_at DESC LIMIT ?",
-            [limit],
+            "FROM orders WHERE bot_id = ? ORDER BY created_at DESC LIMIT ?",
+            [self.bot_id, limit],
         ).fetchall()
 
         return [
@@ -285,7 +301,9 @@ class PaperTrader:
         """Count how many orders were placed today."""
         db = get_db()
         row = db.execute(
-            "SELECT COUNT(*) FROM orders WHERE CAST(created_at AS DATE) = CURRENT_DATE"
+            "SELECT COUNT(*) FROM orders "
+            "WHERE bot_id = ? AND CAST(created_at AS DATE) = CURRENT_DATE",
+            [self.bot_id],
         ).fetchone()
         return row[0] if row else 0
 
@@ -299,8 +317,9 @@ class PaperTrader:
                 CASE WHEN side = 'sell' THEN qty * price ELSE -qty * price END
             ), 0.0)
             FROM orders
-            WHERE CAST(created_at AS DATE) = CURRENT_DATE
-            """
+            WHERE bot_id = ? AND CAST(created_at AS DATE) = CURRENT_DATE
+            """,
+            [self.bot_id],
         ).fetchone()
         daily_pnl = row[0] if row else 0.0
 
@@ -316,8 +335,8 @@ class PaperTrader:
         db = get_db()
         row = db.execute(
             "SELECT MAX(CAST(filled_at AS DATE)) FROM orders "
-            "WHERE ticker = ? AND side = 'sell'",
-            [ticker],
+            "WHERE ticker = ? AND side = 'sell' AND bot_id = ?",
+            [ticker, self.bot_id],
         ).fetchone()
         if row and row[0]:
             return row[0]
@@ -329,7 +348,8 @@ class PaperTrader:
         rows = db.execute(
             "SELECT id, ticker, trigger_type, trigger_price, high_water_mark, "
             "trailing_pct, action, qty, status, created_at "
-            "FROM price_triggers WHERE status = 'active'"
+            "FROM price_triggers WHERE status = 'active' AND bot_id = ?",
+            [self.bot_id],
         ).fetchall()
 
         return [
@@ -371,17 +391,17 @@ class PaperTrader:
         db.execute(
             """
             INSERT INTO price_triggers
-                (id, ticker, trigger_type, trigger_price, action, qty, status, created_at)
-            VALUES (?, ?, 'stop_loss', ?, 'sell', ?, 'active', ?)
+                (id, ticker, trigger_type, trigger_price, action, qty, status, created_at, bot_id)
+            VALUES (?, ?, 'stop_loss', ?, 'sell', ?, 'active', ?, ?)
             """,
-            [sl_id, ticker, sl_price, qty, datetime.now()],
+            [sl_id, ticker, sl_price, qty, datetime.now(), self.bot_id],
         )
         triggers.append({"id": sl_id, "type": "stop_loss", "price": sl_price})
 
         # Update position stop_loss field
         db.execute(
-            "UPDATE positions SET stop_loss = ? WHERE ticker = ?",
-            [sl_price, ticker],
+            "UPDATE positions SET stop_loss = ? WHERE ticker = ? AND bot_id = ?",
+            [sl_price, ticker, self.bot_id],
         )
 
         # Take-profit
@@ -390,17 +410,17 @@ class PaperTrader:
         db.execute(
             """
             INSERT INTO price_triggers
-                (id, ticker, trigger_type, trigger_price, action, qty, status, created_at)
-            VALUES (?, ?, 'take_profit', ?, 'sell', ?, 'active', ?)
+                (id, ticker, trigger_type, trigger_price, action, qty, status, created_at, bot_id)
+            VALUES (?, ?, 'take_profit', ?, 'sell', ?, 'active', ?, ?)
             """,
-            [tp_id, ticker, tp_price, qty, datetime.now()],
+            [tp_id, ticker, tp_price, qty, datetime.now(), self.bot_id],
         )
         triggers.append({"id": tp_id, "type": "take_profit", "price": tp_price})
 
         # Update position take_profit field
         db.execute(
-            "UPDATE positions SET take_profit = ? WHERE ticker = ?",
-            [tp_price, ticker],
+            "UPDATE positions SET take_profit = ? WHERE ticker = ? AND bot_id = ?",
+            [tp_price, ticker, self.bot_id],
         )
 
         # Trailing stop (optional)
@@ -411,22 +431,23 @@ class PaperTrader:
                 """
                 INSERT INTO price_triggers
                     (id, ticker, trigger_type, trigger_price, high_water_mark,
-                     trailing_pct, action, qty, status, created_at)
-                VALUES (?, ?, 'trailing_stop', ?, ?, ?, 'sell', ?, 'active', ?)
+                     trailing_pct, action, qty, status, created_at, bot_id)
+                VALUES (?, ?, 'trailing_stop', ?, ?, ?, 'sell', ?, 'active', ?, ?)
                 """,
-                [ts_id, ticker, ts_price, entry_price, trailing_stop_pct, qty, datetime.now()],
+                [ts_id, ticker, ts_price, entry_price, trailing_stop_pct, qty,
+                 datetime.now(), self.bot_id],
             )
             triggers.append({"id": ts_id, "type": "trailing_stop", "price": ts_price})
 
             db.execute(
-                "UPDATE positions SET trailing_stop_pct = ? WHERE ticker = ?",
-                [trailing_stop_pct, ticker],
+                "UPDATE positions SET trailing_stop_pct = ? WHERE ticker = ? AND bot_id = ?",
+                [trailing_stop_pct, ticker, self.bot_id],
             )
 
         db.commit()
         logger.info(
-            "[PaperTrader] Set %d triggers for %s: SL=$%.2f, TP=$%.2f",
-            len(triggers), ticker, sl_price, tp_price,
+            "[PaperTrader:%s] Set %d triggers for %s: SL=$%.2f, TP=$%.2f",
+            self.bot_id, len(triggers), ticker, sl_price, tp_price,
         )
         return triggers
 
@@ -450,8 +471,8 @@ class PaperTrader:
             """
             INSERT INTO portfolio_snapshots
                 (timestamp, cash_balance, total_positions_value,
-                 total_portfolio_value, realized_pnl, unrealized_pnl)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 total_portfolio_value, realized_pnl, unrealized_pnl, bot_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 snap.timestamp,
@@ -460,12 +481,14 @@ class PaperTrader:
                 snap.total_portfolio_value,
                 snap.realized_pnl,
                 snap.unrealized_pnl,
+                self.bot_id,
             ],
         )
         db.commit()
         logger.info(
-            "[PaperTrader] Snapshot: cash=$%.2f, positions=$%.2f, total=$%.2f",
-            snap.cash_balance, snap.total_positions_value, snap.total_portfolio_value,
+            "[PaperTrader:%s] Snapshot: cash=$%.2f, positions=$%.2f, total=$%.2f",
+            self.bot_id, snap.cash_balance, snap.total_positions_value,
+            snap.total_portfolio_value,
         )
         return snap
 
@@ -475,8 +498,9 @@ class PaperTrader:
         rows = db.execute(
             "SELECT timestamp, cash_balance, total_positions_value, "
             "total_portfolio_value, realized_pnl, unrealized_pnl "
-            "FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT ?",
-            [limit],
+            "FROM portfolio_snapshots WHERE bot_id = ? "
+            "ORDER BY timestamp DESC LIMIT ?",
+            [self.bot_id, limit],
         ).fetchall()
 
         return [
@@ -499,8 +523,9 @@ class PaperTrader:
         """Get a position row from DuckDB."""
         db = get_db()
         row = db.execute(
-            "SELECT ticker, qty, avg_entry_price FROM positions WHERE ticker = ?",
-            [ticker],
+            "SELECT ticker, qty, avg_entry_price FROM positions "
+            "WHERE ticker = ? AND bot_id = ?",
+            [ticker, self.bot_id],
         ).fetchone()
         if not row:
             return None
@@ -513,8 +538,8 @@ class PaperTrader:
             """
             INSERT INTO orders
                 (id, ticker, side, qty, price, order_type, status,
-                 conviction_score, signal, filled_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 conviction_score, signal, filled_at, created_at, bot_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 order.id,
@@ -528,6 +553,7 @@ class PaperTrader:
                 order.signal,
                 order.filled_at,
                 order.created_at,
+                self.bot_id,
             ],
         )
 
@@ -545,8 +571,8 @@ class PaperTrader:
             """
             INSERT INTO portfolio_snapshots
                 (timestamp, cash_balance, total_positions_value,
-                 total_portfolio_value, realized_pnl, unrealized_pnl)
-            VALUES (?, ?, ?, ?, ?, 0.0)
+                 total_portfolio_value, realized_pnl, unrealized_pnl, bot_id)
+            VALUES (?, ?, ?, ?, ?, 0.0, ?)
             """,
             [
                 datetime.now(),
@@ -554,6 +580,7 @@ class PaperTrader:
                 positions_value,
                 new_cash + positions_value,
                 self._get_realized_pnl(),
+                self.bot_id,
             ],
         )
 
@@ -561,7 +588,9 @@ class PaperTrader:
         """Get cumulative realized P&L from closed trades."""
         db = get_db()
         row = db.execute(
-            "SELECT realized_pnl FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1"
+            "SELECT realized_pnl FROM portfolio_snapshots "
+            "WHERE bot_id = ? ORDER BY timestamp DESC LIMIT 1",
+            [self.bot_id],
         ).fetchone()
         return float(row[0]) if row and row[0] else 0.0
 
@@ -570,14 +599,17 @@ class PaperTrader:
         # The realized P&L is tracked via snapshots — we just log it for now
         current = self._get_realized_pnl()
         logger.info(
-            "[PaperTrader] Realized P&L: $%.2f (cumulative: $%.2f)",
-            pnl, current + pnl,
+            "[PaperTrader:%s] Realized P&L: $%.2f (cumulative: $%.2f)",
+            self.bot_id, pnl, current + pnl,
         )
 
     def _ensure_initial_balance(self) -> None:
-        """If no snapshots exist, create the initial one from config."""
+        """If no snapshots exist for this bot, create the initial one."""
         db = get_db()
-        row = db.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()
+        row = db.execute(
+            "SELECT COUNT(*) FROM portfolio_snapshots WHERE bot_id = ?",
+            [self.bot_id],
+        ).fetchone()
         if row and row[0] > 0:
             return  # Already initialized
 
@@ -586,13 +618,16 @@ class PaperTrader:
             """
             INSERT INTO portfolio_snapshots
                 (timestamp, cash_balance, total_positions_value,
-                 total_portfolio_value, realized_pnl, unrealized_pnl)
-            VALUES (?, ?, 0.0, ?, 0.0, 0.0)
+                 total_portfolio_value, realized_pnl, unrealized_pnl, bot_id)
+            VALUES (?, ?, 0.0, ?, 0.0, 0.0, ?)
             """,
-            [datetime.now(), starting, starting],
+            [datetime.now(), starting, starting, self.bot_id],
         )
         db.commit()
-        logger.info("[PaperTrader] Initialized with $%.2f starting balance", starting)
+        logger.info(
+            "[PaperTrader:%s] Initialized with $%.2f starting balance",
+            self.bot_id, starting,
+        )
 
     def _get_starting_balance(self) -> float:
         """Get starting balance from constructor or risk_params.json."""
@@ -609,35 +644,35 @@ class PaperTrader:
         return 10000.0
 
     def reset_portfolio(self, new_balance: float | None = None) -> dict:
-        """Wipe all trading data and reinitialize with a new balance.
+        """Wipe all trading data for this bot and reinitialize.
 
-        Clears: positions, orders, price_triggers, portfolio_snapshots.
+        Clears: positions, orders, price_triggers, portfolio_snapshots (bot-scoped).
         Then creates a fresh starting snapshot with the given balance.
         If new_balance is None, reads from risk_params.json.
         """
         balance = new_balance if new_balance is not None else self._get_starting_balance()
         db = get_db()
 
-        # Wipe all trading tables
-        db.execute("DELETE FROM positions")
-        db.execute("DELETE FROM orders")
-        db.execute("DELETE FROM price_triggers")
-        db.execute("DELETE FROM portfolio_snapshots")
+        # Wipe all trading tables (bot-scoped only)
+        db.execute("DELETE FROM positions WHERE bot_id = ?", [self.bot_id])
+        db.execute("DELETE FROM orders WHERE bot_id = ?", [self.bot_id])
+        db.execute("DELETE FROM price_triggers WHERE bot_id = ?", [self.bot_id])
+        db.execute("DELETE FROM portfolio_snapshots WHERE bot_id = ?", [self.bot_id])
 
         # Create fresh starting snapshot
         db.execute(
             """
             INSERT INTO portfolio_snapshots
                 (timestamp, cash_balance, total_positions_value,
-                 total_portfolio_value, realized_pnl, unrealized_pnl)
-            VALUES (?, ?, 0.0, ?, 0.0, 0.0)
+                 total_portfolio_value, realized_pnl, unrealized_pnl, bot_id)
+            VALUES (?, ?, 0.0, ?, 0.0, 0.0, ?)
             """,
-            [datetime.now(), balance, balance],
+            [datetime.now(), balance, balance, self.bot_id],
         )
         db.commit()
 
         # Also update the risk_params.json so the value persists
-        if new_balance is not None:
+        if new_balance is not None and self.bot_id == "default":
             path = settings.USER_CONFIG_DIR / "risk_params.json"
             if path.exists():
                 try:
@@ -650,10 +685,12 @@ class PaperTrader:
                     pass
 
         logger.info(
-            "[PaperTrader] Portfolio RESET — new balance: $%.2f", balance,
+            "[PaperTrader:%s] Portfolio RESET — new balance: $%.2f",
+            self.bot_id, balance,
         )
         return {
             "status": "reset",
+            "bot_id": self.bot_id,
             "new_balance": balance,
             "positions_cleared": True,
             "orders_cleared": True,

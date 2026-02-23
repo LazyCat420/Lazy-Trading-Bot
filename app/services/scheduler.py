@@ -94,10 +94,24 @@ class TradingScheduler:
             replace_existing=True,
         )
 
+        # ── Scoreboard sweep: 8:30 AM + 1:30 PM ET weekdays ────────
+        for hour, minute in [(8, 30), (13, 30)]:
+            self._scheduler.add_job(
+                self._scoreboard_sweep,
+                CronTrigger(
+                    hour=hour, minute=minute,
+                    day_of_week="mon-fri", timezone=_ET,
+                ),
+                id=f"scoreboard_sweep_{hour}{minute:02d}",
+                name=f"Scoreboard Sweep ({hour}:{minute:02d})",
+                replace_existing=True,
+            )
+
         self._scheduler.start()
         self.is_running = True
-        logger.info("[Scheduler] Started — 6 jobs registered")
-        return {"status": "started", "jobs": len(self._scheduler.get_jobs())}
+        job_count = len(self._scheduler.get_jobs())
+        logger.info("[Scheduler] Started — %d jobs registered", job_count)
+        return {"status": "started", "jobs": job_count}
 
     def stop(self) -> dict:
         """Stop all scheduled jobs."""
@@ -172,6 +186,7 @@ class TradingScheduler:
             "midday": self._midday_reanalysis,
             "end_of_day": self._end_of_day_run,
             "price_monitor": self._price_monitor_tick,
+            "scoreboard_sweep": self._scoreboard_sweep,
         }
         handler = handlers.get(job_name)
         if not handler:
@@ -278,6 +293,57 @@ class TradingScheduler:
         except Exception as e:
             self._log_end(run_id, "error", error=str(e))
             logger.exception("[Scheduler] Midday re-analysis failed")
+
+    async def _scoreboard_sweep(self) -> None:
+        """8:30 AM / 1:30 PM ET — Re-check scoreboard for watchlist promotion.
+
+        Queries ticker_scores for tickers that meet the threshold but
+        aren't yet on the watchlist.  Promotes them, runs collection +
+        analysis, then feeds results into the Portfolio Strategist.
+        """
+        if not is_market_open():
+            return
+
+        run_id = self._log_start("scoreboard_sweep")
+        try:
+            logger.info("[Scheduler] === SCOREBOARD SWEEP STARTING ===")
+
+            from app.services.watchlist_manager import WatchlistManager
+
+            wm = WatchlistManager()
+            result = wm.import_from_discovery(min_score=3.0, max_tickers=10)
+            imported = result.get("total_imported", 0)
+
+            if imported == 0:
+                summary = "Scoreboard sweep: no new tickers qualify."
+                self._log_end(run_id, "success", summary)
+                logger.info("[Scheduler] %s", summary)
+                return
+
+            logger.info(
+                "[Scheduler] Scoreboard sweep promoted %d tickers: %s",
+                imported, result.get("imported", []),
+            )
+
+            # Run collection + analysis + trading on the new tickers only
+            from app.services.autonomous_loop import AutonomousLoop
+
+            loop = AutonomousLoop(max_tickers=self._loop.max_tickers)
+            await loop._do_collection()
+            await loop._do_deep_analysis()
+            await loop._do_trading()
+
+            summary = (
+                f"Scoreboard sweep: promoted {imported} tickers "
+                f"({', '.join(result.get('imported', []))}), "
+                f"ran collection + analysis + trading."
+            )
+            self._log_end(run_id, "success", summary)
+            logger.info("[Scheduler] === SCOREBOARD SWEEP COMPLETE: %s ===", summary)
+
+        except Exception as e:
+            self._log_end(run_id, "error", error=str(e))
+            logger.exception("[Scheduler] Scoreboard sweep failed")
 
     async def _targeted_reanalysis(self, ticker: str, reason: str) -> None:
         """Wakeup job — re-analyze and re-trade a single ticker."""

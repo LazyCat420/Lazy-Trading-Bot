@@ -558,6 +558,35 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Multi-Bot Leaderboard tables ────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bots (
+            bot_id          VARCHAR PRIMARY KEY,
+            model_name      VARCHAR NOT NULL,
+            display_name    VARCHAR DEFAULT '',
+            provider        VARCHAR DEFAULT 'lmstudio',
+            provider_url    VARCHAR DEFAULT 'http://localhost:1234',
+            context_length  INTEGER DEFAULT 8192,
+            temperature     DOUBLE DEFAULT 0.3,
+            top_p           DOUBLE DEFAULT 1.0,
+            max_tokens      INTEGER DEFAULT 0,
+            eval_batch_size    INTEGER DEFAULT 512,
+            flash_attention    BOOLEAN DEFAULT TRUE,
+            num_experts        INTEGER DEFAULT 0,
+            gpu_offload        BOOLEAN DEFAULT TRUE,
+            total_trades     INTEGER DEFAULT 0,
+            total_pnl        DOUBLE DEFAULT 0.0,
+            win_rate         DOUBLE DEFAULT 0.0,
+            best_trade_pnl   DOUBLE DEFAULT 0.0,
+            worst_trade_pnl  DOUBLE DEFAULT 0.0,
+            sharpe_ratio     DOUBLE DEFAULT 0.0,
+            max_drawdown     DOUBLE DEFAULT 0.0,
+            status           VARCHAR DEFAULT 'active',
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_run_at      TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
@@ -640,4 +669,12 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
     ]
     for col, dtype in quant_cols:
         _add_col("quant_scorecards", col, dtype)
+
+    # ---- Multi-Bot: add bot_id to trading tables ----
+    bot_id_tables = [
+        "positions", "orders", "portfolio_snapshots",
+        "price_triggers", "watchlist", "pipeline_events",
+    ]
+    for tbl in bot_id_tables:
+        _add_col(tbl, "bot_id", "VARCHAR DEFAULT 'default'")
 

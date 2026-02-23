@@ -26,11 +26,14 @@ class ScoredTicker(BaseModel):
 
 
 class DiscoveryResult(BaseModel):
-    """Result of a full discovery run (Reddit + YouTube combined)."""
+    """Result of a full discovery run (all sources combined)."""
 
     tickers: list[ScoredTicker] = Field(default_factory=list)
     reddit_count: int = 0
     youtube_count: int = 0
+    sec_13f_count: int = 0
+    congress_count: int = 0
+    rss_news_count: int = 0
     transcript_count: int = 0
     run_at: datetime = Field(default_factory=datetime.now)
     duration_seconds: float = 0.0

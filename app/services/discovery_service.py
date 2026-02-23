@@ -224,6 +224,9 @@ class DiscoveryService:
             tickers=merged,
             reddit_count=len(reddit_tickers),
             youtube_count=len(youtube_tickers),
+            sec_13f_count=len(sec_13f_tickers),
+            congress_count=len(congress_tickers),
+            rss_news_count=len(rss_news_tickers),
             transcript_count=transcript_count,
             run_at=datetime.now(),
             duration_seconds=elapsed,
@@ -236,11 +239,13 @@ class DiscoveryService:
             elapsed,
         )
         logger.info(
-            "[Discovery]   Reddit: %d, YouTube: %d, SEC 13F: %d, Congress: %d, Transcripts: %d",
+            "[Discovery]   Reddit: %d, YouTube: %d, SEC 13F: %d, "
+            "Congress: %d, RSS News: %d, Transcripts: %d",
             result.reddit_count,
             result.youtube_count,
-            len(sec_13f_tickers),
-            len(congress_tickers),
+            result.sec_13f_count,
+            result.congress_count,
+            result.rss_news_count,
             transcript_count,
         )
         for t in merged[:10]:
@@ -300,21 +305,32 @@ class DiscoveryService:
             else None,
         }
 
-    def get_latest_scores(self, limit: int = 20) -> list[dict]:
-        """Get latest aggregated scores from DuckDB."""
+    def get_latest_scores(
+        self, limit: int = 20, offset: int = 0,
+    ) -> dict:
+        """Get latest aggregated scores from DuckDB with pagination.
+
+        Returns:
+            dict with "scores" list, "total" count, "limit", and "offset".
+        """
         db = get_db()
+
+        # Total count (for pagination controls)
+        total_row = db.execute("SELECT COUNT(*) FROM ticker_scores").fetchone()
+        total = total_row[0] if total_row else 0
+
         rows = db.execute(
             """
             SELECT ticker, total_score, youtube_score, reddit_score,
                    mention_count, first_seen, last_seen, sentiment_hint
             FROM ticker_scores
             ORDER BY total_score DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            [limit],
+            [limit, offset],
         ).fetchall()
 
-        return [
+        scores = [
             {
                 "ticker": r[0],
                 "total_score": r[1],
@@ -327,6 +343,12 @@ class DiscoveryService:
             }
             for r in rows
         ]
+        return {
+            "scores": scores,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     def get_discovery_history(self, limit: int = 50) -> list[dict]:
         """Get raw discovery history from DuckDB."""

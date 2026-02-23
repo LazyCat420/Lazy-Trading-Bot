@@ -2759,6 +2759,9 @@ const SettingsPage = () => {
 const useMonitorData = () => {
     const [status, setStatus] = useState(null);
     const [scores, setScores] = useState([]);
+    const [scorePage, setScorePage] = useState(1);
+    const [scorePages, setScorePages] = useState(1);
+    const [scoreTotal, setScoreTotal] = useState(0);
     const [history, setHistory] = useState([]);
     const [pipelineEvents, setPipelineEvents] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -2789,8 +2792,59 @@ const useMonitorData = () => {
     const [loopRunning, setLoopRunning] = useState(false);
     const [loopStatus, setLoopStatus] = useState(null);
 
+    // ── Multi-Bot state ──
+    const [activeBotId, setActiveBotId] = useState("default");
+    const [activeBotInfo, setActiveBotInfo] = useState(null);
+    const [botList, setBotList] = useState([]);
+    const [leaderboard, setLeaderboard] = useState([]);
+
     // Ref for loop poll interval so we can manage it across renders
     const loopPollRef = useRef(null);
+
+    // Fetch active bot info on mount
+    useEffect(() => {
+        fetchActiveBot();
+        fetchBotList();
+    }, []);
+
+    const fetchActiveBot = useCallback(async () => {
+        try {
+            const res = await fetch("/api/active-bot");
+            const data = await res.json();
+            setActiveBotId(data.bot_id || "default");
+            setActiveBotInfo(data.bot || null);
+        } catch (e) { console.error("Active bot fetch error:", e); }
+    }, []);
+
+    const fetchBotList = useCallback(async () => {
+        try {
+            const res = await fetch("/api/bots?include_inactive=false");
+            const data = await res.json();
+            setBotList(data.bots || []);
+        } catch (e) { console.error("Bot list fetch error:", e); }
+    }, []);
+
+    const switchBot = useCallback(async (botId) => {
+        try {
+            await fetch("/api/active-bot", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ bot_id: botId }),
+            });
+            setActiveBotId(botId);
+            // Refresh portfolio data for the newly selected bot
+            await fetchActiveBot();
+            await fetchPortfolio();
+        } catch (e) { console.error("Switch bot error:", e); }
+    }, []);
+
+    const fetchLeaderboard = useCallback(async () => {
+        try {
+            const res = await fetch("/api/leaderboard");
+            const data = await res.json();
+            setLeaderboard(data.leaderboard || []);
+        } catch (e) { console.error("Leaderboard fetch error:", e); }
+    }, []);
 
     const fetchWatchlist = useCallback(async () => {
         try {
@@ -2863,16 +2917,26 @@ const useMonitorData = () => {
         }
     }, [fetchPortfolio]);
 
+    const fetchScorePage = useCallback(async (page = 1) => {
+        try {
+            const res = await fetch(`/api/discovery/results?page=${page}&page_size=20`).then(r => r.json());
+            setScores(res.scores || []);
+            setScorePage(res.page || 1);
+            setScorePages(res.pages || 1);
+            setScoreTotal(res.total || 0);
+        } catch (e) {
+            console.error("Score page fetch error:", e);
+        }
+    }, []);
+
     const fetchAll = useCallback(async () => {
         try {
-            const [statusRes, scoresRes, historyRes, eventsRes] = await Promise.all([
+            const [statusRes, historyRes, eventsRes] = await Promise.all([
                 fetch("/api/discovery/status").then(r => r.json()),
-                fetch("/api/discovery/results?limit=50").then(r => r.json()),
                 fetch("/api/discovery/history?limit=200").then(r => r.json()),
                 fetch("/api/pipeline/events?limit=200").then(r => r.json()).catch(() => ({ events: [] })),
             ]);
             setStatus(statusRes);
-            setScores(scoresRes.scores || []);
             setHistory(historyRes.history || []);
             setPipelineEvents(eventsRes.events || []);
         } catch (e) {
@@ -2880,10 +2944,11 @@ const useMonitorData = () => {
         } finally {
             setLoading(false);
         }
-        // Also refresh watchlist + portfolio
+        // Also refresh scores (paginated), watchlist + portfolio
+        fetchScorePage(scorePage);
         fetchWatchlist();
         fetchPortfolio();
-    }, [fetchWatchlist, fetchPortfolio]);
+    }, [fetchWatchlist, fetchPortfolio, fetchScorePage, scorePage]);
 
     // Start polling for loop status
     const startLoopPoll = useCallback(() => {
@@ -3167,7 +3232,8 @@ const useMonitorData = () => {
 
     return {
         // Data state
-        status, scores, history, pipelineEvents, loading,
+        status, scores, scorePage, scorePages, scoreTotal,
+        fetchScorePage, history, pipelineEvents, loading,
         scanning, enableReddit, setEnableReddit,
         enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
         // Watchlist state
@@ -3178,6 +3244,9 @@ const useMonitorData = () => {
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         // Loop state
         loopRunning, loopStatus, setLoopStatus,
+        // Multi-Bot state
+        activeBotId, activeBotInfo, botList, leaderboard,
+        fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
         // Scheduler state
         schedulerStatus, schedulerHistory, schedulerLoading,
         // Actions
@@ -3206,13 +3275,16 @@ const AutobotMonitorPage = ({ monitorData }) => {
 
     // Destructure all data from the persistent hook
     const {
-        status, scores, history, pipelineEvents, loading,
+        status, scores, scorePage, scorePages, scoreTotal,
+        fetchScorePage, history, pipelineEvents, loading,
         scanning, enableReddit, setEnableReddit,
         enableYoutube, setEnableYoutube, maxTickers, setMaxTickers,
         wlEntries, wlSummary, wlImporting, wlAnalyzing, wlAnalyzingTicker,
         dossierData, setDossierData, dossierLoading,
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         loopRunning, loopStatus, setLoopStatus,
+        activeBotId, activeBotInfo, botList, leaderboard,
+        fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
         schedulerStatus, schedulerHistory, schedulerLoading,
         fetchAll, runScan, clearData,
         addToWatchlist, removeFromWatchlist,
@@ -3544,6 +3616,20 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     React.createElement("h2", { className: "text-white font-bold text-lg" }, "Autobot Monitor"),
                     React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${loopRunning ? "bg-green-500/20 text-green-400 animate-pulse" : isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` },
                         loopRunning ? "LOOP RUNNING" : stateLabel
+                    ),
+                    // ── Bot Selector (only show if there are bots) ──
+                    botList.length > 0 && React.createElement("select", {
+                        value: activeBotId,
+                        onChange: (e) => { RetroSFX.click(); switchBot(e.target.value); },
+                        className: "ml-3 bg-onyx-surface border border-border-dark rounded-lg px-3 py-1 text-xs font-mono text-white focus:border-primary focus:outline-none cursor-pointer min-w-[140px]",
+                        title: "Switch active bot — each bot has its own portfolio",
+                    },
+                        React.createElement("option", { value: "default" }, "\uD83E\uDD16 Default Bot"),
+                        ...botList.filter(b => b.bot_id !== "default").map(b =>
+                            React.createElement("option", { key: b.bot_id, value: b.bot_id },
+                                `\uD83E\uDD16 ${b.display_name || b.model_name}`
+                            )
+                        )
                     )
                 ),
                 React.createElement("div", { className: "flex items-center gap-2" },
@@ -3712,7 +3798,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     },
                         React.createElement("span", { className: "flex items-center gap-1.5" },
                             React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "leaderboard"),
-                            `Scoreboard (${scores.length})`
+                            `Scoreboard (${scoreTotal})`
                         )
                     ),
                     React.createElement("button", {
@@ -3750,6 +3836,16 @@ const AutobotMonitorPage = ({ monitorData }) => {
                             React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "schedule"),
                             `Scheduler${schedulerStatus?.is_running ? " ●" : ""}`
                         )
+                    ),
+                    // ── Leaderboard Tab ──
+                    React.createElement("button", {
+                        onClick: () => { RetroSFX.click(); setActiveTab("leaderboard"); fetchLeaderboard(); },
+                        className: `px-4 py-2 rounded-md text-xs font-bold transition-all ${activeTab === "leaderboard" ? "bg-amber-500/20 text-amber-400 shadow-sm" : "text-text-muted hover:text-white"}`
+                    },
+                        React.createElement("span", { className: "flex items-center gap-1.5" },
+                            React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "emoji_events"),
+                            `Leaderboard (${botList.length})`
+                        )
                     )
                 ),
 
@@ -3764,8 +3860,46 @@ const AutobotMonitorPage = ({ monitorData }) => {
                             React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Run a discovery scan to find trending tickers")
                         )
                         : React.createElement("div", { className: "space-y-2" },
-                            ...sortedScores.map((s, i) => React.createElement(TickerCard, { key: s.ticker, s, rank: i + 1 }))
+                            ...sortedScores.map((s, i) => React.createElement(TickerCard, { key: s.ticker, s, rank: (scorePage - 1) * 20 + i + 1 }))
+                        ),
+
+                    // ── Pagination controls ──
+                    scorePages > 1 && React.createElement("div", {
+                        className: "flex items-center justify-center gap-3 mt-4 py-3"
+                    },
+                        React.createElement("button", {
+                            onClick: () => { RetroSFX.click(); fetchScorePage(scorePage - 1); },
+                            disabled: scorePage <= 1,
+                            className: `px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scorePage <= 1
+                                ? "bg-onyx-panel text-text-muted cursor-not-allowed"
+                                : "bg-primary/20 text-primary hover:bg-primary/30"
+                                }`,
+                        },
+                            React.createElement("span", { className: "flex items-center gap-1" },
+                                React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "chevron_left"),
+                                "Prev"
+                            )
+                        ),
+                        React.createElement("span", { className: "text-xs text-text-secondary font-mono" },
+                            `Page ${scorePage} of ${scorePages}`
+                        ),
+                        React.createElement("button", {
+                            onClick: () => { RetroSFX.click(); fetchScorePage(scorePage + 1); },
+                            disabled: scorePage >= scorePages,
+                            className: `px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scorePage >= scorePages
+                                ? "bg-onyx-panel text-text-muted cursor-not-allowed"
+                                : "bg-primary/20 text-primary hover:bg-primary/30"
+                                }`,
+                        },
+                            React.createElement("span", { className: "flex items-center gap-1" },
+                                "Next",
+                                React.createElement("span", { className: "material-symbols-outlined text-[14px]" }, "chevron_right")
+                            )
+                        ),
+                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono ml-2" },
+                            `${scoreTotal} total tickers`
                         )
+                    )
                 ),
 
                 // ── WATCHLIST TAB: DuckDB-backed table with signals ──
@@ -4602,6 +4736,104 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         React.createElement("p", { className: "text-sm text-text-muted" }, "Portfolio not loaded yet"),
                         React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Click Refresh to load your paper trading portfolio")
                     )
+                ),
+
+                // ── LEADERBOARD TAB ─────────────────────────────────
+                activeTab === "leaderboard" && React.createElement("div", { className: "space-y-4" },
+                    // Header
+                    React.createElement("div", { className: "glass-card p-4 flex items-center justify-between" },
+                        React.createElement("div", { className: "flex items-center gap-3" },
+                            React.createElement("span", { className: "material-symbols-outlined text-amber-400 text-2xl" }, "emoji_events"),
+                            React.createElement("div", null,
+                                React.createElement("h3", { className: "text-white font-bold" }, "Bot Leaderboard"),
+                                React.createElement("p", { className: "text-[10px] text-text-muted" }, "Each bot has its own portfolio — ranked by total P&L")
+                            )
+                        ),
+                        React.createElement("button", {
+                            onClick: () => { fetchLeaderboard(); fetchBotList(); },
+                            className: "icon-btn", title: "Refresh leaderboard",
+                        }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh"))
+                    ),
+
+                    // Rankings Table
+                    leaderboard.length === 0
+                        ? React.createElement("div", { className: "glass-card text-center py-12" },
+                            React.createElement("span", { className: "material-symbols-outlined text-5xl text-text-muted mb-3 block" }, "emoji_events"),
+                            React.createElement("p", { className: "text-sm text-text-muted" }, "No bots registered yet"),
+                            React.createElement("p", { className: "text-xs text-text-muted mt-1" }, "Save an LLM model in Settings — a bot is auto-created for each model")
+                        )
+                        : React.createElement("div", { className: "space-y-2" },
+                            ...leaderboard.map((bot, i) => {
+                                const rank = bot.rank || (i + 1);
+                                const rankStyle = rank === 1 ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
+                                    : rank === 2 ? "bg-gray-400/20 text-gray-300 border-gray-400/30"
+                                        : rank === 3 ? "bg-orange-600/20 text-orange-400 border-orange-600/30"
+                                            : "bg-border-dark text-text-muted border-border-dark";
+                                const pnlColor = (bot.total_pnl || 0) >= 0 ? "text-green-400" : "text-red-400";
+                                const isActive = bot.bot_id === activeBotId;
+                                const winRate = bot.total_trades > 0 ? ((bot.winning_trades || 0) / bot.total_trades * 100) : 0;
+
+                                return React.createElement("div", {
+                                    key: bot.bot_id,
+                                    className: `glass-card p-4 flex items-center gap-4 transition-all cursor-pointer hover:bg-white/5 ${isActive ? "border-l-2 border-primary" : ""}`,
+                                    onClick: () => switchBot(bot.bot_id),
+                                },
+                                    // Rank badge
+                                    React.createElement("div", {
+                                        className: `w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border ${rankStyle}`
+                                    }, `#${rank}`),
+
+                                    // Model info
+                                    React.createElement("div", { className: "flex-1 min-w-0" },
+                                        React.createElement("div", { className: "flex items-center gap-2" },
+                                            React.createElement("span", { className: "text-white font-bold text-sm truncate" },
+                                                bot.display_name || bot.model_name
+                                            ),
+                                            isActive && React.createElement("span", {
+                                                className: "px-1.5 py-0.5 rounded text-[9px] font-bold bg-primary/20 text-primary"
+                                            }, "ACTIVE"),
+                                            React.createElement("span", {
+                                                className: `px-1.5 py-0.5 rounded text-[9px] font-mono ${bot.status === "active" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`
+                                            }, bot.status)
+                                        ),
+                                        React.createElement("div", { className: "text-[10px] text-text-muted font-mono mt-0.5" },
+                                            `${bot.provider || "lmstudio"} • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
+                                        )
+                                    ),
+
+                                    // Total P&L
+                                    React.createElement("div", { className: "text-right min-w-[100px]" },
+                                        React.createElement("div", { className: `text-lg font-bold font-mono ${pnlColor}` },
+                                            fmt.usd(bot.total_pnl || 0)
+                                        ),
+                                        React.createElement("div", { className: "text-[10px] text-text-muted" }, "Total P&L")
+                                    ),
+
+                                    // Win Rate
+                                    React.createElement("div", { className: "text-right min-w-[80px]" },
+                                        React.createElement("div", { className: "text-sm font-bold font-mono text-white" },
+                                            `${winRate.toFixed(0)}%`
+                                        ),
+                                        React.createElement("div", { className: "text-[10px] text-text-muted" },
+                                            `${bot.total_trades || 0} trades`
+                                        ),
+                                        React.createElement("div", { className: "w-full h-1 bg-border-dark rounded mt-1" },
+                                            React.createElement("div", {
+                                                className: "h-full bg-primary rounded",
+                                                style: { width: `${Math.min(winRate, 100)}%` }
+                                            })
+                                        )
+                                    ),
+
+                                    // Last Run
+                                    React.createElement("div", { className: "text-right min-w-[60px]" },
+                                        React.createElement("div", { className: "text-[10px] text-text-muted font-mono" },
+                                            bot.last_run_at ? fmt.ago(bot.last_run_at) : "never"
+                                        )
+                                    )
+                                );
+                            })
+                        )
                 ),
 
                 // ── SCHEDULER TAB ──────────────────────────────────────

@@ -30,10 +30,6 @@ from app.utils.logger import logger
 # ── RSS Feed Sources ─────────────────────────────────────────────
 RSS_FEEDS: list[dict[str, str]] = [
     {
-        "name": "reuters_business",
-        "url": "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
-    },
-    {
         "name": "cnbc_markets",
         "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
     },
@@ -50,14 +46,27 @@ RSS_FEEDS: list[dict[str, str]] = [
         "url": "https://seekingalpha.com/market_currents.xml",
     },
     {
-        "name": "google_news_finance",
+        "name": "google_news_stocks",
         "url": "https://news.google.com/rss/search?q=stock+market+today&hl=en-US&gl=US&ceid=US:en",
+    },
+    {
+        "name": "google_news_earnings",
+        "url": "https://news.google.com/rss/search?q=stock+earnings+report&hl=en-US&gl=US&ceid=US:en",
+    },
+    {
+        "name": "google_news_smallcap",
+        "url": "https://news.google.com/rss/search?q=small+cap+stocks+penny+stocks&hl=en-US&gl=US&ceid=US:en",
+    },
+    {
+        "name": "investing_com",
+        "url": "https://www.investing.com/rss/news.rss",
     },
 ]
 
 RATE_LIMIT_SECS = 1.0
 MAX_ARTICLES_PER_FEED = 5
-MIN_CONTENT_LENGTH = 200  # Skip articles with less content
+MIN_CONTENT_LENGTH = 100  # Lowered to accept RSS summaries as fallback
+MIN_SUMMARY_LENGTH = 80   # Minimum RSS summary to use as fallback content
 
 
 class RSSNewsCollector:
@@ -240,6 +249,16 @@ class RSSNewsCollector:
 
             # Extract full article content using newspaper3k
             content = self._extract_article_content(url)
+
+            # Fallback: use RSS summary if newspaper3k extraction failed
+            if (not content or len(content) < MIN_CONTENT_LENGTH) and summary:
+                if len(summary) >= MIN_SUMMARY_LENGTH:
+                    content = f"{title}. {summary}"
+                    logger.info(
+                        "[RSS News] Using RSS summary as fallback for: %s (%d chars)",
+                        title[:40], len(content),
+                    )
+
             if not content or len(content) < MIN_CONTENT_LENGTH:
                 logger.debug(
                     "[RSS News] Skipping %s (content too short: %d chars)",

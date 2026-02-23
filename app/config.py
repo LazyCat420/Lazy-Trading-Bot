@@ -37,6 +37,12 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
     LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "8192"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+    LLM_TOP_P: float = float(os.getenv("LLM_TOP_P", "1.0"))
+    LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "0"))
+    LLM_EVAL_BATCH_SIZE: int = int(os.getenv("LLM_EVAL_BATCH_SIZE", "512"))
+    LLM_FLASH_ATTENTION: bool = os.getenv("LLM_FLASH_ATTENTION", "true").lower() == "true"
+    LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
+    LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
 
     # OpenAI / LM Studio API key (LM Studio usually doesn't need one)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -98,6 +104,18 @@ class Settings:
             self.LLM_CONTEXT_SIZE = int(data["context_size"])
         if "temperature" in data:
             self.LLM_TEMPERATURE = float(data["temperature"])
+        if "top_p" in data:
+            self.LLM_TOP_P = float(data["top_p"])
+        if "max_tokens" in data:
+            self.LLM_MAX_TOKENS = int(data["max_tokens"])
+        if "eval_batch_size" in data:
+            self.LLM_EVAL_BATCH_SIZE = int(data["eval_batch_size"])
+        if "flash_attention" in data:
+            self.LLM_FLASH_ATTENTION = bool(data["flash_attention"])
+        if "num_experts" in data:
+            self.LLM_NUM_EXPERTS = int(data["num_experts"])
+        if "gpu_offload" in data:
+            self.LLM_GPU_OFFLOAD = bool(data["gpu_offload"])
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.
@@ -132,7 +150,14 @@ class Settings:
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
             "temperature": self.LLM_TEMPERATURE,
+            "top_p": self.LLM_TOP_P,
+            "max_tokens": self.LLM_MAX_TOKENS,
+            "eval_batch_size": self.LLM_EVAL_BATCH_SIZE,
+            "flash_attention": self.LLM_FLASH_ATTENTION,
+            "num_experts": self.LLM_NUM_EXPERTS,
+            "gpu_offload": self.LLM_GPU_OFFLOAD,
         }
 
 
 settings = Settings()
+

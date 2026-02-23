@@ -25,8 +25,9 @@ from app.utils.logger import logger
 class WatchlistManager:
     """Manages the watchlist — adding, removing, and analyzing tickers."""
 
-    def __init__(self) -> None:
+    def __init__(self, bot_id: str = "default") -> None:
         self.pipeline = PipelineService()
+        self.bot_id = bot_id
 
     # ── Read operations ───────────────────────────────────────────
 
@@ -40,8 +41,10 @@ class WatchlistManager:
                        signal, confidence, discovery_score, sentiment_hint,
                        status, cooldown_until, notes, updated_at
                 FROM watchlist
+                WHERE bot_id = ?
                 ORDER BY confidence DESC, added_at DESC
-                """
+                """,
+                [self.bot_id],
             ).fetchall()
         else:
             rows = db.execute(
@@ -50,9 +53,10 @@ class WatchlistManager:
                        signal, confidence, discovery_score, sentiment_hint,
                        status, cooldown_until, notes, updated_at
                 FROM watchlist
-                WHERE status = 'active'
+                WHERE status = 'active' AND bot_id = ?
                 ORDER BY confidence DESC, added_at DESC
-                """
+                """,
+                [self.bot_id],
             ).fetchall()
 
         return [self._row_to_dict(r) for r in rows]
@@ -62,16 +66,31 @@ class WatchlistManager:
         db = get_db()
         rows = db.execute(
             "SELECT ticker FROM watchlist WHERE status = 'active' "
-            "ORDER BY confidence DESC, added_at DESC"
+            "AND bot_id = ? ORDER BY confidence DESC, added_at DESC",
+            [self.bot_id],
         ).fetchall()
         return [str(r[0]) for r in rows]
+
+    def get_active_tickers_with_staleness(self) -> list[dict]:
+        """Return active tickers with last_analyzed timestamp for cache checks."""
+        db = get_db()
+        rows = db.execute(
+            "SELECT ticker, last_analyzed FROM watchlist WHERE status = 'active' "
+            "AND bot_id = ? ORDER BY confidence DESC, added_at DESC",
+            [self.bot_id],
+        ).fetchall()
+        return [
+            {"ticker": str(r[0]), "last_analyzed": r[1]}
+            for r in rows
+        ]
 
     def get_summary(self) -> dict:
         """Return aggregate stats for the frontend header."""
         db = get_db()
 
         total_row = db.execute(
-            "SELECT COUNT(*) FROM watchlist WHERE status = 'active'"
+            "SELECT COUNT(*) FROM watchlist WHERE status = 'active' AND bot_id = ?",
+            [self.bot_id],
         ).fetchone()
         total = total_row[0] if total_row else 0
 
@@ -79,9 +98,10 @@ class WatchlistManager:
             """
             SELECT signal, COUNT(*) as cnt
             FROM watchlist
-            WHERE status = 'active'
+            WHERE status = 'active' AND bot_id = ?
             GROUP BY signal
-            """
+            """,
+            [self.bot_id],
         ).fetchall()
 
         signal_counts: dict[str, int] = {}
@@ -89,17 +109,19 @@ class WatchlistManager:
             signal_counts[row[0]] = row[1]
 
         last_row = db.execute(
-            "SELECT MAX(last_analyzed) FROM watchlist WHERE status = 'active'"
+            "SELECT MAX(last_analyzed) FROM watchlist WHERE status = 'active' AND bot_id = ?",
+            [self.bot_id],
         ).fetchone()
 
         top_row = db.execute(
             """
             SELECT ticker, confidence, signal
             FROM watchlist
-            WHERE status = 'active' AND signal != 'PENDING'
+            WHERE status = 'active' AND signal != 'PENDING' AND bot_id = ?
             ORDER BY confidence DESC
             LIMIT 1
-            """
+            """,
+            [self.bot_id],
         ).fetchone()
 
         summary = WatchlistSummary(
@@ -148,8 +170,8 @@ class WatchlistManager:
 
         # Check if already exists
         existing = db.execute(
-            "SELECT ticker, status FROM watchlist WHERE ticker = ?",
-            [ticker],
+            "SELECT ticker, status FROM watchlist WHERE ticker = ? AND bot_id = ?",
+            [ticker, self.bot_id],
         ).fetchone()
 
         if existing:
@@ -163,9 +185,9 @@ class WatchlistManager:
                 SET status = 'active', source = ?, discovery_score = ?,
                     sentiment_hint = ?, notes = ?, updated_at = ?,
                     signal = 'PENDING', confidence = 0.0
-                WHERE ticker = ?
+                WHERE ticker = ? AND bot_id = ?
                 """,
-                [source, discovery_score, sentiment_hint, notes, now, ticker],
+                [source, discovery_score, sentiment_hint, notes, now, ticker, self.bot_id],
             )
             db.commit()
             logger.info("[Watchlist] Reactivated %s", ticker)
@@ -176,10 +198,10 @@ class WatchlistManager:
             """
             INSERT INTO watchlist
                 (ticker, source, added_at, discovery_score,
-                 sentiment_hint, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 sentiment_hint, notes, updated_at, bot_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [ticker, source, now, discovery_score, sentiment_hint, notes, now],
+            [ticker, source, now, discovery_score, sentiment_hint, notes, now, self.bot_id],
         )
         db.commit()
         logger.info("[Watchlist] Added %s (source=%s)", ticker, source)
@@ -192,16 +214,17 @@ class WatchlistManager:
         now = datetime.now()
 
         existing = db.execute(
-            "SELECT ticker FROM watchlist WHERE ticker = ?",
-            [ticker],
+            "SELECT ticker FROM watchlist WHERE ticker = ? AND bot_id = ?",
+            [ticker, self.bot_id],
         ).fetchone()
 
         if not existing:
             return {"error": "not_found", "ticker": ticker}
 
         db.execute(
-            "UPDATE watchlist SET status = 'removed', updated_at = ? WHERE ticker = ?",
-            [now, ticker],
+            "UPDATE watchlist SET status = 'removed', updated_at = ? "
+            "WHERE ticker = ? AND bot_id = ?",
+            [now, ticker, self.bot_id],
         )
         db.commit()
         logger.info("[Watchlist] Removed %s", ticker)
@@ -256,7 +279,7 @@ class WatchlistManager:
     def clear(self) -> dict:
         """Remove all entries from the watchlist."""
         db = get_db()
-        db.execute("DELETE FROM watchlist")
+        db.execute("DELETE FROM watchlist WHERE bot_id = ?", [self.bot_id])
         db.commit()
         logger.info("[Watchlist] Cleared all data")
         return {"status": "cleared"}
@@ -293,9 +316,9 @@ class WatchlistManager:
                 UPDATE watchlist
                 SET signal = ?, confidence = ?, last_analyzed = ?,
                     analysis_count = analysis_count + 1, updated_at = ?
-                WHERE ticker = ?
+                WHERE ticker = ? AND bot_id = ?
                 """,
-                [signal, confidence, now, now, ticker],
+                [signal, confidence, now, now, ticker, self.bot_id],
             )
 
             logger.info(
@@ -416,3 +439,5 @@ class WatchlistManager:
             "notes": row[11],
             "updated_at": str(row[12]) if row[12] else None,
         }
+
+        
