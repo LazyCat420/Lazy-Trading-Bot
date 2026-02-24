@@ -19,6 +19,17 @@ from app.utils.logger import logger
 # is grouped together.  Set by `start_loop()`.
 _current_loop_id: str | None = None
 
+# Module-level bot context so every event records which bot/model produced it.
+_current_bot_id: str = "default"
+_current_model_name: str = ""
+
+
+def set_bot_context(bot_id: str, model_name: str = "") -> None:
+    """Set the bot context used by all subsequent log_event() calls."""
+    global _current_bot_id, _current_model_name  # noqa: PLW0603
+    _current_bot_id = bot_id or "default"
+    _current_model_name = model_name or ""
+
 
 def start_loop() -> str:
     """Generate a new loop_id and return it."""
@@ -47,6 +58,8 @@ def log_event(
     ticker: str | None = None,
     metadata: dict | None = None,
     status: str = "success",
+    bot_id: str | None = None,
+    model_name: str | None = None,
 ) -> None:
     """Write one event row to pipeline_events.
 
@@ -66,15 +79,22 @@ def log_event(
         Arbitrary JSON blob with counts / specifics.
     status : str
         ``success`` | ``error`` | ``warning`` | ``skipped``.
+    bot_id : str | None
+        Override bot_id (defaults to module-level ``_current_bot_id``).
+    model_name : str | None
+        Override model_name (defaults to module-level ``_current_model_name``).
     """
+    effective_bot_id = bot_id if bot_id is not None else _current_bot_id
+    effective_model = model_name if model_name is not None else _current_model_name
     try:
         db = get_db()
         db.execute(
             """
             INSERT INTO pipeline_events
                 (id, timestamp, phase, event_type, ticker,
-                 detail, metadata, loop_id, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 detail, metadata, loop_id, status,
+                 bot_id, model_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 uuid.uuid4().hex,
@@ -86,6 +106,8 @@ def log_event(
                 json.dumps(metadata or {}),
                 _current_loop_id,
                 status,
+                effective_bot_id,
+                effective_model,
             ],
         )
     except Exception as exc:

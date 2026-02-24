@@ -281,7 +281,11 @@ class TradingScheduler:
             # Run just the analysis + trading phases
             from app.services.autonomous_loop import AutonomousLoop
 
-            loop = AutonomousLoop(max_tickers=self._loop.max_tickers)
+            loop = AutonomousLoop(
+                max_tickers=self._loop.max_tickers,
+                bot_id=getattr(self._loop, 'bot_id', 'default'),
+                model_name=getattr(self._loop, 'model_name', ''),
+            )
             # Run analysis on existing watchlist (skip discovery + import)
             await loop._do_deep_analysis()
             await loop._do_trading()
@@ -328,7 +332,11 @@ class TradingScheduler:
             # Run collection + analysis + trading on the new tickers only
             from app.services.autonomous_loop import AutonomousLoop
 
-            loop = AutonomousLoop(max_tickers=self._loop.max_tickers)
+            loop = AutonomousLoop(
+                max_tickers=self._loop.max_tickers,
+                bot_id=getattr(self._loop, 'bot_id', 'default'),
+                model_name=getattr(self._loop, 'model_name', ''),
+            )
             await loop._do_collection()
             await loop._do_deep_analysis()
             await loop._do_trading()

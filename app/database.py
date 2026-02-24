@@ -349,7 +349,7 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS watchlist (
-            ticker          VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
             source          VARCHAR DEFAULT 'manual',
             added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_analyzed   TIMESTAMP,
@@ -361,7 +361,9 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             status          VARCHAR DEFAULT 'active',
             cooldown_until  TIMESTAMP,
             notes           VARCHAR DEFAULT '',
-            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            bot_id          VARCHAR DEFAULT 'default',
+            PRIMARY KEY (ticker, bot_id)
         );
     """)
 
@@ -474,7 +476,9 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             detail      VARCHAR NOT NULL,
             metadata    VARCHAR DEFAULT '{}',
             loop_id     VARCHAR,
-            status      VARCHAR DEFAULT 'success'
+            status      VARCHAR DEFAULT 'success',
+            bot_id      VARCHAR DEFAULT 'default',
+            model_name  VARCHAR DEFAULT ''
         );
     """)
 
@@ -677,4 +681,53 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
     ]
     for tbl in bot_id_tables:
         _add_col(tbl, "bot_id", "VARCHAR DEFAULT 'default'")
+
+    # ---- pipeline_events: model_name for activity log tracking ----
+    _add_col("pipeline_events", "model_name", "VARCHAR DEFAULT ''")
+
+    # ---- Watchlist: migrate from single-column PK to composite PK ----
+    # Existing DBs have ticker as sole PK, which crashes multi-bot imports.
+    # Recreate the table with (ticker, bot_id) as the composite PK.
+    try:
+        # Check if watchlist still has old single-column PK
+        info = conn.execute(
+            "SELECT column_name FROM information_schema.key_column_usage "
+            "WHERE table_name = 'watchlist'"
+        ).fetchall()
+        pk_cols = [r[0] for r in info]
+        if pk_cols and "bot_id" not in pk_cols:
+            logger.info("Migration: rebuilding watchlist with composite PK (ticker, bot_id)")
+            conn.execute("ALTER TABLE watchlist RENAME TO watchlist_old")
+            conn.execute("""
+                CREATE TABLE watchlist (
+                    ticker          VARCHAR NOT NULL,
+                    source          VARCHAR DEFAULT 'manual',
+                    added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_analyzed   TIMESTAMP,
+                    analysis_count  INTEGER DEFAULT 0,
+                    signal          VARCHAR DEFAULT 'PENDING',
+                    confidence      DOUBLE DEFAULT 0.0,
+                    discovery_score DOUBLE DEFAULT 0.0,
+                    sentiment_hint  VARCHAR DEFAULT 'neutral',
+                    status          VARCHAR DEFAULT 'active',
+                    cooldown_until  TIMESTAMP,
+                    notes           VARCHAR DEFAULT '',
+                    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    bot_id          VARCHAR DEFAULT 'default',
+                    PRIMARY KEY (ticker, bot_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO watchlist
+                SELECT ticker, source, added_at, last_analyzed,
+                       analysis_count, signal, confidence,
+                       discovery_score, sentiment_hint, status,
+                       cooldown_until, notes, updated_at,
+                       COALESCE(bot_id, 'default')
+                FROM watchlist_old
+            """)
+            conn.execute("DROP TABLE watchlist_old")
+            logger.info("Migration: watchlist PK migrated to (ticker, bot_id)")
+    except Exception as exc:
+        logger.warning("Migration: watchlist PK check skipped — %s", exc)
 

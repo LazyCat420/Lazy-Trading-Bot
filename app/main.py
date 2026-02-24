@@ -484,18 +484,36 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
             }
             try:
                 async with _httpx.AsyncClient(timeout=60.0) as client:
-                    # ── Step 1: Unload current model to avoid stacking ──
+                    # ── Step 1: Unload ALL loaded models to free VRAM ──
                     try:
-                        await client.post(
-                            f"{lms_url}/api/v1/models/unload",
-                            json={"instance_id": model_id},
+                        list_resp = await client.get(
+                            f"{lms_url}/api/v1/models",
                         )
-                        logger.info(
-                            "[LM Studio] Unloaded %s before reload", model_id,
-                        )
+                        if list_resp.status_code == 200:
+                            all_models = list_resp.json().get("models", [])
+                            for m in all_models:
+                                for inst in m.get("loaded_instances", []):
+                                    inst_id = inst.get("id", m.get("key"))
+                                    if not inst_id:
+                                        continue
+                                    try:
+                                        await client.post(
+                                            f"{lms_url}/api/v1/models/unload",
+                                            json={"instance_id": inst_id},
+                                        )
+                                        logger.info(
+                                            "[LM Studio] Unloaded instance %s "
+                                            "to free VRAM",
+                                            inst_id,
+                                        )
+                                    except Exception:
+                                        pass
                     except Exception:
-                        # Model might not be loaded yet — that's fine
-                        pass
+                        # List endpoint failed — try loading anyway
+                        logger.debug(
+                            "[LM Studio] Could not list models for "
+                            "pre-unload, proceeding with load",
+                        )
 
                     # ── Step 2: Load with new config ──
                     resp = await client.post(
@@ -986,6 +1004,7 @@ async def get_active_bot() -> dict:
     return {
         "bot_id": _active_bot_id,
         "bot": bot,
+        "model_name": settings.LLM_MODEL,
     }
 
 
@@ -1241,7 +1260,8 @@ async def get_pipeline_events(
     rows = db.execute(
         f"""
         SELECT id, timestamp, phase, event_type, ticker,
-               detail, metadata, loop_id, status
+               detail, metadata, loop_id, status,
+               bot_id, model_name
         FROM pipeline_events
         {where}
         ORDER BY timestamp DESC
@@ -1261,6 +1281,8 @@ async def get_pipeline_events(
             "metadata": r[6],
             "loop_id": r[7],
             "status": r[8],
+            "bot_id": r[9] if len(r) > 9 else "default",
+            "model_name": r[10] if len(r) > 10 else "",
         }
         for r in rows
     ]
@@ -1287,7 +1309,11 @@ async def run_full_loop(max_tickers: int = 10) -> dict:
 
     bot_id = _get_active_bot_id()
     # Re-create the loop scoped to the active bot
-    _loop = AutonomousLoop(max_tickers=max_tickers, bot_id=bot_id)
+    _loop = AutonomousLoop(
+        max_tickers=max_tickers,
+        bot_id=bot_id,
+        model_name=settings.LLM_MODEL,
+    )
 
     async def _run() -> None:
         try:
@@ -1703,7 +1729,11 @@ async def run_bot_loop(bot_id: str, max_tickers: int = 10) -> dict:
     if not bot:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
 
-    loop = AutonomousLoop(max_tickers=max_tickers, bot_id=bot_id)
+    loop = AutonomousLoop(
+        max_tickers=max_tickers,
+        bot_id=bot_id,
+        model_name=bot.get("model_name", ""),
+    )
     BotRegistry.record_run(bot_id)
 
     async def _run() -> None:

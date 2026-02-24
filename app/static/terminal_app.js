@@ -2292,6 +2292,8 @@ const SettingsPage = () => {
             if (data.lmstudio_verified) {
                 setLmsVerification(data.lmstudio_verified);
             }
+            // Notify other components (e.g. Autobot Monitor) to refresh bot label
+            window.dispatchEvent(new CustomEvent("llm-config-saved"));
         } catch (e) {
             setSaveStatus("error");
         }
@@ -2795,16 +2797,20 @@ const useMonitorData = () => {
     // ── Multi-Bot state ──
     const [activeBotId, setActiveBotId] = useState("default");
     const [activeBotInfo, setActiveBotInfo] = useState(null);
+    const [activeBotModelName, setActiveBotModelName] = useState("");
     const [botList, setBotList] = useState([]);
     const [leaderboard, setLeaderboard] = useState([]);
 
     // Ref for loop poll interval so we can manage it across renders
     const loopPollRef = useRef(null);
 
-    // Fetch active bot info on mount
+    // Fetch active bot info on mount + listen for config saves
     useEffect(() => {
         fetchActiveBot();
         fetchBotList();
+        const onConfigSaved = () => { fetchActiveBot(); fetchBotList(); };
+        window.addEventListener("llm-config-saved", onConfigSaved);
+        return () => window.removeEventListener("llm-config-saved", onConfigSaved);
     }, []);
 
     const fetchActiveBot = useCallback(async () => {
@@ -2813,6 +2819,7 @@ const useMonitorData = () => {
             const data = await res.json();
             setActiveBotId(data.bot_id || "default");
             setActiveBotInfo(data.bot || null);
+            setActiveBotModelName(data.model_name || "");
         } catch (e) { console.error("Active bot fetch error:", e); }
     }, []);
 
@@ -3245,7 +3252,7 @@ const useMonitorData = () => {
         // Loop state
         loopRunning, loopStatus, setLoopStatus,
         // Multi-Bot state
-        activeBotId, activeBotInfo, botList, leaderboard,
+        activeBotId, activeBotInfo, activeBotModelName, botList, leaderboard,
         fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
         // Scheduler state
         schedulerStatus, schedulerHistory, schedulerLoading,
@@ -3283,7 +3290,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
         dossierData, setDossierData, dossierLoading,
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         loopRunning, loopStatus, setLoopStatus,
-        activeBotId, activeBotInfo, botList, leaderboard,
+        activeBotId, activeBotInfo, activeBotModelName, botList, leaderboard,
         fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
         schedulerStatus, schedulerHistory, schedulerLoading,
         fetchAll, runScan, clearData,
@@ -3624,7 +3631,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         className: "ml-3 bg-onyx-surface border border-border-dark rounded-lg px-3 py-1 text-xs font-mono text-white focus:border-primary focus:outline-none cursor-pointer min-w-[140px]",
                         title: "Switch active bot — each bot has its own portfolio",
                     },
-                        React.createElement("option", { value: "default" }, "\uD83E\uDD16 Default Bot"),
+                        React.createElement("option", { value: "default" }, activeBotModelName ? `\uD83E\uDD16 Default Bot (${activeBotModelName})` : "\uD83E\uDD16 Default Bot"),
                         ...botList.filter(b => b.bot_id !== "default").map(b =>
                             React.createElement("option", { key: b.bot_id, value: b.bot_id },
                                 `\uD83E\uDD16 ${b.display_name || b.model_name}`
@@ -4414,12 +4421,16 @@ const AutobotMonitorPage = ({ monitorData }) => {
 
                                 const elements = [];
                                 if (isNewLoop) {
+                                    // Show model name for the previous loop if available
+                                    const prevModel = prevEv.model_name ? prevEv.model_name.split('/').pop() : '';
                                     elements.push(React.createElement("div", {
                                         key: `sep-${i}`,
                                         className: "flex items-center gap-2 py-2 px-4"
                                     },
                                         React.createElement("div", { className: "flex-1 h-px bg-border-dark" }),
-                                        React.createElement("span", { className: "text-[9px] text-text-muted font-mono" }, `Loop ${prevEv.loop_id}`),
+                                        React.createElement("span", { className: "text-[9px] text-text-muted font-mono" },
+                                            prevModel ? `Loop ${prevEv.loop_id} • ${prevModel}` : `Loop ${prevEv.loop_id}`
+                                        ),
                                         React.createElement("div", { className: "flex-1 h-px bg-border-dark" })
                                     ));
                                 }
@@ -4439,6 +4450,11 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                         React.createElement("span", { className: `material-symbols-outlined text-[14px] ${statusColor}` }, statusIcon),
                                         // Phase badge
                                         React.createElement("span", { className: `px-1.5 py-0.5 rounded text-[9px] font-mono uppercase ${pc.color} bg-onyx-surface/60` }, ev.phase),
+                                        // Model name badge
+                                        ev.model_name && React.createElement("span", {
+                                            className: "px-1.5 py-0.5 rounded text-[9px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 max-w-[120px] truncate",
+                                            title: ev.model_name
+                                        }, ev.model_name.split('/').pop()),
                                         // Timestamp
                                         React.createElement("span", { className: "text-[10px] text-text-muted font-mono w-14 text-right shrink-0" },
                                             ev.timestamp ? fmt.ago(ev.timestamp) : ""

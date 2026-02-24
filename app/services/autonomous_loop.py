@@ -14,7 +14,7 @@ _ANALYSIS_CACHE_TTL = timedelta(hours=24)
 
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.discovery_service import DiscoveryService
-from app.services.event_logger import end_loop, log_event, start_loop
+from app.services.event_logger import end_loop, log_event, set_bot_context, start_loop
 from app.services.paper_trader import PaperTrader
 from app.services.pipeline_service import PipelineService
 from app.services.price_monitor import PriceMonitor
@@ -25,8 +25,9 @@ from app.utils.logger import logger
 class AutonomousLoop:
     """Run every phase of the bot in one call."""
 
-    def __init__(self, *, max_tickers: int = 10, bot_id: str = "default") -> None:
+    def __init__(self, *, max_tickers: int = 10, bot_id: str = "default", model_name: str = "") -> None:
         self.bot_id = bot_id
+        self.model_name = model_name
         self.discovery = DiscoveryService()
         self.watchlist = WatchlistManager(bot_id=bot_id)
         self.paper_trader = PaperTrader(bot_id=bot_id)
@@ -41,6 +42,7 @@ class AutonomousLoop:
             "phases": {},
             "started_at": None,
             "bot_id": bot_id,
+            "model_name": model_name,
             "log": [],
         }
 
@@ -63,6 +65,7 @@ class AutonomousLoop:
         self._reset_state()
         t0 = time.time()
         loop_id = start_loop()
+        set_bot_context(self.bot_id, self.model_name)
         logger.info("=" * 60)
         logger.info("[AutoLoop] ▶ Starting full autonomous loop (%s)", loop_id)
         logger.info("=" * 60)

@@ -38,20 +38,19 @@ class YouTubeCollector:
     SEARCH_QUERIES = [
         "{ticker} stock analysis",
         "{ticker} earnings",
-        "{ticker} technical analysis",
     ]
 
     # Broader market queries for discovering NEW tickers
+    # Trimmed from 8 → 4 to reduce YouTube request volume and avoid IP bans
     GENERAL_MARKET_QUERIES = [
         "stock market news today",
         "stocks to buy now",
-        "best stocks this week",
-        "stock market analysis today",
         "top stocks to watch this week",
-        "stock market recap today",
-        "wall street week ahead",
-        "market movers today stocks",
+        "stock market analysis today",
     ]
+
+    # Minimum video duration (seconds) to filter out short clips
+    MIN_DURATION_SECS = 600  # 10 minutes
 
     # Curated financial channels — prioritized in search results
     CURATED_CHANNELS = [
@@ -77,7 +76,9 @@ class YouTubeCollector:
     # ──────────────────────────────────────────────────────────────
 
     async def collect(
-        self, ticker: str, max_videos: int = 3, *, discovery_mode: bool = False
+        self, ticker: str, max_videos: int = 3, *,
+        discovery_mode: bool = False,
+        min_duration_secs: int = 0,
     ) -> list[YouTubeTranscript]:
         """Scrape YouTube for NEW videos from the last 24 hours only.
 
@@ -113,13 +114,13 @@ class YouTubeCollector:
         logger.info("Collecting YouTube transcripts for %s (%s)", ticker, mode_label)
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
 
-        # Step 1: Multi-query search
+        # Step 1: Multi-query search (full metadata for duration filtering)
         all_videos: list[dict] = []
         seen_ids: set[str] = set()
 
         for query_template in self.SEARCH_QUERIES:
             query = query_template.format(ticker=ticker)
-            results = self._search_videos(query, max_videos)
+            results = self._search_videos_full(query, max_videos)
             for vid in results:
                 vid_id = vid["id"]
                 if vid_id not in seen_ids:
@@ -132,6 +133,20 @@ class YouTubeCollector:
             len(self.SEARCH_QUERIES),
             ticker,
         )
+
+        # Step 1b: Filter by minimum duration (skip short clips)
+        effective_min = min_duration_secs or self.MIN_DURATION_SECS
+        if effective_min > 0:
+            long_videos = [
+                v for v in all_videos if v.get("duration", 0) >= effective_min
+            ]
+            short_count = len(all_videos) - len(long_videos)
+            if short_count > 0:
+                logger.info(
+                    "Filtered out %d short videos (< %ds) for %s, %d remain",
+                    short_count, effective_min, ticker, len(long_videos),
+                )
+            all_videos = long_videos
 
         # Step 2: Apply recency filter (skipped in discovery mode)
         if discovery_mode:
@@ -168,13 +183,13 @@ class YouTubeCollector:
             logger.info("No recent YouTube videos found for %s", ticker)
             return []
 
-        # Step 3: Filter out already-collected videos
+        # Step 3: Filter out already-collected videos (ANY ticker, not just current)
         db = get_db()
         new_videos = []
         for vid in recent_videos:
             existing = db.execute(
-                "SELECT 1 FROM youtube_transcripts WHERE ticker = ? AND video_id = ?",
-                [ticker, vid["id"]],
+                "SELECT 1 FROM youtube_transcripts WHERE video_id = ?",
+                [vid["id"]],
             ).fetchone()
             if not existing:
                 new_videos.append(vid)
@@ -195,6 +210,26 @@ class YouTubeCollector:
                     vid["id"],
                     vid.get("title", ""),
                 )
+                # Record the failed attempt so we never retry this video
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO youtube_transcripts
+                            (ticker, video_id, title, channel, published_at,
+                             duration_seconds, raw_transcript)
+                        VALUES (?, ?, ?, ?, ?, ?, '')
+                        """,
+                        [
+                            ticker,
+                            vid["id"],
+                            vid.get("title", ""),
+                            vid.get("channel", ""),
+                            vid.get("published_at"),
+                            vid.get("duration", 0),
+                        ],
+                    )
+                except Exception:
+                    pass  # Ignore if already exists
                 continue
 
             # Log preview for debugging
@@ -243,7 +278,7 @@ class YouTubeCollector:
         return transcripts
 
     async def collect_general_market(
-        self, max_videos: int = 5, min_duration_secs: int = 900,
+        self, max_videos: int = 3, min_duration_secs: int = 900,
     ) -> list[YouTubeTranscript]:
         """Scrape general market news videos to discover NEW tickers.
 
@@ -316,12 +351,12 @@ class YouTubeCollector:
             logger.info("No videos meet the %ds minimum duration", min_duration_secs)
             return []
 
-        # Step 3: Filter out already-collected videos
+        # Step 3: Filter out already-collected videos (ANY ticker, not just __MARKET__)
         new_videos = []
         for vid in long_videos:
             existing_vid = db.execute(
                 "SELECT 1 FROM youtube_transcripts "
-                "WHERE ticker = '__MARKET__' AND video_id = ?",
+                "WHERE video_id = ?",
                 [vid["id"]],
             ).fetchone()
             if not existing_vid:
@@ -341,6 +376,26 @@ class YouTubeCollector:
         for vid in new_videos:
             transcript_text = self._get_transcript(vid["id"])
             if not transcript_text:
+                # Record failed attempt so we never retry this video
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO youtube_transcripts
+                            (ticker, video_id, title, channel, published_at,
+                             duration_seconds, raw_transcript)
+                        VALUES (?, ?, ?, ?, ?, ?, '')
+                        """,
+                        [
+                            "__MARKET__",
+                            vid["id"],
+                            vid.get("title", ""),
+                            vid.get("channel", ""),
+                            vid.get("published_at"),
+                            vid.get("duration", 0),
+                        ],
+                    )
+                except Exception:
+                    pass  # Ignore if already exists
                 continue
 
             yt = YouTubeTranscript(

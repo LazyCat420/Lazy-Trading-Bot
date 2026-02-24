@@ -59,7 +59,7 @@ class NewsCollector:
         articles.extend(await self._fetch_google_news(ticker, limit))
 
         # Source 3: SEC EDGAR RSS (filings only)
-        articles.extend(await self._fetch_sec_edgar(ticker, limit=5))
+        articles.extend(await self._fetch_sec_edgar(ticker, limit=10))
 
         if not articles:
             logger.warning("No news articles collected for %s", ticker)

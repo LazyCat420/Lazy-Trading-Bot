@@ -104,7 +104,7 @@ class TestLiveDataCollection:
         """Verify we can fetch news from Google RSS."""
         collector = NewsCollector()
         # Clean DB handled by fixture
-        articles = await collector.collect(ticker, limit=5)
+        articles = await collector.collect(ticker, limit=10)
         
         assert len(articles) > 0
         latest = articles[0]

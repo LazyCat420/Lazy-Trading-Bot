@@ -206,6 +206,27 @@ class DiscoveryService:
             rss_news_tickers,
         )
 
+        # ── Exclude tickers already on the active watchlist ──────
+        # This ensures the top N are always NEW stocks, not the same
+        # mega-caps (AAPL, MSFT, NVDA) that dominate every data source.
+        try:
+            from app.services.watchlist_manager import WatchlistManager
+            wm = WatchlistManager()
+            active_tickers = set(wm.get_active_tickers())
+            if active_tickers:
+                before_count = len(merged)
+                merged = [t for t in merged if t.ticker not in active_tickers]
+                excluded = before_count - len(merged)
+                if excluded:
+                    logger.info(
+                        "[Discovery] Excluded %d watchlist tickers (%s), %d remain",
+                        excluded,
+                        ", ".join(sorted(active_tickers)),
+                        len(merged),
+                    )
+        except Exception as exc:
+            logger.warning("[Discovery] Watchlist exclusion failed: %s", exc)
+
         # Cap results if max_tickers is set (for faster debugging)
         if max_tickers and len(merged) > max_tickers:
             logger.info(
