@@ -2503,15 +2503,37 @@ const SettingsPage = () => {
                             />
                         </div>
 
-                        {/* Temperature */}
+                        {/* Discovery Temperature */}
                         <div>
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">
-                                Temperature <span className="text-primary font-bold ml-1">{llmConfig.temperature.toFixed(2)}</span>
+                                Discovery Temp <span className="text-amber-400 font-bold ml-1">{(llmConfig.discovery_temperature ?? 0.6).toFixed(2)}</span>
                             </label>
                             <input
                                 type="range"
-                                value={llmConfig.temperature}
-                                onChange={e => setLlmConfig(prev => ({ ...prev, temperature: parseFloat(e.target.value) }))}
+                                value={llmConfig.discovery_temperature ?? 0.6}
+                                onChange={e => setLlmConfig(prev => ({ ...prev, discovery_temperature: parseFloat(e.target.value) }))}
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                className="w-full accent-amber-400 mt-1"
+                            />
+                            <div className="flex justify-between text-[9px] text-text-muted font-mono mt-0.5">
+                                <span>Precise</span>
+                                <span>Creative</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4 mt-4">
+                        {/* Trading Temperature */}
+                        <div>
+                            <label className="text-[10px] text-text-muted uppercase block mb-1.5">
+                                Trading Temp <span className="text-primary font-bold ml-1">{(llmConfig.trading_temperature ?? 0.3).toFixed(2)}</span>
+                            </label>
+                            <input
+                                type="range"
+                                value={llmConfig.trading_temperature ?? 0.3}
+                                onChange={e => setLlmConfig(prev => ({ ...prev, trading_temperature: parseFloat(e.target.value) }))}
                                 min={0}
                                 max={1}
                                 step={0.05}

@@ -31,7 +31,7 @@ from app.utils.logger import logger
 RSS_FEEDS: list[dict[str, str]] = [
     {
         "name": "cnbc_markets",
-        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
     },
     {
         "name": "marketwatch_top",
@@ -66,7 +66,7 @@ RSS_FEEDS: list[dict[str, str]] = [
 RATE_LIMIT_SECS = 1.0
 MAX_ARTICLES_PER_FEED = 5
 MIN_CONTENT_LENGTH = 100  # Lowered to accept RSS summaries as fallback
-MIN_SUMMARY_LENGTH = 80   # Minimum RSS summary to use as fallback content
+MIN_SUMMARY_LENGTH = 80  # Minimum RSS summary to use as fallback content
 
 
 class RSSNewsCollector:
@@ -87,8 +87,7 @@ class RSSNewsCollector:
 
         # Daily guard: skip if we already scraped today
         row = db.execute(
-            "SELECT COUNT(*) FROM news_full_articles "
-            "WHERE collected_at >= CURRENT_DATE"
+            "SELECT COUNT(*) FROM news_full_articles WHERE collected_at >= CURRENT_DATE"
         ).fetchone()
         if row and row[0] > 0:
             logger.info(
@@ -97,7 +96,9 @@ class RSSNewsCollector:
             )
             return self._get_recent_from_db()
 
-        logger.info("[RSS News] Starting full-article collection from %d feeds", len(RSS_FEEDS))
+        logger.info(
+            "[RSS News] Starting full-article collection from %d feeds", len(RSS_FEEDS)
+        )
 
         all_articles: list[dict[str, Any]] = []
         for feed_config in RSS_FEEDS:
@@ -106,14 +107,19 @@ class RSSNewsCollector:
                 all_articles.extend(articles)
                 logger.info(
                     "[RSS News] %s: %d articles extracted",
-                    feed_config["name"], len(articles),
+                    feed_config["name"],
+                    len(articles),
                 )
             except Exception as e:
                 logger.error(
-                    "[RSS News] Feed %s failed: %s", feed_config["name"], e,
+                    "[RSS News] Feed %s failed: %s",
+                    feed_config["name"],
+                    e,
                 )
 
-        logger.info("[RSS News] Total: %d articles with full content", len(all_articles))
+        logger.info(
+            "[RSS News] Total: %d articles with full content", len(all_articles)
+        )
         return all_articles
 
     async def get_articles_for_ticker(self, ticker: str) -> list[dict[str, Any]]:
@@ -170,7 +176,9 @@ class RSSNewsCollector:
 
         tickers: list[ScoredTicker] = []
         for ticker, count in sorted(
-            ticker_counts.items(), key=lambda x: x[1], reverse=True,
+            ticker_counts.items(),
+            key=lambda x: x[1],
+            reverse=True,
         )[:30]:
             tickers.append(
                 ScoredTicker(
@@ -185,13 +193,17 @@ class RSSNewsCollector:
                 )
             )
 
-        logger.info("[RSS News] Generated %d discovery tickers from articles", len(tickers))
+        logger.info(
+            "[RSS News] Generated %d discovery tickers from articles", len(tickers)
+        )
         return tickers
 
     # ── Private: feed scraping ───────────────────────────────────
 
     def _scrape_feed(
-        self, feed_config: dict[str, str], db: Any,
+        self,
+        feed_config: dict[str, str],
+        db: Any,
     ) -> list[dict[str, Any]]:
         """Scrape a single RSS feed and extract full articles."""
         feed_name = feed_config["name"]
@@ -256,13 +268,15 @@ class RSSNewsCollector:
                     content = f"{title}. {summary}"
                     logger.info(
                         "[RSS News] Using RSS summary as fallback for: %s (%d chars)",
-                        title[:40], len(content),
+                        title[:40],
+                        len(content),
                     )
 
             if not content or len(content) < MIN_CONTENT_LENGTH:
                 logger.debug(
                     "[RSS News] Skipping %s (content too short: %d chars)",
-                    title[:40], len(content) if content else 0,
+                    title[:40],
+                    len(content) if content else 0,
                 )
                 continue
 
@@ -317,6 +331,7 @@ class RSSNewsCollector:
         if self._newspaper_available is None:
             try:
                 import newspaper  # noqa: F401
+
                 self._newspaper_available = True
             except ImportError:
                 logger.warning(
@@ -330,9 +345,17 @@ class RSSNewsCollector:
         time.sleep(RATE_LIMIT_SECS)
 
         try:
-            from newspaper import Article
+            from newspaper import Article, Config
 
-            article = Article(url)
+            config = Config()
+            config.browser_user_agent = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+            config.request_timeout = 10
+
+            article = Article(url, config=config)
             article.download()
             article.parse()
 
@@ -340,7 +363,8 @@ class RSSNewsCollector:
             if content:
                 logger.debug(
                     "[RSS News] Extracted %d chars from %s",
-                    len(content), url[:60],
+                    len(content),
+                    url[:60],
                 )
             return content
 
@@ -356,14 +380,75 @@ class RSSNewsCollector:
         """
         # Common false positives to exclude
         exclusions = {
-            "THE", "AND", "FOR", "BUT", "NOT", "ARE", "WAS", "HAS", "HAD",
-            "WITH", "THIS", "THAT", "FROM", "WILL", "HAVE", "BEEN", "ALSO",
-            "MORE", "OVER", "INTO", "JUST", "THAN", "THEM", "EACH", "MAKE",
-            "LIKE", "VERY", "WHEN", "WHAT", "YOUR", "SOME", "THEN", "ITS",
-            "ALL", "NEW", "NOW", "WAY", "MAY", "SAY", "SHE", "HER", "HIS",
-            "HOW", "TOP", "BIG", "OLD", "FAR", "ONE", "TWO", "CEO", "SEC",
-            "IPO", "GDP", "CPI", "FED", "NYSE", "ETF", "AI", "US", "USA",
-            "UK", "EU", "CEO", "CFO", "CTO", "COO", "LLC", "INC", "CORP",
+            "THE",
+            "AND",
+            "FOR",
+            "BUT",
+            "NOT",
+            "ARE",
+            "WAS",
+            "HAS",
+            "HAD",
+            "WITH",
+            "THIS",
+            "THAT",
+            "FROM",
+            "WILL",
+            "HAVE",
+            "BEEN",
+            "ALSO",
+            "MORE",
+            "OVER",
+            "INTO",
+            "JUST",
+            "THAN",
+            "THEM",
+            "EACH",
+            "MAKE",
+            "LIKE",
+            "VERY",
+            "WHEN",
+            "WHAT",
+            "YOUR",
+            "SOME",
+            "THEN",
+            "ITS",
+            "ALL",
+            "NEW",
+            "NOW",
+            "WAY",
+            "MAY",
+            "SAY",
+            "SHE",
+            "HER",
+            "HIS",
+            "HOW",
+            "TOP",
+            "BIG",
+            "OLD",
+            "FAR",
+            "ONE",
+            "TWO",
+            "CEO",
+            "SEC",
+            "IPO",
+            "GDP",
+            "CPI",
+            "FED",
+            "NYSE",
+            "ETF",
+            "AI",
+            "US",
+            "USA",
+            "UK",
+            "EU",
+            "CEO",
+            "CFO",
+            "CTO",
+            "COO",
+            "LLC",
+            "INC",
+            "CORP",
         }
 
         # Find $TICKER patterns (most reliable)

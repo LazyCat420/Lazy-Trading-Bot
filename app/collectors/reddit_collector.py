@@ -13,6 +13,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from datetime import datetime
@@ -23,6 +24,7 @@ from fake_useragent import UserAgent
 
 from app.collectors.ticker_validator import TickerValidator
 from app.models.discovery import ScoredTicker
+from app.config import settings
 from app.services.llm_service import LLMService
 from app.utils.logger import logger
 
@@ -75,7 +77,8 @@ class RedditCollector:
                 ):
                     logger.info(
                         "[Reddit]   -> Priority thread: %s (r/%s)",
-                        title[:60], sub,
+                        title[:60],
+                        sub,
                     )
                     threads.append(post)
 
@@ -111,8 +114,7 @@ class RedditCollector:
         )
 
         titles_text = "\n".join(
-            f"{i}. {p['title']} (r/{p['subreddit']})"
-            for i, p in enumerate(candidates)
+            f"{i}. {p['title']} (r/{p['subreddit']})" for i, p in enumerate(candidates)
         )
 
         prompt = f"""Review these Reddit thread titles. Identify the indexes of threads
@@ -132,6 +134,7 @@ If none are relevant, output: []"""
                 system="You are a financial thread filter. Return ONLY valid JSON.",
                 user=prompt,
                 response_format="json",
+                temperature=settings.LLM_DISCOVERY_TEMPERATURE,
             )
             cleaned = LLMService.clean_json_response(raw)
             indexes = json_mod.loads(cleaned)
@@ -143,7 +146,8 @@ If none are relevant, output: []"""
                 ]
                 logger.info(
                     "[Reddit]   -> LLM selected %d/%d threads",
-                    len(selected), len(candidates),
+                    len(selected),
+                    len(candidates),
                 )
                 return selected
         except Exception as e:
@@ -154,9 +158,7 @@ If none are relevant, output: []"""
 
     # ── Step 4: Deep scrape ─────────────────────────────────────────
 
-    def get_thread_data(
-        self, permalink: str
-    ) -> tuple[str, str, list[str]]:
+    def get_thread_data(self, permalink: str) -> tuple[str, str, list[str]]:
         """Fetch full thread content (title, body, top comments)."""
         url = f"https://www.reddit.com{permalink}.json"
         try:
@@ -194,7 +196,8 @@ If none are relevant, output: []"""
 
             logger.info(
                 "[Reddit]   Thread: '%s' — %d comments",
-                title[:50], len(comments),
+                title[:50],
+                len(comments),
             )
             return title, body, comments
 
@@ -209,28 +212,28 @@ If none are relevant, output: []"""
         if not text:
             return []
         raw = re.findall(r"(?:\$|\b)([A-Z]{2,5})\b", text)
-        return list({
-            t for t in raw
-            if t.isalpha() and t not in TickerValidator.EXCLUSION_LIST
-        })
+        return list(
+            {t for t in raw if t.isalpha() and t not in TickerValidator.EXCLUSION_LIST}
+        )
 
     # ── Full pipeline ───────────────────────────────────────────────
 
     async def collect(self) -> list[ScoredTicker]:
-        """Run the full Reddit collection pipeline."""
+        """Run the full Reddit collection pipeline.
+
+        The sync HTTP work (requests.get + time.sleep) is offloaded to a
+        thread via asyncio.to_thread so it doesn't block the event loop
+        and starve other collectors running in parallel.
+        """
         # ── 4-hour cooldown guard ──
-        # Reuse the existing discovered_tickers table to check last Reddit run.
         from app.database import get_db
 
         db = get_db()
         last_run = db.execute(
-            "SELECT MAX(discovered_at) FROM discovered_tickers "
-            "WHERE source = 'reddit'"
+            "SELECT MAX(discovered_at) FROM discovered_tickers WHERE source = 'reddit'"
         ).fetchone()
         if last_run and last_run[0]:
-            hours_since = (
-                datetime.now() - last_run[0]
-            ).total_seconds() / 3600
+            hours_since = (datetime.now() - last_run[0]).total_seconds() / 3600
             if hours_since < 4:
                 logger.info(
                     "[Reddit] Already scraped %.1fh ago, skipping (4h cooldown)",
@@ -243,11 +246,12 @@ If none are relevant, output: []"""
         logger.info("[Reddit] Starting collection run")
         logger.info("=" * 60)
 
-        # Step 1 + 2: Get threads
-        priority = self.get_priority_threads()
-        trending = self.get_trending_candidates()
+        # Step 1 + 2: Get threads (blocking I/O → run in thread)
+        priority, trending = await asyncio.to_thread(
+            self._sync_fetch_threads,
+        )
 
-        # Step 3: LLM filter on trending candidates
+        # Step 3: LLM filter on trending candidates (async LLM call)
         filtered = await self.filter_with_llm(trending)
 
         # Combine and deduplicate by permalink
@@ -257,9 +261,83 @@ If none are relevant, output: []"""
 
         logger.info("[Reddit] Step 4: Scraping %d unique threads...", len(threads))
 
-        # Step 4 + 5: Scrape and score
+        # Step 4 + 5: Scrape and score (blocking I/O → run in thread)
+        ticker_counts, ticker_contexts = await asyncio.to_thread(
+            self._sync_scrape_threads,
+            threads,
+        )
+
+        # Validate tickers
+        logger.info(
+            "[Reddit] Step 5: Validating %d candidate tickers...",
+            len(ticker_counts),
+        )
+        valid_tickers = self.validator.validate_batch(list(ticker_counts.keys()))
+
+        # Build scored results
+        now = datetime.now()
+        results: list[ScoredTicker] = []
+        for ticker in valid_tickers:
+            ctx_pairs = ticker_contexts.get(ticker, [])
+            # Deduplicate snippets while keeping their URLs
+            seen_snippets: dict[str, str] = {}
+            for snippet, url in ctx_pairs:
+                if snippet not in seen_snippets:
+                    seen_snippets[snippet] = url
+            deduped = list(seen_snippets.items())[:3]  # (snippet, url) pairs
+
+            results.append(
+                ScoredTicker(
+                    ticker=ticker,
+                    discovery_score=float(ticker_counts.get(ticker, 0)),
+                    source="reddit",
+                    source_detail=", ".join(
+                        set(t.get("subreddit", "") for t in threads)
+                    ),
+                    sentiment_hint="neutral",  # Could enhance with LLM later
+                    context_snippets=[s for s, _u in deduped],
+                    source_urls=[u for _s, u in deduped],
+                    first_seen=now,
+                    last_seen=now,
+                )
+            )
+
+        # Sort by score descending
+        results.sort(key=lambda x: x.discovery_score, reverse=True)
+
+        elapsed = time.time() - start
+        logger.info(
+            "[Reddit] Collection complete: %d valid tickers in %.1fs",
+            len(results),
+            elapsed,
+        )
+        for r in results[:10]:
+            logger.info(
+                "[Reddit]   $%s: %.0f pts — %s",
+                r.ticker,
+                r.discovery_score,
+                r.context_snippets[0] if r.context_snippets else "no context",
+            )
+
+        return results
+
+    # ── Sync helpers (run inside asyncio.to_thread) ──────────────
+
+    def _sync_fetch_threads(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Fetch priority + trending threads (blocking HTTP)."""
+        priority = self.get_priority_threads()
+        trending = self.get_trending_candidates()
+        return priority, trending
+
+    def _sync_scrape_threads(
+        self,
+        threads: list[dict[str, Any]],
+    ) -> tuple[dict[str, int], dict[str, list[tuple[str, str]]]]:
+        """Deep-scrape threads and extract tickers (blocking HTTP)."""
         ticker_counts: dict[str, int] = {}
-        ticker_contexts: dict[str, list[tuple[str, str]]] = {}  # ticker -> [(snippet, url)]
+        ticker_contexts: dict[str, list[tuple[str, str]]] = {}
 
         for thread in threads:
             permalink = thread["permalink"]
@@ -287,60 +365,7 @@ If none are relevant, output: []"""
                         (f"[comment] {comment[:60]}", thread_url)
                     )
 
-        # Validate tickers
-        logger.info(
-            "[Reddit] Step 5: Validating %d candidate tickers...",
-            len(ticker_counts),
-        )
-        valid_tickers = self.validator.validate_batch(list(ticker_counts.keys()))
-
-        # Build scored results
-        now = datetime.now()
-        results: list[ScoredTicker] = []
-        for ticker in valid_tickers:
-            ctx_pairs = ticker_contexts.get(ticker, [])
-            # Deduplicate snippets while keeping their URLs
-            seen_snippets: dict[str, str] = {}
-            for snippet, url in ctx_pairs:
-                if snippet not in seen_snippets:
-                    seen_snippets[snippet] = url
-            deduped = list(seen_snippets.items())[:3]  # (snippet, url) pairs
-
-            results.append(
-                ScoredTicker(
-                    ticker=ticker,
-                    discovery_score=float(ticker_counts.get(ticker, 0)),
-                    source="reddit",
-                    source_detail=", ".join(
-                        set(
-                            t.get("subreddit", "")
-                            for t in threads
-                        )
-                    ),
-                    sentiment_hint="neutral",  # Could enhance with LLM later
-                    context_snippets=[s for s, _u in deduped],
-                    source_urls=[u for _s, u in deduped],
-                    first_seen=now,
-                    last_seen=now,
-                )
-            )
-
-        # Sort by score descending
-        results.sort(key=lambda x: x.discovery_score, reverse=True)
-
-        elapsed = time.time() - start
-        logger.info(
-            "[Reddit] Collection complete: %d valid tickers in %.1fs",
-            len(results), elapsed,
-        )
-        for r in results[:10]:
-            logger.info(
-                "[Reddit]   $%s: %.0f pts — %s",
-                r.ticker, r.discovery_score,
-                r.context_snippets[0] if r.context_snippets else "no context",
-            )
-
-        return results
+        return ticker_counts, ticker_contexts
 
     # ── Helpers ──────────────────────────────────────────────────────
 
@@ -359,9 +384,7 @@ If none are relevant, output: []"""
                 resp = requests.get(url, headers=self._get_headers(), timeout=10)
 
             if resp.status_code != 200:
-                logger.warning(
-                    "[Reddit] r/%s returned %d", subreddit, resp.status_code
-                )
+                logger.warning("[Reddit] r/%s returned %d", subreddit, resp.status_code)
                 return []
 
             data = resp.json()
@@ -369,15 +392,17 @@ If none are relevant, output: []"""
             if "data" in data and "children" in data["data"]:
                 for child in data["data"]["children"]:
                     pd = child["data"]
-                    posts.append({
-                        "title": pd.get("title", ""),
-                        "subreddit": pd.get("subreddit", ""),
-                        "permalink": pd.get("permalink", ""),
-                        "score": pd.get("score", 0),
-                        "selftext": pd.get("selftext", ""),
-                        "stickied": pd.get("stickied", False),
-                        "id": pd.get("id", ""),
-                    })
+                    posts.append(
+                        {
+                            "title": pd.get("title", ""),
+                            "subreddit": pd.get("subreddit", ""),
+                            "permalink": pd.get("permalink", ""),
+                            "score": pd.get("score", 0),
+                            "selftext": pd.get("selftext", ""),
+                            "stickied": pd.get("stickied", False),
+                            "id": pd.get("id", ""),
+                        }
+                    )
             return posts
 
         except Exception as e:

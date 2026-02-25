@@ -17,11 +17,13 @@ import pytest
 # Market Hours Utilities
 # ──────────────────────────────────────────────────────────────
 
+
 class TestMarketHours:
     """Verify timezone-aware market hours helpers."""
 
     def test_now_et_returns_eastern(self) -> None:
         from app.utils.market_hours import now_et
+
         t = now_et()
         assert t.tzinfo is not None
         # Should be US/Eastern
@@ -29,23 +31,27 @@ class TestMarketHours:
 
     def test_is_market_open_returns_bool(self) -> None:
         from app.utils.market_hours import is_market_open
+
         result = is_market_open()
         assert isinstance(result, bool)
 
     def test_next_market_open_returns_datetime(self) -> None:
         from app.utils.market_hours import next_market_open
+
         result = next_market_open()
         assert isinstance(result, datetime)
         assert result.tzinfo is not None
 
     def test_next_market_close_returns_datetime(self) -> None:
         from app.utils.market_hours import next_market_close
+
         result = next_market_close()
         assert isinstance(result, datetime)
         assert result.tzinfo is not None
 
     def test_market_status_returns_dict(self) -> None:
         from app.utils.market_hours import market_status
+
         result = market_status()
         assert isinstance(result, dict)
         assert "is_open" in result
@@ -56,6 +62,7 @@ class TestMarketHours:
         """A Wednesday at 10:00 AM ET should be market open."""
         from app.utils.market_hours import MARKET_OPEN, MARKET_CLOSE
         from datetime import time
+
         # Just verify constants are set correctly
         assert MARKET_OPEN == time(9, 30)
         assert MARKET_CLOSE == time(16, 0)
@@ -65,17 +72,20 @@ class TestMarketHours:
 # Report Generator
 # ──────────────────────────────────────────────────────────────
 
+
 class TestReportGenerator:
     """Verify ReportGenerator can be instantiated."""
 
     def test_instantiation(self) -> None:
         from app.services.report_generator import ReportGenerator
+
         rg = ReportGenerator()
         assert rg is not None
 
     def test_get_latest_returns_dict(self) -> None:
         from unittest.mock import MagicMock, patch
         from app.services.report_generator import ReportGenerator
+
         rg = ReportGenerator()
         mock_db = MagicMock()
         mock_db.execute.return_value.fetchone.return_value = None
@@ -90,12 +100,14 @@ class TestReportGenerator:
 # TradingScheduler
 # ──────────────────────────────────────────────────────────────
 
+
 class TestTradingScheduler:
     """Verify TradingScheduler lifecycle."""
 
     def test_instantiation(self) -> None:
         from unittest.mock import MagicMock
         from app.services.scheduler import TradingScheduler
+
         sched = TradingScheduler(
             autonomous_loop=MagicMock(),
             price_monitor=MagicMock(),
@@ -106,6 +118,7 @@ class TestTradingScheduler:
     def test_get_status_when_stopped(self) -> None:
         from unittest.mock import MagicMock
         from app.services.scheduler import TradingScheduler
+
         sched = TradingScheduler(
             autonomous_loop=MagicMock(),
             price_monitor=MagicMock(),
@@ -119,6 +132,7 @@ class TestTradingScheduler:
     def _mock_apscheduler(self):
         """Patch AsyncIOScheduler so start() doesn't need an event loop."""
         from unittest.mock import MagicMock, patch
+
         mock_cls = MagicMock()
         mock_instance = MagicMock()
         mock_instance.get_jobs.return_value = []
@@ -130,6 +144,7 @@ class TestTradingScheduler:
     def test_start_and_stop(self) -> None:
         from unittest.mock import MagicMock
         from app.services.scheduler import TradingScheduler
+
         sched = TradingScheduler(
             autonomous_loop=MagicMock(),
             price_monitor=MagicMock(),
@@ -146,6 +161,7 @@ class TestTradingScheduler:
     def test_double_start_returns_already(self) -> None:
         from unittest.mock import MagicMock
         from app.services.scheduler import TradingScheduler
+
         sched = TradingScheduler(
             autonomous_loop=MagicMock(),
             price_monitor=MagicMock(),
@@ -155,3 +171,43 @@ class TestTradingScheduler:
         assert result["status"] == "already_running"
         sched.stop()
 
+
+# ──────────────────────────────────────────────────────────────
+# EOD Report Generator — query correctness
+# ──────────────────────────────────────────────────────────────
+
+
+class TestEODReport:
+    """Verify generate_eod uses correct schema (no 'status' column)."""
+
+    def test_eod_query_uses_qty_not_status(self) -> None:
+        """The positions query must use WHERE qty > 0, not WHERE status = 'open'.
+
+        Regression test for BinderException:
+          Referenced column "status" not found in FROM clause!
+        """
+        from unittest.mock import MagicMock, patch
+        from app.services.report_generator import ReportGenerator
+
+        rg = ReportGenerator()
+        mock_db = MagicMock()
+
+        # Simulate empty results for all queries
+        mock_db.execute.return_value.fetchone.return_value = None
+        mock_db.execute.return_value.fetchall.return_value = []
+
+        with patch("app.services.report_generator.get_db", return_value=mock_db):
+            report = rg.generate_eod()
+
+        # Should complete without crash
+        assert isinstance(report, dict)
+        assert "open_positions" in report
+        assert "todays_orders" in report
+        assert "portfolio" in report
+
+        # Verify no query contains "status = 'open'"
+        all_calls = [str(call) for call in mock_db.execute.call_args_list]
+        for call_str in all_calls:
+            assert "status = 'open'" not in call_str, (
+                f"Query still references 'status' column: {call_str}"
+            )

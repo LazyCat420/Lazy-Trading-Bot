@@ -15,6 +15,7 @@ from datetime import datetime
 from app.collectors.ticker_validator import TickerValidator
 from app.database import get_db
 from app.models.discovery import ScoredTicker
+from app.config import settings
 from app.services.llm_service import LLMService
 from app.utils.logger import logger
 
@@ -62,7 +63,8 @@ class TickerScanner:
         self.llm = LLMService()
 
     async def scan_recent_transcripts(
-        self, hours: int = 24,
+        self,
+        hours: int = 24,
     ) -> list[ScoredTicker]:
         """Scan un-scanned transcripts for ticker mentions using LLM.
 
@@ -112,7 +114,8 @@ class TickerScanner:
 
             logger.info(
                 "[YouTube Scanner] Asking LLM: '%s' by %s",
-                (title or "untitled")[:50], channel or "unknown",
+                (title or "untitled")[:50],
+                channel or "unknown",
             )
 
             # Already-known ticker from this video's pipeline run
@@ -120,9 +123,7 @@ class TickerScanner:
             if ticker_col and ticker_col != "__MARKET__":
                 known = ticker_col.upper().strip()
                 ticker_counts[known] = ticker_counts.get(known, 0) + 5
-                ticker_contexts.setdefault(known, []).append(
-                    f"[pipeline] {title[:80]}"
-                )
+                ticker_contexts.setdefault(known, []).append(f"[pipeline] {title[:80]}")
                 ticker_channels.setdefault(known, set()).add(
                     channel or "unknown",
                 )
@@ -130,7 +131,9 @@ class TickerScanner:
             # ── LLM extraction ──
             trust_mult = 1.5 if channel in self.TRUSTED_CHANNELS else 1.0
             extracted = await self._llm_extract_tickers(
-                title or "", channel or "", transcript,
+                title or "",
+                channel or "",
+                transcript,
             )
 
             for t in extracted:
@@ -188,12 +191,14 @@ class TickerScanner:
         elapsed = time.time() - start
         logger.info(
             "[YouTube Scanner] Complete: %d valid tickers in %.1fs",
-            len(results), elapsed,
+            len(results),
+            elapsed,
         )
         for r in results[:10]:
             logger.info(
                 "[YouTube Scanner]   $%s: %.0f pts — %s",
-                r.ticker, r.discovery_score,
+                r.ticker,
+                r.discovery_score,
                 r.context_snippets[0] if r.context_snippets else "no context",
             )
         return results
@@ -201,7 +206,10 @@ class TickerScanner:
     # ── LLM extraction ──────────────────────────────────────────────
 
     async def _llm_extract_tickers(
-        self, title: str, channel: str, transcript: str,
+        self,
+        title: str,
+        channel: str,
+        transcript: str,
     ) -> list[str]:
         """Ask the LLM to list stock tickers from a transcript."""
         # Truncate transcript to keep prompt reasonable
@@ -216,11 +224,11 @@ class TickerScanner:
         try:
             raw = await self.llm.chat(
                 system=(
-                    "You are a stock ticker extraction tool. "
-                    "Return ONLY valid JSON."
+                    "You are a stock ticker extraction tool. Return ONLY valid JSON."
                 ),
                 user=prompt,
                 response_format="json",
+                temperature=settings.LLM_DISCOVERY_TEMPERATURE,
             )
             cleaned = LLMService.clean_json_response(raw)
             tickers = json.loads(cleaned)
@@ -236,18 +244,22 @@ class TickerScanner:
                 ]
                 logger.info(
                     "[YouTube Scanner] LLM extracted %d tickers from '%s': %s",
-                    len(result), title[:40], result[:10],
+                    len(result),
+                    title[:40],
+                    result[:10],
                 )
                 return result
 
             logger.warning(
-                "[YouTube Scanner] LLM returned non-list: %s", type(tickers),
+                "[YouTube Scanner] LLM returned non-list: %s",
+                type(tickers),
             )
             return []
 
         except Exception as e:
             logger.warning(
                 "[YouTube Scanner] LLM extraction failed for '%s': %s",
-                title[:40], e,
+                title[:40],
+                e,
             )
             return []

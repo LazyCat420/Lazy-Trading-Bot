@@ -431,11 +431,16 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
         if not bot_for_model:
             # Auto-create a bot entry for this model
+            _prov = merged.get("provider", "lmstudio")
+            if _prov == "ollama":
+                _prov_url = merged.get("ollama_url", "http://localhost:11434")
+            else:
+                _prov_url = merged.get("lmstudio_url", "http://localhost:1234")
             bot_for_model = _BReg.register_bot(
                 model_name=model_id,
                 display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
-                provider=merged.get("provider", "lmstudio"),
-                provider_url=merged.get("lmstudio_url", "http://localhost:1234"),
+                provider=_prov,
+                provider_url=_prov_url,
                 context_length=merged.get("context_size", 8192),
                 temperature=merged.get("temperature", 0.3),
                 top_p=merged.get("top_p", 1.0),
@@ -553,6 +558,65 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                 }
                 logger.warning(
                     "[LM Studio] Model reload failed: %s", exc,
+                )
+
+    elif provider == "ollama":
+        # ── Ollama: verify model exists + pre-warm into VRAM ──────
+        ollama_url = merged.get("ollama_url", "http://localhost:11434").rstrip("/")
+        model_id = merged.get("model", "")
+        if model_id:
+            import httpx as _httpx
+
+            try:
+                async with _httpx.AsyncClient(timeout=60.0) as client:
+                    # Step 1: Verify model exists via /api/tags
+                    tags_resp = await client.get(f"{ollama_url}/api/tags")
+                    tags_resp.raise_for_status()
+                    available = [
+                        m["name"] for m in tags_resp.json().get("models", [])
+                    ]
+                    model_found = model_id in available
+
+                    pre_warmed = False
+                    if model_found:
+                        # Step 2: Pre-warm model into VRAM
+                        warm_resp = await client.post(
+                            f"{ollama_url}/api/generate",
+                            json={
+                                "model": model_id,
+                                "prompt": "",
+                                "keep_alive": "10m",
+                            },
+                        )
+                        warm_resp.raise_for_status()
+                        pre_warmed = True
+                        logger.info(
+                            "[Ollama] Model %s verified and pre-warmed "
+                            "(keep_alive=10m)",
+                            model_id,
+                        )
+
+                    result["ollama_verified"] = {
+                        "status": (
+                            "model_verified" if model_found
+                            else "model_not_found"
+                        ),
+                        "model": model_id,
+                        "available_models": available,
+                        "model_found": model_found,
+                        "pre_warmed": pre_warmed,
+                    }
+            except Exception as exc:
+                result["ollama_verified"] = {
+                    "status": "verification_failed",
+                    "error": str(exc),
+                    "note": (
+                        "Config was saved but Ollama model verification "
+                        "failed. Ensure the Ollama server is reachable."
+                    ),
+                }
+                logger.warning(
+                    "[Ollama] Model verification failed: %s", exc,
                 )
 
     return result

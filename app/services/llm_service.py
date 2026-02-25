@@ -31,10 +31,10 @@ async def _get_shared_client() -> httpx.AsyncClient:
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
-                connect=10.0,   # Fail fast if server is unreachable
-                read=300.0,     # LLM inference can be slow
-                write=30.0,     # Sending large prompts
-                pool=30.0,      # Waiting for a connection slot
+                connect=10.0,  # Fail fast if server is unreachable
+                read=300.0,  # LLM inference can be slow
+                write=30.0,  # Sending large prompts
+                pool=30.0,  # Waiting for a connection slot
             ),
             limits=httpx.Limits(
                 max_connections=20,  # Up to 20 parallel TCP connections
@@ -88,6 +88,7 @@ class LLMService:
         *,
         response_format: str = "json",
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> str:
         """Send a chat completion request and return the raw text response.
 
@@ -96,6 +97,8 @@ class LLMService:
             user: The user message (data context).
             response_format: "json" to hint at JSON output, "text" for free-form.
             max_tokens: Optional max token limit for the response.
+            temperature: Optional per-request temperature override.
+                         If None, uses the global setting from config.
 
         Returns:
             The raw string response from the LLM.
@@ -105,17 +108,25 @@ class LLMService:
             {"role": "user", "content": user},
         ]
 
+        # Resolve effective temperature (per-request override > global config)
+        effective_temp = temperature if temperature is not None else self.temperature
+
         if self.provider == "ollama":
-            return await self._call_ollama(messages, response_format, max_tokens)
+            return await self._call_ollama(
+                messages, response_format, max_tokens, effective_temp
+            )
         else:
             # Both "lmstudio" and "openai" use the OpenAI-compatible API
-            return await self._call_openai(messages, response_format, max_tokens)
+            return await self._call_openai(
+                messages, response_format, max_tokens, effective_temp
+            )
 
     async def _call_ollama(
         self,
         messages: list[dict],
         response_format: str,
         max_tokens: int | None,
+        temperature: float,
     ) -> str:
         """Call the Ollama /api/chat endpoint using shared connection pool."""
         url = f"{self.base_url}/api/chat"
@@ -124,7 +135,7 @@ class LLMService:
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": self.temperature,
+                "temperature": temperature,
                 "num_ctx": self.context_size,
             },
         }
@@ -161,6 +172,7 @@ class LLMService:
         messages: list[dict],
         response_format: str,
         max_tokens: int | None,
+        temperature: float,
         *,
         _retries: int = 0,
     ) -> str:
@@ -180,7 +192,9 @@ class LLMService:
             logger.warning(
                 "⚠️  Prompt (~%d tokens) exceeds context_size (%d), "
                 "pre-trimming before sending to %s",
-                est_tokens, ctx, self.provider,
+                est_tokens,
+                ctx,
+                self.provider,
             )
             messages = self._trim_messages(messages)
             total_chars = sum(len(m.get("content", "")) for m in messages)
@@ -189,7 +203,7 @@ class LLMService:
         payload: dict = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature,
+            "temperature": temperature,
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
@@ -205,8 +219,13 @@ class LLMService:
         logger.info(
             "⏱️  OpenAI request START → %s model=%s provider=%s "
             "(~%d chars, ~%d est tokens, ctx=%d, retry=%d)",
-            url, self.model, self.provider,
-            total_chars, est_tokens, ctx, _retries,
+            url,
+            self.model,
+            self.provider,
+            total_chars,
+            est_tokens,
+            ctx,
+            _retries,
         )
         t0 = time.perf_counter()
 
@@ -217,14 +236,17 @@ class LLMService:
         if resp.status_code == 400 and _retries < 2:
             body = resp.text
             logger.warning(
-                "⚠️  400 from LLM (attempt %d), trimming prompt and retrying. "
-                "Body: %s",
-                _retries + 1, body[:300],
+                "⚠️  400 from LLM (attempt %d), trimming prompt and retrying. Body: %s",
+                _retries + 1,
+                body[:300],
             )
             # Trim the longest message by ~40%
             trimmed = self._trim_messages(messages)
             return await self._call_openai(
-                trimmed, response_format, max_tokens,
+                trimmed,
+                response_format,
+                max_tokens,
+                temperature,
                 _retries=_retries + 1,
             )
 
@@ -272,7 +294,9 @@ class LLMService:
                 trimmed.append({**msg, "content": trimmed_content})
                 logger.info(
                     "✂️  Trimmed message[%d] from %d → %d chars",
-                    i, len(content), len(trimmed_content),
+                    i,
+                    len(content),
+                    len(trimmed_content),
                 )
             else:
                 trimmed.append(msg)
@@ -360,7 +384,9 @@ class LLMService:
 
     @staticmethod
     async def load_model_with_config(
-        base_url: str, model: str, config: dict,
+        base_url: str,
+        model: str,
+        config: dict,
     ) -> dict:
         """Load a model via LM Studio v1 API with specific parameters.
 
@@ -397,7 +423,8 @@ class LLMService:
             result = resp.json()
             logger.info(
                 "[LLM] Model loaded: %s (%.1fs)",
-                model, result.get("load_time_seconds", 0),
+                model,
+                result.get("load_time_seconds", 0),
             )
             return result
 
@@ -416,6 +443,62 @@ class LLMService:
                 return resp.json().get("data", [])
         except Exception:
             return []
+
+    @staticmethod
+    async def verify_and_warm_ollama_model(
+        base_url: str,
+        model: str,
+        *,
+        keep_alive: str = "10m",
+    ) -> dict:
+        """Verify an Ollama model exists and optionally pre-warm it.
+
+        GET /api/tags to check availability, then POST /api/generate
+        with an empty prompt and keep_alive to load it into VRAM.
+
+        Parallel to load_model_with_config for LM Studio.
+        """
+        base_url = base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Step 1: Verify model exists
+                tags_resp = await client.get(f"{base_url}/api/tags")
+                tags_resp.raise_for_status()
+                available = [m["name"] for m in tags_resp.json().get("models", [])]
+                model_found = model in available
+
+                pre_warmed = False
+                if model_found:
+                    # Step 2: Pre-warm into VRAM
+                    warm_resp = await client.post(
+                        f"{base_url}/api/generate",
+                        json={
+                            "model": model,
+                            "prompt": "",
+                            "keep_alive": keep_alive,
+                        },
+                    )
+                    warm_resp.raise_for_status()
+                    pre_warmed = True
+                    logger.info(
+                        "[LLM] Ollama model %s verified and pre-warmed (keep_alive=%s)",
+                        model,
+                        keep_alive,
+                    )
+
+                return {
+                    "status": ("model_verified" if model_found else "model_not_found"),
+                    "model": model,
+                    "available_models": available,
+                    "model_found": model_found,
+                    "pre_warmed": pre_warmed,
+                }
+        except Exception as exc:
+            logger.warning("[LLM] Ollama model verification failed: %s", exc)
+            return {
+                "status": "verification_failed",
+                "error": str(exc),
+            }
 
     async def health_check(self) -> dict:
         """Check connectivity to the LLM backend."""

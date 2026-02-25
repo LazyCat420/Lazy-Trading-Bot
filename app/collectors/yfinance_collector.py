@@ -57,10 +57,13 @@ def _retry_on_rate_limit(max_retries: int = 3, base_delay: float = 2.0):
                         or "rate" in err_str
                     )
                     if is_rate_limit and attempt < max_retries:
-                        delay = base_delay * (2 ** attempt)
+                        delay = base_delay * (2**attempt)
                         logger.warning(
                             "Rate-limited on %s (attempt %d/%d), retrying in %.1fs …",
-                            func.__name__, attempt + 1, max_retries, delay,
+                            func.__name__,
+                            attempt + 1,
+                            max_retries,
+                            delay,
                         )
                         await asyncio.sleep(delay)
                         last_exc = exc
@@ -120,7 +123,10 @@ class YFinanceCollector:
             [ticker, today],
         ).fetchone()
         if existing and existing[0] > 0:
-            logger.info("Price history for %s already collected today, skipping yfinance call", ticker)
+            logger.info(
+                "Price history for %s already collected today, skipping yfinance call",
+                ticker,
+            )
             rows_raw = db.execute(
                 "SELECT ticker, date, open, high, low, close, volume, adj_close "
                 "FROM price_history WHERE ticker = ? ORDER BY date",
@@ -128,8 +134,14 @@ class YFinanceCollector:
             ).fetchall()
             return [
                 OHLCVRow(
-                    ticker=r[0], date=r[1], open=r[2], high=r[3],
-                    low=r[4], close=r[5], volume=r[6], adj_close=r[7],
+                    ticker=r[0],
+                    date=r[1],
+                    open=r[2],
+                    high=r[3],
+                    low=r[4],
+                    close=r[5],
+                    volume=r[6],
+                    adj_close=r[7],
                 )
                 for r in rows_raw
             ]
@@ -165,7 +177,16 @@ class YFinanceCollector:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                [r.ticker, r.date, r.open, r.high, r.low, r.close, r.volume, r.adj_close]
+                [
+                    r.ticker,
+                    r.date,
+                    r.open,
+                    r.high,
+                    r.low,
+                    r.close,
+                    r.volume,
+                    r.adj_close,
+                ]
                 for r in rows
             ],
         )
@@ -257,15 +278,35 @@ class YFinanceCollector:
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                snap.ticker, snap.snapshot_date, snap.market_cap, snap.trailing_pe,
-                snap.forward_pe, snap.peg_ratio, snap.price_to_sales,
-                snap.price_to_book, snap.enterprise_value, snap.ev_to_revenue,
-                snap.ev_to_ebitda, snap.profit_margin, snap.operating_margin,
-                snap.return_on_assets, snap.return_on_equity, snap.revenue,
-                snap.revenue_growth, snap.net_income, snap.trailing_eps,
-                snap.total_cash, snap.total_debt, snap.debt_to_equity,
-                snap.free_cash_flow, snap.dividend_rate, snap.dividend_yield,
-                snap.payout_ratio, snap.sector, snap.industry, snap.description,
+                snap.ticker,
+                snap.snapshot_date,
+                snap.market_cap,
+                snap.trailing_pe,
+                snap.forward_pe,
+                snap.peg_ratio,
+                snap.price_to_sales,
+                snap.price_to_book,
+                snap.enterprise_value,
+                snap.ev_to_revenue,
+                snap.ev_to_ebitda,
+                snap.profit_margin,
+                snap.operating_margin,
+                snap.return_on_assets,
+                snap.return_on_equity,
+                snap.revenue,
+                snap.revenue_growth,
+                snap.net_income,
+                snap.trailing_eps,
+                snap.total_cash,
+                snap.total_debt,
+                snap.debt_to_equity,
+                snap.free_cash_flow,
+                snap.dividend_rate,
+                snap.dividend_yield,
+                snap.payout_ratio,
+                snap.sector,
+                snap.industry,
+                snap.description,
                 str(info),
             ],
         )
@@ -291,7 +332,9 @@ class YFinanceCollector:
         if existing and existing[0] >= 4:
             logger.info(
                 "Financial history for %s already has %d years (latest: %s), skipping",
-                ticker, existing[0], existing[1],
+                ticker,
+                existing[0],
+                existing[1],
             )
             rows_raw = db.execute(
                 "SELECT ticker, year, revenue, net_income, gross_margin, "
@@ -301,8 +344,14 @@ class YFinanceCollector:
             ).fetchall()
             return [
                 FinancialHistoryRow(
-                    ticker=r[0], year=r[1], revenue=r[2], net_income=r[3],
-                    gross_margin=r[4], operating_margin=r[5], net_margin=r[6], eps=r[7],
+                    ticker=r[0],
+                    year=r[1],
+                    revenue=r[2],
+                    net_income=r[3],
+                    gross_margin=r[4],
+                    operating_margin=r[5],
+                    net_margin=r[6],
+                    eps=r[7],
                 )
                 for r in rows_raw
             ]
@@ -329,7 +378,9 @@ class YFinanceCollector:
         for date_col in fin.columns:
             year = date_col.year if hasattr(date_col, "year") else int(date_col)
             rev = get_val(["Total Revenue", "Revenue"], date_col)
-            net_inc = get_val(["Net Income", "Net Income Common Stockholders"], date_col)
+            net_inc = get_val(
+                ["Net Income", "Net Income Common Stockholders"], date_col
+            )
             gross = get_val(["Gross Profit"], date_col)
             op_inc = get_val(["Operating Income", "EBIT"], date_col)
 
@@ -355,8 +406,16 @@ class YFinanceCollector:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                [r.ticker, r.year, r.revenue, r.net_income, r.gross_margin,
-                 r.operating_margin, r.net_margin, r.eps]
+                [
+                    r.ticker,
+                    r.year,
+                    r.revenue,
+                    r.net_income,
+                    r.gross_margin,
+                    r.operating_margin,
+                    r.net_margin,
+                    r.eps,
+                ]
                 for r in rows
             ],
         )
@@ -385,7 +444,9 @@ class YFinanceCollector:
         if existing and existing[0] >= 4:
             logger.info(
                 "Balance sheet for %s already has %d years (latest: %s), skipping",
-                ticker, existing[0], existing[1],
+                ticker,
+                existing[0],
+                existing[1],
             )
             rows_raw = db.execute(
                 "SELECT ticker, year, total_assets, total_liabilities, "
@@ -397,12 +458,19 @@ class YFinanceCollector:
             ).fetchall()
             return [
                 BalanceSheetRow(
-                    ticker=r[0], year=r[1], total_assets=r[2],
-                    total_liabilities=r[3], stockholders_equity=r[4],
-                    current_assets=r[5], current_liabilities=r[6],
-                    current_ratio=r[7], total_debt=r[8],
-                    cash_and_equivalents=r[9], net_working_capital=r[10],
-                    goodwill=r[11], tangible_book_value=r[12],
+                    ticker=r[0],
+                    year=r[1],
+                    total_assets=r[2],
+                    total_liabilities=r[3],
+                    stockholders_equity=r[4],
+                    current_assets=r[5],
+                    current_liabilities=r[6],
+                    current_ratio=r[7],
+                    total_debt=r[8],
+                    cash_and_equivalents=r[9],
+                    net_working_capital=r[10],
+                    goodwill=r[11],
+                    tangible_book_value=r[12],
                 )
                 for r in rows_raw
             ]
@@ -433,17 +501,27 @@ class YFinanceCollector:
                 ["Total Liabilities Net Minority Interest", "Total Liab"], date_col
             )
             equity = get_val(
-                ["Stockholders Equity", "Total Stockholders Equity",
-                 "Common Stock Equity"], date_col
+                [
+                    "Stockholders Equity",
+                    "Total Stockholders Equity",
+                    "Common Stock Equity",
+                ],
+                date_col,
             )
-            current_assets = get_val(["Current Assets", "Total Current Assets"], date_col)
+            current_assets = get_val(
+                ["Current Assets", "Total Current Assets"], date_col
+            )
             current_liab = get_val(
                 ["Current Liabilities", "Total Current Liabilities"], date_col
             )
             total_debt = get_val(["Total Debt"], date_col)
             cash = get_val(
-                ["Cash And Cash Equivalents", "Cash Financial",
-                 "Cash Cash Equivalents And Short Term Investments"], date_col
+                [
+                    "Cash And Cash Equivalents",
+                    "Cash Financial",
+                    "Cash Cash Equivalents And Short Term Investments",
+                ],
+                date_col,
             )
             goodwill = get_val(["Goodwill"], date_col)
 
@@ -482,10 +560,21 @@ class YFinanceCollector:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                [r.ticker, r.year, r.total_assets, r.total_liabilities,
-                 r.stockholders_equity, r.current_assets, r.current_liabilities,
-                 r.current_ratio, r.total_debt, r.cash_and_equivalents,
-                 r.net_working_capital, r.goodwill, r.tangible_book_value]
+                [
+                    r.ticker,
+                    r.year,
+                    r.total_assets,
+                    r.total_liabilities,
+                    r.stockholders_equity,
+                    r.current_assets,
+                    r.current_liabilities,
+                    r.current_ratio,
+                    r.total_debt,
+                    r.cash_and_equivalents,
+                    r.net_working_capital,
+                    r.goodwill,
+                    r.tangible_book_value,
+                ]
                 for r in rows
             ],
         )
@@ -510,7 +599,9 @@ class YFinanceCollector:
         if existing and existing[0] >= 4:
             logger.info(
                 "Cash flow for %s already has %d years (latest: %s), skipping",
-                ticker, existing[0], existing[1],
+                ticker,
+                existing[0],
+                existing[1],
             )
             rows_raw = db.execute(
                 "SELECT ticker, year, operating_cashflow, capital_expenditures, "
@@ -521,10 +612,15 @@ class YFinanceCollector:
             ).fetchall()
             return [
                 CashFlowRow(
-                    ticker=r[0], year=r[1], operating_cashflow=r[2],
-                    capital_expenditures=r[3], free_cashflow=r[4],
-                    financing_cashflow=r[5], investing_cashflow=r[6],
-                    dividends_paid=r[7], share_buybacks=r[8],
+                    ticker=r[0],
+                    year=r[1],
+                    operating_cashflow=r[2],
+                    capital_expenditures=r[3],
+                    free_cashflow=r[4],
+                    financing_cashflow=r[5],
+                    investing_cashflow=r[6],
+                    dividends_paid=r[7],
+                    share_buybacks=r[8],
                     net_change_in_cash=r[9],
                 )
                 for r in rows_raw
@@ -552,30 +648,35 @@ class YFinanceCollector:
             year = date_col.year if hasattr(date_col, "year") else int(date_col)
 
             op_cf = get_val(
-                ["Operating Cash Flow", "Total Cash From Operating Activities",
-                 "Cash Flow From Continuing Operating Activities"], date_col
+                [
+                    "Operating Cash Flow",
+                    "Total Cash From Operating Activities",
+                    "Cash Flow From Continuing Operating Activities",
+                ],
+                date_col,
             )
-            capex = get_val(
-                ["Capital Expenditure", "Capital Expenditures"], date_col
-            )
+            capex = get_val(["Capital Expenditure", "Capital Expenditures"], date_col)
             inv_cf = get_val(
-                ["Investing Cash Flow",
-                 "Cash Flow From Continuing Investing Activities"], date_col
+                [
+                    "Investing Cash Flow",
+                    "Cash Flow From Continuing Investing Activities",
+                ],
+                date_col,
             )
             fin_cf = get_val(
-                ["Financing Cash Flow",
-                 "Cash Flow From Continuing Financing Activities"], date_col
+                [
+                    "Financing Cash Flow",
+                    "Cash Flow From Continuing Financing Activities",
+                ],
+                date_col,
             )
             divs = get_val(
                 ["Cash Dividends Paid", "Common Stock Dividend Paid"], date_col
             )
             buybacks = get_val(
-                ["Repurchase Of Capital Stock",
-                 "Common Stock Payments"], date_col
+                ["Repurchase Of Capital Stock", "Common Stock Payments"], date_col
             )
-            net_change = get_val(
-                ["Changes In Cash", "Net Change In Cash"], date_col
-            )
+            net_change = get_val(["Changes In Cash", "Net Change In Cash"], date_col)
 
             fcf = op_cf + capex  # capex is usually negative
 
@@ -604,9 +705,18 @@ class YFinanceCollector:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                [r.ticker, r.year, r.operating_cashflow, r.capital_expenditures,
-                 r.free_cashflow, r.financing_cashflow, r.investing_cashflow,
-                 r.dividends_paid, r.share_buybacks, r.net_change_in_cash]
+                [
+                    r.ticker,
+                    r.year,
+                    r.operating_cashflow,
+                    r.capital_expenditures,
+                    r.free_cashflow,
+                    r.financing_cashflow,
+                    r.investing_cashflow,
+                    r.dividends_paid,
+                    r.share_buybacks,
+                    r.net_change_in_cash,
+                ]
                 for r in rows
             ],
         )
@@ -633,14 +743,21 @@ class YFinanceCollector:
             [ticker, today],
         ).fetchone()
         if existing:
-            logger.info("Analyst data for %s already collected today, returning stored", ticker)
+            logger.info(
+                "Analyst data for %s already collected today, returning stored", ticker
+            )
             return AnalystData(
-                ticker=existing[0], snapshot_date=existing[1],
-                target_mean=existing[2] or 0.0, target_median=existing[3] or 0.0,
-                target_high=existing[4] or 0.0, target_low=existing[5] or 0.0,
+                ticker=existing[0],
+                snapshot_date=existing[1],
+                target_mean=existing[2] or 0.0,
+                target_median=existing[3] or 0.0,
+                target_high=existing[4] or 0.0,
+                target_low=existing[5] or 0.0,
                 num_analysts=existing[6] or 0,
-                strong_buy=existing[7] or 0, buy=existing[8] or 0,
-                hold=existing[9] or 0, sell=existing[10] or 0,
+                strong_buy=existing[7] or 0,
+                buy=existing[8] or 0,
+                hold=existing[9] or 0,
+                sell=existing[10] or 0,
                 strong_sell=existing[11] or 0,
             )
 
@@ -708,14 +825,27 @@ class YFinanceCollector:
                  strong_buy, buy, hold, sell, strong_sell)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [data.ticker, data.snapshot_date, data.target_mean, data.target_median,
-             data.target_high, data.target_low, data.num_analysts,
-             data.strong_buy, data.buy, data.hold, data.sell, data.strong_sell],
+            [
+                data.ticker,
+                data.snapshot_date,
+                data.target_mean,
+                data.target_median,
+                data.target_high,
+                data.target_low,
+                data.num_analysts,
+                data.strong_buy,
+                data.buy,
+                data.hold,
+                data.sell,
+                data.strong_sell,
+            ],
         )
 
         logger.info(
             "Stored analyst data for %s: target=$%.2f, %d analysts",
-            ticker, target_mean, num_analysts,
+            ticker,
+            target_mean,
+            num_analysts,
         )
         return data
 
@@ -737,9 +867,13 @@ class YFinanceCollector:
             [ticker, today],
         ).fetchone()
         if existing:
-            logger.info("Insider activity for %s already collected today, returning stored", ticker)
+            logger.info(
+                "Insider activity for %s already collected today, returning stored",
+                ticker,
+            )
             return InsiderSummary(
-                ticker=existing[0], snapshot_date=existing[1],
+                ticker=existing[0],
+                snapshot_date=existing[1],
                 net_insider_buying_90d=existing[2] or 0.0,
                 institutional_ownership_pct=existing[3] or 0.0,
                 raw_transactions_json=existing[4] or "[]",
@@ -762,7 +896,11 @@ class YFinanceCollector:
 
         try:
             insider_df = t.insider_transactions
-            if insider_df is not None and isinstance(insider_df, pd.DataFrame) and not insider_df.empty:
+            if (
+                insider_df is not None
+                and isinstance(insider_df, pd.DataFrame)
+                and not insider_df.empty
+            ):
                 for _, row in insider_df.iterrows():
                     tx = {
                         "insider": str(row.get("Insider", "")),
@@ -805,13 +943,20 @@ class YFinanceCollector:
                  institutional_ownership_pct, raw_transactions)
             VALUES (?, ?, ?, ?, ?)
             """,
-            [summary.ticker, summary.snapshot_date, summary.net_insider_buying_90d,
-             summary.institutional_ownership_pct, summary.raw_transactions_json],
+            [
+                summary.ticker,
+                summary.snapshot_date,
+                summary.net_insider_buying_90d,
+                summary.institutional_ownership_pct,
+                summary.raw_transactions_json,
+            ],
         )
 
         logger.info(
             "Stored insider activity for %s: net_buying_90d=$%.0f, inst=%.1f%%",
-            ticker, net_buying_90d, inst_pct,
+            ticker,
+            net_buying_90d,
+            inst_pct,
         )
         return summary
 
@@ -833,12 +978,19 @@ class YFinanceCollector:
             [ticker, today],
         ).fetchone()
         if existing:
-            logger.info("Earnings calendar for %s already collected today, returning stored", ticker)
+            logger.info(
+                "Earnings calendar for %s already collected today, returning stored",
+                ticker,
+            )
             return EarningsCalendar(
-                ticker=existing[0], snapshot_date=existing[1],
-                next_earnings_date=existing[2], days_until_earnings=existing[3],
-                earnings_estimate=existing[4], previous_actual=existing[5],
-                previous_estimate=existing[6], surprise_pct=existing[7],
+                ticker=existing[0],
+                snapshot_date=existing[1],
+                next_earnings_date=existing[2],
+                days_until_earnings=existing[3],
+                earnings_estimate=existing[4],
+                previous_actual=existing[5],
+                previous_estimate=existing[6],
+                surprise_pct=existing[7],
             )
 
         t = self._get_ticker(ticker)
@@ -870,9 +1022,18 @@ class YFinanceCollector:
         # Historical earnings for surprise calculation
         try:
             earnings_df = t.earnings_dates
-            if earnings_df is not None and isinstance(earnings_df, pd.DataFrame) and not earnings_df.empty:
+            if (
+                earnings_df is not None
+                and isinstance(earnings_df, pd.DataFrame)
+                and not earnings_df.empty
+            ):
                 # Find most recent past earnings
-                past = earnings_df[earnings_df.index <= pd.Timestamp(today)]
+                # Use tz-aware timestamp to avoid comparison warning
+                # (earnings_df.index is datetime64[us, America/New_York])
+                today_ts = pd.Timestamp(today)
+                if earnings_df.index.tz is not None:
+                    today_ts = today_ts.tz_localize(earnings_df.index.tz)
+                past = earnings_df[earnings_df.index <= today_ts]
                 if not past.empty:
                     latest = past.iloc[0]
                     prev_actual = float(latest.get("Reported EPS", 0) or 0) or None
@@ -903,14 +1064,22 @@ class YFinanceCollector:
                  earnings_estimate, previous_actual, previous_estimate, surprise_pct)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [cal_data.ticker, cal_data.snapshot_date, cal_data.next_earnings_date,
-             cal_data.days_until_earnings, cal_data.earnings_estimate,
-             cal_data.previous_actual, cal_data.previous_estimate,
-             cal_data.surprise_pct],
+            [
+                cal_data.ticker,
+                cal_data.snapshot_date,
+                cal_data.next_earnings_date,
+                cal_data.days_until_earnings,
+                cal_data.earnings_estimate,
+                cal_data.previous_actual,
+                cal_data.previous_estimate,
+                cal_data.surprise_pct,
+            ],
         )
 
         logger.info(
             "Stored earnings calendar for %s: next=%s (%s days)",
-            ticker, next_date, days_until,
+            ticker,
+            next_date,
+            days_until,
         )
         return cal_data

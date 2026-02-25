@@ -44,7 +44,7 @@ class ReportGenerator:
 
         # Orders placed today
         orders = db.execute(
-            "SELECT ticker, side, qty, price, signal, conviction "
+            "SELECT ticker, side, qty, price, signal, conviction_score "
             "FROM orders "
             "WHERE created_at >= CURRENT_DATE "
             "ORDER BY created_at DESC"
@@ -119,15 +119,16 @@ class ReportGenerator:
             "ORDER BY timestamp DESC LIMIT 1"
         ).fetchall()
 
-        # All positions
+        # All open positions (all rows = open; sold positions are deleted)
         positions = db.execute(
-            "SELECT ticker, qty, avg_entry_price, cost_basis "
-            "FROM positions WHERE status = 'open'"
+            "SELECT ticker, qty, avg_entry_price, "
+            "qty * avg_entry_price AS cost_basis "
+            "FROM positions WHERE qty > 0"
         ).fetchall()
 
         # Today's orders
         orders = db.execute(
-            "SELECT ticker, side, qty, price, signal, conviction, status "
+            "SELECT ticker, side, qty, price, signal, conviction_score, status "
             "FROM orders "
             "WHERE created_at >= CURRENT_DATE "
             "ORDER BY created_at"

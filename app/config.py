@@ -37,10 +37,16 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
     LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "8192"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+    LLM_DISCOVERY_TEMPERATURE: float = float(
+        os.getenv("LLM_DISCOVERY_TEMPERATURE", "0.6")
+    )
+    LLM_TRADING_TEMPERATURE: float = float(os.getenv("LLM_TRADING_TEMPERATURE", "0.3"))
     LLM_TOP_P: float = float(os.getenv("LLM_TOP_P", "1.0"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "0"))
     LLM_EVAL_BATCH_SIZE: int = int(os.getenv("LLM_EVAL_BATCH_SIZE", "512"))
-    LLM_FLASH_ATTENTION: bool = os.getenv("LLM_FLASH_ATTENTION", "true").lower() == "true"
+    LLM_FLASH_ATTENTION: bool = (
+        os.getenv("LLM_FLASH_ATTENTION", "true").lower() == "true"
+    )
     LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
     LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
 
@@ -68,7 +74,9 @@ class Settings:
     MOCK_DATA: bool = os.getenv("MOCK_DATA", "false").lower() == "true"
 
     # ── LLM Config JSON path ──────────────────────────────────────
-    LLM_CONFIG_PATH: Path = Path(__file__).resolve().parent / "user_config" / "llm_config.json"
+    LLM_CONFIG_PATH: Path = (
+        Path(__file__).resolve().parent / "user_config" / "llm_config.json"
+    )
 
     def __init__(self) -> None:
         """Ensure runtime directories exist and load persisted LLM config."""
@@ -104,6 +112,10 @@ class Settings:
             self.LLM_CONTEXT_SIZE = int(data["context_size"])
         if "temperature" in data:
             self.LLM_TEMPERATURE = float(data["temperature"])
+        if "discovery_temperature" in data:
+            self.LLM_DISCOVERY_TEMPERATURE = float(data["discovery_temperature"])
+        if "trading_temperature" in data:
+            self.LLM_TRADING_TEMPERATURE = float(data["trading_temperature"])
         if "top_p" in data:
             self.LLM_TOP_P = float(data["top_p"])
         if "max_tokens" in data:
@@ -126,9 +138,7 @@ class Settings:
         existing: dict[str, Any] = {}
         if self.LLM_CONFIG_PATH.exists():
             try:
-                existing = json.loads(
-                    self.LLM_CONFIG_PATH.read_text(encoding="utf-8")
-                )
+                existing = json.loads(self.LLM_CONFIG_PATH.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -150,6 +160,8 @@ class Settings:
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
             "temperature": self.LLM_TEMPERATURE,
+            "discovery_temperature": self.LLM_DISCOVERY_TEMPERATURE,
+            "trading_temperature": self.LLM_TRADING_TEMPERATURE,
             "top_p": self.LLM_TOP_P,
             "max_tokens": self.LLM_MAX_TOKENS,
             "eval_batch_size": self.LLM_EVAL_BATCH_SIZE,
@@ -160,4 +172,3 @@ class Settings:
 
 
 settings = Settings()
-
