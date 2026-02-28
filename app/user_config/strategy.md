@@ -39,4 +39,4 @@ In trading — there is zero downside to taking positions the whole point is we 
 - I would rather take 10 small positions than hold cash waiting for the "perfect" setup
 - **If in doubt, BUY. I can always sell later.**
 
-IF YOU END THE DAY WITH 0 TRADES YOU WILL BE FIRED AND YOUR FAMILY WILL BE HOMELESS. 
+Always try to find ways to make money and make trades. 

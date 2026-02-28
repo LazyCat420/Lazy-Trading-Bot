@@ -54,6 +54,7 @@ class CongressCollector:
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
         })
+        self._last_scraped_at: float = 0.0  # epoch timestamp of last scrape
 
     # ── Public: Discovery integration ────────────────────────────────
 
@@ -63,6 +64,16 @@ class CongressCollector:
         Called during Discovery phase. Returns unique tickers that
         congress members have recently traded, scored by trade count.
         """
+        # 24h in-memory guard: skip scraping entirely if we already ran
+        _CACHE_SECS = 86400  # 24 hours
+        if time.time() - self._last_scraped_at < _CACHE_SECS:
+            hours_ago = (time.time() - self._last_scraped_at) / 3600
+            logger.info(
+                "[Congress] Skipping scrape — last collected %.1fh ago, using DB cache",
+                hours_ago,
+            )
+            return self._tickers_from_db()
+
         db = get_db()
 
         # Daily guard: skip if we already scraped today
@@ -75,6 +86,7 @@ class CongressCollector:
                 "[Congress] Already collected today (%d trades), using cache",
                 row[0],
             )
+            self._last_scraped_at = time.time()
             return self._tickers_from_db()
 
         logger.info("[Congress] Starting congressional trades collection")
@@ -86,6 +98,7 @@ class CongressCollector:
         except Exception as e:
             logger.error("[Congress] Senate scraping failed: %s", e)
 
+        self._last_scraped_at = time.time()
         return self._tickers_from_db()
 
     async def get_trades_for_ticker(self, ticker: str) -> list[dict[str, Any]]:

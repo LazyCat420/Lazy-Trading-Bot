@@ -66,8 +66,45 @@ class TestPortfolioStrategist:
         assert result["position_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_tool_get_all_candidates_no_dossiers(self, mock_paper_trader):
-        """Test get_all_candidates when no dossiers exist."""
+    async def test_market_overview_compact(self, mock_paper_trader):
+        """Test get_market_overview returns compact metadata, no prose."""
+        strategist = PortfolioStrategist(
+            paper_trader=mock_paper_trader,
+            tickers=["AAPL"],
+        )
+        with patch(
+            "app.engine.portfolio_strategist.DeepAnalysisService"
+        ) as mock_das:
+            mock_das.get_latest_dossier.return_value = {
+                "scorecard": {
+                    "trend_template_score": 85,
+                    "vcp_setup_score": 70,
+                    "relative_strength_rating": 90,
+                    "signal_summary": "Strong uptrend",
+                },
+                "conviction_score": 0.8,
+                "sector": "Technology",
+                "executive_summary": "A long detailed summary...",
+                "bull_case": "Very bullish...",
+                "bear_case": "Some risks...",
+                "key_catalysts": ["AI", "iPhone"],
+            }
+            result = await strategist._tool_get_market_overview({})
+            assert result["total_new"] == 1
+            c = result["candidates"][0]
+            # Compact metadata present
+            assert c["ticker"] == "AAPL"
+            assert c["conviction"] == 0.8
+            assert c["trend_score"] == 85
+            # Full prose fields should NOT be present
+            assert "executive_summary" not in c
+            assert "bull_case" not in c
+            assert "bear_case" not in c
+            assert "key_catalysts" not in c
+
+    @pytest.mark.asyncio
+    async def test_market_overview_no_dossiers(self, mock_paper_trader):
+        """Test get_market_overview when no dossiers exist."""
         strategist = PortfolioStrategist(
             paper_trader=mock_paper_trader,
             tickers=["AAPL"],
@@ -76,9 +113,69 @@ class TestPortfolioStrategist:
             "app.engine.portfolio_strategist.DeepAnalysisService"
         ) as mock_das:
             mock_das.get_latest_dossier.return_value = None
-            result = await strategist._tool_get_all_candidates({})
-            assert result["total"] == 0
+            result = await strategist._tool_get_market_overview({})
+            assert result["total_new"] == 0
             assert result["candidates"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_dossier_returns_full_prose(self, mock_paper_trader):
+        """Test get_dossier returns full analysis for one ticker."""
+        strategist = PortfolioStrategist(
+            paper_trader=mock_paper_trader,
+            tickers=["AAPL"],
+        )
+        with patch(
+            "app.engine.portfolio_strategist.DeepAnalysisService"
+        ) as mock_das:
+            mock_das.get_latest_dossier.return_value = {
+                "scorecard": {"signal_summary": "Bullish"},
+                "conviction_score": 0.9,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+                "market_cap_tier": "mega",
+                "executive_summary": "Apple is the world leader...",
+                "bull_case": "AI integration + services growth",
+                "bear_case": "Regulatory pressure in EU",
+                "key_catalysts": ["WWDC", "iPhone 17"],
+            }
+            result = await strategist._tool_get_dossier({"ticker": "AAPL"})
+            assert result["ticker"] == "AAPL"
+            assert result["executive_summary"] == "Apple is the world leader..."
+            assert result["bull_case"] == "AI integration + services growth"
+            assert result["key_catalysts"] == ["WWDC", "iPhone 17"]
+
+    @pytest.mark.asyncio
+    async def test_get_dossier_missing_ticker(self, mock_paper_trader):
+        """Test get_dossier returns error for unknown ticker."""
+        strategist = PortfolioStrategist(
+            paper_trader=mock_paper_trader,
+            tickers=["AAPL"],
+        )
+        with patch(
+            "app.engine.portfolio_strategist.DeepAnalysisService"
+        ) as mock_das:
+            mock_das.get_latest_dossier.return_value = None
+            result = await strategist._tool_get_dossier({"ticker": "ZZZZ"})
+            assert "error" in result
+
+    def test_portfolio_state_bounded(self, mock_paper_trader):
+        """Test that portfolio state trades list stays bounded at 10."""
+        strategist = PortfolioStrategist(
+            paper_trader=mock_paper_trader,
+            tickers=["AAPL"],
+        )
+        # Simulate 15 trades filling the state
+        for i in range(15):
+            strategist._portfolio_state["trades_this_session"].append({
+                "side": "BUY", "ticker": f"T{i}", "qty": 10, "price": 100.0,
+            })
+            trades = strategist._portfolio_state["trades_this_session"]
+            if len(trades) > 10:
+                strategist._portfolio_state["trades_this_session"] = trades[-10:]
+
+        assert len(strategist._portfolio_state["trades_this_session"]) == 10
+        # Most recent trade should be T14 (0-indexed)
+        assert strategist._portfolio_state["trades_this_session"][-1]["ticker"] == "T14"
 
     @pytest.mark.asyncio
     async def test_tool_place_buy_insufficient_cash(self, mock_paper_trader):
@@ -125,6 +222,32 @@ class TestPortfolioStrategist:
         })
         assert "error" in result
         assert "too large" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_tool_place_buy_rejects_existing_position(self, mock_paper_trader):
+        """Test buy rejection when ticker is already held."""
+        mock_paper_trader.get_portfolio.return_value = {
+            "cash_balance": 10000.0,
+            "total_portfolio_value": 10000.0,
+            "positions": [{"ticker": "AAPL", "qty": 10, "avg_entry_price": 150.0}],
+        }
+        mock_paper_trader.get_positions.return_value = [
+            {"ticker": "AAPL", "qty": 10, "avg_entry_price": 150.0},
+        ]
+        strategist = PortfolioStrategist(
+            paper_trader=mock_paper_trader,
+            tickers=["AAPL"],
+        )
+
+        result = await strategist._tool_place_buy({
+            "ticker": "AAPL",
+            "qty": 5,
+            "reason": "test duplicate buy",
+        })
+        assert "error" in result
+        assert "POSITION EXISTS" in result["error"]
+        # Should be added to failed set so retries are blocked too
+        assert "AAPL" in strategist._failed_buy_tickers
 
     @pytest.mark.asyncio
     async def test_tool_set_triggers_no_position(self, mock_paper_trader):

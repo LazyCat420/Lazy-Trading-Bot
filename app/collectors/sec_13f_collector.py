@@ -72,6 +72,7 @@ class SEC13FCollector:
                 "Accept-Encoding": "gzip, deflate",
             }
         )
+        self._last_scraped_at: float = 0.0  # epoch timestamp of last scrape
 
     # ── Public: Discovery integration ────────────────────────────────
 
@@ -84,6 +85,16 @@ class SEC13FCollector:
         IMPORTANT: All scraping runs in a thread executor to avoid blocking
         the asyncio event loop (scraping uses synchronous requests).
         """
+        # 24h in-memory guard: skip scraping entirely if we already ran today
+        _CACHE_SECS = 86400  # 24 hours
+        if time.time() - self._last_scraped_at < _CACHE_SECS:
+            hours_ago = (time.time() - self._last_scraped_at) / 3600
+            logger.info(
+                "[SEC 13F] Skipping scrape — last collected %.1fh ago, using DB cache",
+                hours_ago,
+            )
+            return self._tickers_from_db()
+
         db = get_db()
 
         # Daily guard: skip if we already scraped today
@@ -94,12 +105,14 @@ class SEC13FCollector:
             logger.info(
                 "[SEC 13F] Already collected today (%d rows), using cache", row[0]
             )
+            self._last_scraped_at = time.time()
             return self._tickers_from_db()
 
         # Run the synchronous scraping in a thread so we don't block the event loop
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._scrape_all_filers, db)
 
+        self._last_scraped_at = time.time()
         return self._tickers_from_db()
 
     def _scrape_all_filers(self, db: Any) -> None:

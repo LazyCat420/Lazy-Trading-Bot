@@ -591,6 +591,19 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Alpha Attribution: Source Credibility tracking ─────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_credibility (
+            source_id       VARCHAR PRIMARY KEY,
+            source_type     VARCHAR NOT NULL,
+            win_count       INTEGER DEFAULT 0,
+            loss_count      INTEGER DEFAULT 0,
+            total_pnl       DOUBLE DEFAULT 0.0,
+            trust_score     DOUBLE DEFAULT 0.5,
+            last_updated    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
@@ -684,6 +697,25 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
 
     # ---- pipeline_events: model_name for activity log tracking ----
     _add_col("pipeline_events", "model_name", "VARCHAR DEFAULT ''")
+
+    # ---- bots: queue ordering for Run All ----
+    _add_col("bots", "queue_order", "INTEGER DEFAULT 0")
+
+    # ---- Fix contaminated last_analyzed timestamps ----
+    # Prior bug: _update_watchlist ran UPDATE WHERE ticker = ? (no bot_id),
+    # so Bot A's analysis stamped ALL bots' rows.  Reset last_analyzed
+    # on rows where the bot never actually ran analysis (analysis_count = 0).
+    try:
+        fixed = conn.execute(
+            "UPDATE watchlist SET last_analyzed = NULL "
+            "WHERE last_analyzed IS NOT NULL AND analysis_count = 0"
+        ).rowcount
+        if fixed:
+            logger.info(
+                "Migration: reset %d contaminated last_analyzed values", fixed,
+            )
+    except Exception:
+        pass
 
     # ---- Watchlist: migrate from single-column PK to composite PK ----
     # Existing DBs have ticker as sole PK, which crashes multi-bot imports.

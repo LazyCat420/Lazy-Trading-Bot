@@ -69,6 +69,207 @@ const MetricRow = ({ label, value, sub }) => (
 );
 
 // ***************************************************************
+// RunAllConsole — live pipeline console for Run-All-Bots
+// ***************************************************************
+
+const RunAllConsole = ({ runAllRunning, runAllStatus }) => {
+    const logs = runAllStatus?.log || [];
+    const [consoleFilter, setConsoleFilter] = useState("all");
+    const [consoleOpen, setConsoleOpen] = useState(true);
+    const consoleRef = useRef(null);
+    const userScrolledRef = useRef(false);
+
+    // Auto-scroll to bottom unless user scrolled up
+    useEffect(() => {
+        if (consoleRef.current && !userScrolledRef.current) {
+            consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+        }
+    }, [logs.length]);
+
+    const handleConsoleScroll = useCallback((e) => {
+        const el = e.target;
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        userScrolledRef.current = !atBottom;
+    }, []);
+
+    // Filter logs
+    const filteredLogs = consoleFilter === "all"
+        ? logs
+        : logs.filter(l => l.level === consoleFilter);
+
+    // Count by level
+    const errorCount = logs.filter(l => l.level === "error").length;
+    const warnCount = logs.filter(l => l.level === "warn").length;
+    const successCount = logs.filter(l => l.level === "success").length;
+
+    // Phase badge colors
+    const phaseColors = {
+        model_load: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+        model_unload: "bg-purple-500/20 text-purple-300 border-purple-500/30",
+        discovery: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+        collection: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+        analysis: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+        trading: "bg-green-500/20 text-green-400 border-green-500/30",
+        import: "bg-teal-500/20 text-teal-400 border-teal-500/30",
+        system: "bg-gray-500/20 text-gray-400 border-gray-500/30",
+        done: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+        running: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    };
+
+    // Level styles
+    const levelStyles = {
+        info: { color: "text-blue-300", icon: "info" },
+        success: { color: "text-green-400", icon: "check_circle" },
+        warn: { color: "text-amber-400", icon: "warning" },
+        error: { color: "text-red-400", icon: "error" },
+        system: { color: "text-purple-400", icon: "settings" },
+    };
+
+    const isRunning = runAllRunning;
+    const pctDone = runAllStatus?.total_bots
+        ? (runAllStatus.completed / runAllStatus.total_bots * 100) : 0;
+
+    return React.createElement("div", {
+        className: `glass-card overflow-hidden border-l-4 ${isRunning ? "border-amber-500" : "border-green-500/50"}`
+    },
+        // Header
+        React.createElement("div", {
+            className: "p-3 flex items-center justify-between cursor-pointer hover:bg-white/5 transition",
+            onClick: () => setConsoleOpen(!consoleOpen),
+        },
+            React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement("span", {
+                    className: `material-symbols-outlined text-lg ${isRunning ? "text-amber-400 animate-spin" : "text-green-400"}`
+                }, isRunning ? "sync" : "check_circle"),
+                React.createElement("span", { className: `text-sm font-bold ${isRunning ? "text-amber-400" : "text-green-400"}` },
+                    isRunning ? "Run-All in Progress" : "Run-All Complete"
+                ),
+                // Current phase badge
+                isRunning && runAllStatus?.current_phase && React.createElement("span", {
+                    className: `px-2 py-0.5 rounded text-[9px] font-mono border ${phaseColors[runAllStatus.current_phase] || phaseColors.system}`
+                }, runAllStatus.current_phase),
+                // Error count badge
+                errorCount > 0 && React.createElement("span", {
+                    className: "px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-500/20 text-red-400"
+                }, `${errorCount} error${errorCount > 1 ? "s" : ""}`),
+            ),
+            React.createElement("div", { className: "flex items-center gap-3" },
+                React.createElement("span", { className: "text-xs text-text-muted font-mono" },
+                    `${runAllStatus?.completed || 0}/${runAllStatus?.total_bots || 0} bots`
+                ),
+                React.createElement("span", {
+                    className: `material-symbols-outlined text-text-muted text-sm transition-transform ${consoleOpen ? "" : "-rotate-90"}`
+                }, "expand_more"),
+            )
+        ),
+
+        // Progress bar
+        React.createElement("div", { className: "h-1.5 bg-onyx-black/60" },
+            React.createElement("div", {
+                className: `h-full transition-all duration-500 ${isRunning
+                    ? "bg-gradient-to-r from-amber-500 to-primary"
+                    : "bg-gradient-to-r from-green-500 to-emerald-400"}`,
+                style: { width: `${pctDone}%` }
+            })
+        ),
+
+        // Console body (collapsible)
+        consoleOpen && React.createElement("div", { className: "border-t border-border-dark" },
+            // Current bot + filter bar
+            React.createElement("div", { className: "px-3 py-2 flex items-center justify-between bg-onyx-black/30 border-b border-border-dark/50" },
+                // Current bot info
+                React.createElement("div", { className: "flex items-center gap-2 text-xs" },
+                    isRunning && runAllStatus?.current_bot && React.createElement(React.Fragment, null,
+                        React.createElement("span", { className: "text-text-muted" }, "Now:"),
+                        React.createElement("span", { className: "text-white font-bold" },
+                            runAllStatus.current_bot.display_name
+                        ),
+                        React.createElement("span", { className: "text-text-muted font-mono" },
+                            `(${runAllStatus.current_bot.index}/${runAllStatus.total_bots})`
+                        ),
+                    ),
+                    // Completed bot chips
+                    runAllStatus?.results?.length > 0 && React.createElement("div", {
+                        className: "flex gap-1 ml-2"
+                    },
+                        ...runAllStatus.results.map(r =>
+                            React.createElement("span", {
+                                key: r.bot_id,
+                                title: r.display_name,
+                                className: `w-2 h-2 rounded-full ${r.status === "done" ? "bg-green-400" : "bg-red-400"}`
+                            })
+                        )
+                    ),
+                ),
+                // Level filter buttons
+                React.createElement("div", { className: "flex items-center gap-1" },
+                    ...[
+                        { key: "all", label: "All", count: logs.length },
+                        { key: "error", label: "Errors", count: errorCount, color: "text-red-400" },
+                        { key: "warn", label: "Warnings", count: warnCount, color: "text-amber-400" },
+                        { key: "success", label: "Success", count: successCount, color: "text-green-400" },
+                    ].map(f => React.createElement("button", {
+                        key: f.key,
+                        onClick: (e) => { e.stopPropagation(); setConsoleFilter(f.key); },
+                        className: `px-2 py-0.5 rounded text-[10px] font-mono transition ${consoleFilter === f.key
+                            ? "bg-white/10 text-white font-bold"
+                            : `hover:bg-white/5 text-text-muted ${f.color || ""}`}`
+                    },
+                        f.label,
+                        f.count > 0 && React.createElement("span", {
+                            className: `ml-1 px-1 rounded text-[9px] ${f.color ? f.color + "/60" : "text-text-muted"}`
+                        }, f.count)
+                    ))
+                )
+            ),
+
+            // Log entries (scrollable console)
+            React.createElement("div", {
+                ref: consoleRef,
+                onScroll: handleConsoleScroll,
+                className: "max-h-[320px] overflow-y-auto font-mono text-[11px] leading-[18px] bg-[#0a0a0f]",
+                style: { scrollBehavior: "smooth" },
+            },
+                filteredLogs.length === 0
+                    ? React.createElement("div", { className: "p-4 text-center text-text-muted text-xs" },
+                        consoleFilter !== "all"
+                            ? `No ${consoleFilter} entries`
+                            : (isRunning ? "Waiting for log entries\u2026" : "No log entries")
+                    )
+                    : filteredLogs.map((entry, i) => {
+                        const style = levelStyles[entry.level] || levelStyles.info;
+                        const phaseStyle = phaseColors[entry.phase] || phaseColors.system;
+                        return React.createElement("div", {
+                            key: i,
+                            className: `px-3 py-[3px] flex items-start gap-2 hover:bg-white/[0.02] border-b border-white/[0.02] ${entry.level === "error" ? "bg-red-500/[0.04]" : ""}`,
+                        },
+                            // Time
+                            React.createElement("span", { className: "text-text-muted shrink-0 w-[52px]" }, entry.time),
+                            // Level icon
+                            React.createElement("span", {
+                                className: `material-symbols-outlined text-[13px] shrink-0 mt-[1px] ${style.color}`
+                            }, style.icon),
+                            // Phase badge
+                            React.createElement("span", {
+                                className: `px-1.5 py-[0px] rounded text-[9px] shrink-0 border ${phaseStyle}`
+                            }, entry.phase),
+                            // Bot name (if present)
+                            entry.bot_name && React.createElement("span", {
+                                className: "text-purple-300/70 shrink-0 truncate max-w-[120px]",
+                                title: entry.bot_name,
+                            }, `[${entry.bot_name}]`),
+                            // Message
+                            React.createElement("span", {
+                                className: `${style.color} flex-1 break-words`
+                            }, entry.message),
+                        );
+                    })
+            )
+        )
+    );
+};
+
+// ***************************************************************
 // DATA HOOK  Central state management
 // ***************************************************************
 
@@ -2823,6 +3024,11 @@ const useMonitorData = () => {
     const [botList, setBotList] = useState([]);
     const [leaderboard, setLeaderboard] = useState([]);
 
+    // ── Run-All-Bots state ──
+    const [runAllRunning, setRunAllRunning] = useState(false);
+    const [runAllStatus, setRunAllStatus] = useState(null);
+    const runAllPollRef = useRef(null);
+
     // Ref for loop poll interval so we can manage it across renders
     const loopPollRef = useRef(null);
 
@@ -2874,6 +3080,54 @@ const useMonitorData = () => {
             setLeaderboard(data.leaderboard || []);
         } catch (e) { console.error("Leaderboard fetch error:", e); }
     }, []);
+
+    const runAllBots = useCallback(async () => {
+        if (runAllRunning) return;
+        RetroSFX.modemHandshake();
+        setRunAllRunning(true);
+        setRunAllStatus(null);
+        try {
+            const res = await fetch("/api/bots/run-all", { method: "POST" });
+            if (!res.ok) {
+                const body = await res.json();
+                alert(body.detail || "Failed to start run-all");
+                setRunAllRunning(false);
+                return;
+            }
+            // Start polling run-all status
+            if (runAllPollRef.current) clearInterval(runAllPollRef.current);
+            runAllPollRef.current = setInterval(async () => {
+                try {
+                    const sr = await fetch("/api/bots/run-all/status");
+                    const st = await sr.json();
+                    setRunAllStatus(st);
+
+                    // Sync active bot with the currently-running bot
+                    // so Portfolio tab shows the right data
+                    if (st.current_bot) {
+                        const curBotId = st.current_bot.bot_id;
+                        if (curBotId && curBotId !== activeBotId) {
+                            setActiveBotId(curBotId);
+                            fetchActiveBot();
+                        }
+                    }
+
+                    if (!st.running) {
+                        clearInterval(runAllPollRef.current);
+                        runAllPollRef.current = null;
+                        setRunAllRunning(false);
+                        RetroSFX.successChime();
+                        fetchLeaderboard();
+                        fetchBotList();
+                        fetchActiveBot();
+                    }
+                } catch (e) { console.error("Run-all poll error:", e); }
+            }, 3000);
+        } catch (e) {
+            console.error("Run all bots error:", e);
+            setRunAllRunning(false);
+        }
+    }, [runAllRunning, fetchLeaderboard, fetchBotList]);
 
     const fetchWatchlist = useCallback(async () => {
         try {
@@ -2973,11 +3227,12 @@ const useMonitorData = () => {
         } finally {
             setLoading(false);
         }
-        // Also refresh scores (paginated), watchlist + portfolio
+        // Also refresh scores (paginated), watchlist + portfolio + leaderboard
         fetchScorePage(scorePage);
         fetchWatchlist();
         fetchPortfolio();
-    }, [fetchWatchlist, fetchPortfolio, fetchScorePage, scorePage]);
+        fetchLeaderboard();
+    }, [fetchWatchlist, fetchPortfolio, fetchScorePage, scorePage, fetchLeaderboard]);
 
     // Start polling for loop status
     const startLoopPoll = useCallback(() => {
@@ -3276,6 +3531,8 @@ const useMonitorData = () => {
         // Multi-Bot state
         activeBotId, activeBotInfo, activeBotModelName, botList, leaderboard,
         fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
+        // Run-All state
+        runAllRunning, runAllStatus, runAllBots,
         // Scheduler state
         schedulerStatus, schedulerHistory, schedulerLoading,
         // Actions
@@ -3299,6 +3556,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
     const [sortBy, setSortBy] = useState("total_score");
     const [expandedTicker, setExpandedTicker] = useState(null);
     const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist" | "portfolio"
+    const [expandedBotId, setExpandedBotId] = useState(null);
     const [expandedWlTicker, setExpandedWlTicker] = useState(null);
     const navigate = useNavigate();
 
@@ -3314,6 +3572,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
         loopRunning, loopStatus, setLoopStatus,
         activeBotId, activeBotInfo, activeBotModelName, botList, leaderboard,
         fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
+        runAllRunning, runAllStatus, runAllBots,
         schedulerStatus, schedulerHistory, schedulerLoading,
         fetchAll, runScan, clearData,
         addToWatchlist, removeFromWatchlist,
@@ -4776,22 +5035,51 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     )
                 ),
 
+
                 // ── LEADERBOARD TAB ─────────────────────────────────
                 activeTab === "leaderboard" && React.createElement("div", { className: "space-y-4" },
-                    // Header
+                    // Header with Run All button
                     React.createElement("div", { className: "glass-card p-4 flex items-center justify-between" },
                         React.createElement("div", { className: "flex items-center gap-3" },
                             React.createElement("span", { className: "material-symbols-outlined text-amber-400 text-2xl" }, "emoji_events"),
                             React.createElement("div", null,
                                 React.createElement("h3", { className: "text-white font-bold" }, "Bot Leaderboard"),
-                                React.createElement("p", { className: "text-[10px] text-text-muted" }, "Each bot has its own portfolio — ranked by total P&L")
+                                React.createElement("p", { className: "text-[10px] text-text-muted" }, "Each bot has its own portfolio — ranked by total portfolio value")
                             )
                         ),
-                        React.createElement("button", {
-                            onClick: () => { fetchLeaderboard(); fetchBotList(); },
-                            className: "icon-btn", title: "Refresh leaderboard",
-                        }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh"))
+                        React.createElement("div", { className: "flex items-center gap-2" },
+                            // Run All Bots button
+                            React.createElement("button", {
+                                onClick: () => { RetroSFX.click(); runAllBots(); },
+                                disabled: runAllRunning || loopRunning,
+                                className: `px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${runAllRunning
+                                    ? "bg-amber-500/20 text-amber-400 animate-pulse cursor-wait"
+                                    : loopRunning
+                                        ? "bg-border-dark text-text-muted cursor-not-allowed"
+                                        : "bg-primary/20 hover:bg-primary/30 text-primary"
+                                    }`,
+                                title: runAllRunning ? "Run-all in progress..." : "Run all bots sequentially",
+                            },
+                                React.createElement("span", { className: "material-symbols-outlined text-[14px]" },
+                                    runAllRunning ? "sync" : "play_arrow"
+                                ),
+                                runAllRunning
+                                    ? `Running ${runAllStatus?.completed || 0}/${runAllStatus?.total_bots || "?"}...`
+                                    : "Run All Bots"
+                            ),
+                            // Refresh button
+                            React.createElement("button", {
+                                onClick: () => { fetchLeaderboard(); fetchBotList(); },
+                                className: "icon-btn", title: "Refresh leaderboard",
+                            }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh"))
+                        )
                     ),
+
+                    // Run-All Live Console (shown when running or has results)
+                    (runAllRunning || (runAllStatus && runAllStatus.log && runAllStatus.log.length > 0)) &&
+                    React.createElement(RunAllConsole, {
+                        runAllRunning, runAllStatus
+                    }),
 
                     // Rankings Table
                     leaderboard.length === 0
@@ -4808,66 +5096,194 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                         : rank === 3 ? "bg-orange-600/20 text-orange-400 border-orange-600/30"
                                             : "bg-border-dark text-text-muted border-border-dark";
                                 const pnlColor = (bot.total_pnl || 0) >= 0 ? "text-green-400" : "text-red-400";
+                                const returnPct = bot.return_pct || 0;
+                                const returnColor = returnPct >= 0 ? "text-green-400" : "text-red-400";
                                 const isActive = bot.bot_id === activeBotId;
-                                const winRate = bot.total_trades > 0 ? ((bot.winning_trades || 0) / bot.total_trades * 100) : 0;
+                                const winRate = bot.win_rate || 0;
+                                const isExpanded = expandedBotId === bot.bot_id;
+                                const positions = bot.positions || [];
 
-                                return React.createElement("div", {
-                                    key: bot.bot_id,
-                                    className: `glass-card p-4 flex items-center gap-4 transition-all cursor-pointer hover:bg-white/5 ${isActive ? "border-l-2 border-primary" : ""}`,
-                                    onClick: () => switchBot(bot.bot_id),
-                                },
-                                    // Rank badge
+                                return React.createElement("div", { key: bot.bot_id, className: "glass-card overflow-hidden" },
+                                    // Main row
                                     React.createElement("div", {
-                                        className: `w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border ${rankStyle}`
-                                    }, `#${rank}`),
+                                        className: `p-4 flex items-center gap-4 transition-all cursor-pointer hover:bg-white/5 ${isActive ? "border-l-2 border-primary" : ""}`,
+                                        onClick: () => switchBot(bot.bot_id),
+                                    },
+                                        // Rank badge
+                                        React.createElement("div", {
+                                            className: `w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border ${rankStyle}`
+                                        }, `#${rank}`),
 
-                                    // Model info
-                                    React.createElement("div", { className: "flex-1 min-w-0" },
-                                        React.createElement("div", { className: "flex items-center gap-2" },
-                                            React.createElement("span", { className: "text-white font-bold text-sm truncate" },
-                                                bot.display_name || bot.model_name
+                                        // Model info
+                                        React.createElement("div", { className: "flex-1 min-w-0" },
+                                            React.createElement("div", { className: "flex items-center gap-2" },
+                                                React.createElement("span", { className: "text-white font-bold text-sm truncate" },
+                                                    bot.display_name || bot.model_name
+                                                ),
+                                                isActive && React.createElement("span", {
+                                                    className: "px-1.5 py-0.5 rounded text-[9px] font-bold bg-primary/20 text-primary"
+                                                }, "ACTIVE"),
+                                                positions.length > 0 && React.createElement("span", {
+                                                    className: "px-1.5 py-0.5 rounded text-[9px] font-mono bg-purple-500/10 text-purple-400"
+                                                }, `${positions.length} holding${positions.length > 1 ? "s" : ""}`)
                                             ),
-                                            isActive && React.createElement("span", {
-                                                className: "px-1.5 py-0.5 rounded text-[9px] font-bold bg-primary/20 text-primary"
-                                            }, "ACTIVE"),
-                                            React.createElement("span", {
-                                                className: `px-1.5 py-0.5 rounded text-[9px] font-mono ${bot.status === "active" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`
-                                            }, bot.status)
+                                            React.createElement("div", { className: "text-[10px] text-text-muted font-mono mt-0.5" },
+                                                `${bot.provider || "lmstudio"} • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
+                                            )
                                         ),
-                                        React.createElement("div", { className: "text-[10px] text-text-muted font-mono mt-0.5" },
-                                            `${bot.provider || "lmstudio"} • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
-                                        )
-                                    ),
 
-                                    // Total P&L
-                                    React.createElement("div", { className: "text-right min-w-[100px]" },
-                                        React.createElement("div", { className: `text-lg font-bold font-mono ${pnlColor}` },
-                                            fmt.usd(bot.total_pnl || 0)
+                                        // Total Portfolio Value (primary metric)
+                                        React.createElement("div", { className: "text-right min-w-[120px]" },
+                                            React.createElement("div", { className: "text-lg font-bold font-mono text-purple-400" },
+                                                fmt.usd(bot.total_portfolio_value || 0)
+                                            ),
+                                            React.createElement("div", { className: "text-[10px] text-text-muted" }, "Portfolio Value")
                                         ),
-                                        React.createElement("div", { className: "text-[10px] text-text-muted" }, "Total P&L")
-                                    ),
 
-                                    // Win Rate
-                                    React.createElement("div", { className: "text-right min-w-[80px]" },
-                                        React.createElement("div", { className: "text-sm font-bold font-mono text-white" },
-                                            `${winRate.toFixed(0)}%`
+                                        // P&L + Return %
+                                        React.createElement("div", { className: "text-right min-w-[100px]" },
+                                            React.createElement("div", { className: `text-sm font-bold font-mono ${pnlColor}` },
+                                                `${(bot.total_pnl || 0) >= 0 ? "+" : ""}${fmt.usd(bot.total_pnl || 0)}`
+                                            ),
+                                            React.createElement("div", { className: `text-[10px] font-mono font-bold ${returnColor}` },
+                                                `${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%`
+                                            ),
+                                            React.createElement("div", { className: "text-[10px] text-text-muted" }, "P&L / Return")
                                         ),
-                                        React.createElement("div", { className: "text-[10px] text-text-muted" },
-                                            `${bot.total_trades || 0} trades`
+
+                                        // Win Rate
+                                        React.createElement("div", { className: "text-right min-w-[80px]" },
+                                            React.createElement("div", { className: "text-sm font-bold font-mono text-white" },
+                                                `${winRate.toFixed(0)}%`
+                                            ),
+                                            React.createElement("div", { className: "text-[10px] text-text-muted" },
+                                                `${bot.total_trades || 0} trades`
+                                            ),
+                                            React.createElement("div", { className: "w-full h-1 bg-border-dark rounded mt-1" },
+                                                React.createElement("div", {
+                                                    className: "h-full bg-primary rounded",
+                                                    style: { width: `${Math.min(winRate, 100)}%` }
+                                                })
+                                            )
                                         ),
-                                        React.createElement("div", { className: "w-full h-1 bg-border-dark rounded mt-1" },
-                                            React.createElement("div", {
-                                                className: "h-full bg-primary rounded",
-                                                style: { width: `${Math.min(winRate, 100)}%` }
+
+                                        // Last Run
+                                        React.createElement("div", { className: "text-right min-w-[60px]" },
+                                            React.createElement("div", { className: "text-[10px] text-text-muted font-mono" },
+                                                bot.last_run_at ? fmt.ago(bot.last_run_at) : "never"
+                                            )
+                                        ),
+
+                                        // Queue order / delete controls
+                                        React.createElement("div", {
+                                            className: "flex items-center gap-0.5 ml-1",
+                                            onClick: (e) => e.stopPropagation(),
+                                        },
+                                            // Move up
+                                            React.createElement("button", {
+                                                onClick: () => {
+                                                    if (i === 0) return;
+                                                    const ids = leaderboard.map(b => b.bot_id);
+                                                    [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+                                                    fetch("/api/bots/reorder", {
+                                                        method: "PUT",
+                                                        headers: { "Content-Type": "application/json" },
+                                                        body: JSON.stringify({ order: ids }),
+                                                    }).then(() => fetchLeaderboard());
+                                                },
+                                                disabled: i === 0,
+                                                className: `p-1 rounded transition ${i === 0
+                                                    ? "text-border-dark cursor-not-allowed"
+                                                    : "text-text-muted hover:text-white hover:bg-white/10"}`,
+                                                title: "Move up in queue",
+                                            }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "arrow_upward")),
+
+                                            // Move down
+                                            React.createElement("button", {
+                                                onClick: () => {
+                                                    if (i === leaderboard.length - 1) return;
+                                                    const ids = leaderboard.map(b => b.bot_id);
+                                                    [ids[i], ids[i + 1]] = [ids[i + 1], ids[i]];
+                                                    fetch("/api/bots/reorder", {
+                                                        method: "PUT",
+                                                        headers: { "Content-Type": "application/json" },
+                                                        body: JSON.stringify({ order: ids }),
+                                                    }).then(() => fetchLeaderboard());
+                                                },
+                                                disabled: i === leaderboard.length - 1,
+                                                className: `p-1 rounded transition ${i === leaderboard.length - 1
+                                                    ? "text-border-dark cursor-not-allowed"
+                                                    : "text-text-muted hover:text-white hover:bg-white/10"}`,
+                                                title: "Move down in queue",
+                                            }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "arrow_downward")),
+
+                                            // Delete
+                                            React.createElement(ConfirmButton, {
+                                                onConfirm: () => {
+                                                    fetch(`/api/bots/${bot.bot_id}?hard=true`, { method: "DELETE" })
+                                                        .then(res => {
+                                                            if (!res.ok) throw new Error("Delete failed with status: " + res.status);
+                                                            fetchLeaderboard();
+                                                            fetchBotList();
+                                                        })
+                                                        .catch(err => {
+                                                            console.error("Error deleting bot:", err);
+                                                            alert("Failed to delete bot. It may be locked or busy.");
+                                                        });
+                                                },
+                                                label: "",
+                                                confirmLabel: "Delete?",
+                                                icon: "delete",
+                                                confirmIcon: "warning",
+                                                className: "p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-500/10 transition",
+                                                confirmClassName: "px-2 py-1 rounded text-[10px] font-bold text-red-300 bg-red-500/25 border border-red-500/40 animate-pulse transition-all",
+                                                title: "Remove bot and all data",
                                             })
-                                        )
+                                        ),
+
+                                        // Expand/Collapse holdings button
+                                        React.createElement("button", {
+                                            onClick: (e) => { e.stopPropagation(); setExpandedBotId(isExpanded ? null : bot.bot_id); },
+                                            className: "icon-btn ml-1",
+                                            title: isExpanded ? "Hide holdings" : "Show holdings",
+                                        }, React.createElement("span", {
+                                            className: `material-symbols-outlined text-[18px] transition-transform ${isExpanded ? "rotate-180" : ""}`
+                                        }, "expand_more"))
                                     ),
 
-                                    // Last Run
-                                    React.createElement("div", { className: "text-right min-w-[60px]" },
-                                        React.createElement("div", { className: "text-[10px] text-text-muted font-mono" },
-                                            bot.last_run_at ? fmt.ago(bot.last_run_at) : "never"
-                                        )
+                                    // Expandable Holdings Section
+                                    isExpanded && React.createElement("div", {
+                                        className: "border-t border-border-dark bg-onyx-surface/30 px-4 py-3"
+                                    },
+                                        React.createElement("div", { className: "flex items-center gap-2 mb-2" },
+                                            React.createElement("span", { className: "material-symbols-outlined text-purple-400 text-[14px]" }, "inventory_2"),
+                                            React.createElement("span", { className: "text-xs font-bold text-purple-400 uppercase tracking-wider" }, "Current Holdings")
+                                        ),
+                                        positions.length === 0
+                                            ? React.createElement("div", { className: "text-xs text-text-muted py-2 text-center" },
+                                                "No open positions — all cash"
+                                            )
+                                            : React.createElement("div", { className: "grid grid-cols-3 gap-2" },
+                                                ...positions.map(pos =>
+                                                    React.createElement("div", {
+                                                        key: pos.ticker,
+                                                        className: "flex items-center justify-between p-2 rounded bg-onyx-black/40 border border-border-dark/50"
+                                                    },
+                                                        React.createElement("div", null,
+                                                            React.createElement("span", { className: "text-white font-bold text-sm" }, `$${pos.ticker}`),
+                                                            React.createElement("span", { className: "text-text-muted text-[10px] ml-1.5" }, `×${pos.qty}`)
+                                                        ),
+                                                        React.createElement("div", { className: "text-right" },
+                                                            React.createElement("div", { className: "text-xs text-text-muted font-mono" },
+                                                                `@ $${pos.avg_entry_price.toFixed(2)}`
+                                                            ),
+                                                            React.createElement("div", { className: "text-[10px] text-purple-400 font-mono font-bold" },
+                                                                fmt.usd(pos.qty * pos.avg_entry_price)
+                                                            )
+                                                        )
+                                                    )
+                                                )
+                                            )
                                     )
                                 );
                             })

@@ -18,6 +18,7 @@ import time
 import httpx
 
 from app.config import settings
+from app.services.pipeline_health import log_llm_call
 from app.utils.logger import logger
 
 # Shared async HTTP client — reused across all LLM calls for connection pooling.
@@ -130,13 +131,21 @@ class LLMService:
     ) -> str:
         """Call the Ollama /api/chat endpoint using shared connection pool."""
         url = f"{self.base_url}/api/chat"
+
+        # Context size: always send num_ctx so Ollama doesn't try to
+        # allocate the model's full default context (often 128K → OOM).
+        # Use the value from settings, which is set to a proven-safe max
+        # by verify_and_warm_ollama_model at startup.
+        effective_ctx = self.context_size if self.context_size > 0 else 8192
+
         payload: dict = {
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "keep_alive": "2h",
             "options": {
                 "temperature": temperature,
-                "num_ctx": self.context_size,
+                "num_ctx": effective_ctx,
             },
         }
         if response_format == "json":
@@ -153,17 +162,50 @@ class LLMService:
         )
         t0 = time.perf_counter()
 
-        client = await _get_shared_client()
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
+        # Derive a short context label from the system prompt
+        _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
+
+        try:
+            client = await _get_shared_client()
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+        except httpx.ReadTimeout:
+            elapsed = time.perf_counter() - t0
+            logger.error(
+                "⏱️  Ollama request TIMEOUT after %.1fs", elapsed,
+            )
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                timed_out=True,
+            )
+            raise
+        except Exception as exc:
+            elapsed = time.perf_counter() - t0
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                error=str(exc)[:120],
+            )
+            raise
+
         data = resp.json()
         content = data.get("message", {}).get("content", "")
+        tokens = data.get("eval_count", 0)
 
         elapsed = time.perf_counter() - t0
         logger.info(
             "⏱️  Ollama request DONE  → %.2fs, %d chars",
             elapsed,
             len(content),
+        )
+        log_llm_call(
+            context=_ctx,
+            model=self.model,
+            duration_seconds=elapsed,
+            tokens_used=tokens,
         )
         return content
 
@@ -229,8 +271,33 @@ class LLMService:
         )
         t0 = time.perf_counter()
 
-        client = await _get_shared_client()
-        resp = await client.post(url, json=payload, headers=headers)
+        # Derive a short context label from the system prompt
+        _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
+
+        try:
+            client = await _get_shared_client()
+            resp = await client.post(url, json=payload, headers=headers)
+        except httpx.ReadTimeout:
+            elapsed = time.perf_counter() - t0
+            logger.error(
+                "⏱️  OpenAI request TIMEOUT after %.1fs", elapsed,
+            )
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                timed_out=True,
+            )
+            raise
+        except Exception as exc:
+            elapsed = time.perf_counter() - t0
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                error=str(exc)[:120],
+            )
+            raise
 
         # ── 400 Bad Request → retry with trimmed prompt ────────
         if resp.status_code == 400 and _retries < 2:
@@ -262,12 +329,19 @@ class LLMService:
 
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
+        tokens = data.get("usage", {}).get("total_tokens", 0)
 
         elapsed = time.perf_counter() - t0
         logger.info(
             "⏱️  OpenAI request DONE  → %.2fs, %d chars",
             elapsed,
             len(content),
+        )
+        log_llm_call(
+            context=_ctx,
+            model=self.model,
+            duration_seconds=elapsed,
+            tokens_used=tokens,
         )
         return content
 
@@ -392,15 +466,18 @@ class LLMService:
 
         POST /api/v1/models/load with echo_load_config=true.
         Returns the actual load config applied by LM Studio.
+        Warns loudly if the applied context_length differs from requested.
         """
         url = f"{base_url.rstrip('/')}/api/v1/models/load"
         payload: dict = {
             "model": model,
             "echo_load_config": True,
         }
+        requested_ctx = 0
         # Only include optional params if set
         if config.get("context_length"):
-            payload["context_length"] = int(config["context_length"])
+            requested_ctx = int(config["context_length"])
+            payload["context_length"] = requested_ctx
         if config.get("eval_batch_size"):
             payload["eval_batch_size"] = int(config["eval_batch_size"])
         if "flash_attention" in config:
@@ -421,11 +498,28 @@ class LLMService:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             result = resp.json()
+
+            load_time = result.get("load_time_seconds", 0)
+            load_cfg = result.get("load_config", {})
+            actual_ctx = load_cfg.get("context_length", 0)
+
             logger.info(
-                "[LLM] Model loaded: %s (%.1fs)",
+                "[LLM] Model loaded: %s (%.1fs) — actual load_config: %s",
                 model,
-                result.get("load_time_seconds", 0),
+                load_time,
+                load_cfg,
             )
+
+            # ── Detect silent context cap ──
+            if requested_ctx and actual_ctx and actual_ctx < requested_ctx:
+                logger.warning(
+                    "⚠️  CONTEXT MISMATCH: requested %d but LM Studio "
+                    "applied %d for model %s — prompts may overflow!",
+                    requested_ctx,
+                    actual_ctx,
+                    model,
+                )
+
             return result
 
     @staticmethod
@@ -445,53 +539,329 @@ class LLMService:
             return []
 
     @staticmethod
+    async def unload_all_lmstudio_models(base_url: str) -> int:
+        """Unload ALL loaded model instances from LM Studio to free VRAM.
+
+        GET /api/v1/models to list loaded instances, then
+        POST /api/v1/models/unload for each instance.
+
+        Returns the number of instances successfully unloaded.
+        """
+        base_url = base_url.rstrip("/")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        api_key = settings.OPENAI_API_KEY
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        unloaded = 0
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                list_resp = await client.get(
+                    f"{base_url}/api/v1/models", headers=headers,
+                )
+                if list_resp.status_code != 200:
+                    logger.warning(
+                        "[LLM] Could not list LM Studio models for unload "
+                        "(status %d)",
+                        list_resp.status_code,
+                    )
+                    return 0
+
+                all_models = list_resp.json().get("models", [])
+                # Also handle the flat /v1/models format (list of {id: ...})
+                if not all_models:
+                    all_models = list_resp.json().get("data", [])
+
+                for m in all_models:
+                    # LM Studio v1 API returns loaded_instances per model
+                    instances = m.get("loaded_instances", [])
+                    if instances:
+                        for inst in instances:
+                            inst_id = inst.get("id", m.get("key"))
+                            if not inst_id:
+                                continue
+                            try:
+                                await client.post(
+                                    f"{base_url}/api/v1/models/unload",
+                                    json={"instance_id": inst_id},
+                                    headers=headers,
+                                )
+                                unloaded += 1
+                                logger.info(
+                                    "[LLM] Unloaded LM Studio instance: %s",
+                                    inst_id,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "[LLM] Failed to unload instance %s",
+                                    inst_id,
+                                )
+                    else:
+                        # Fallback: try unloading by model id/key directly
+                        model_id = m.get("id") or m.get("key")
+                        if model_id:
+                            try:
+                                await client.post(
+                                    f"{base_url}/api/v1/models/unload",
+                                    json={"model": model_id},
+                                    headers=headers,
+                                )
+                                unloaded += 1
+                                logger.info(
+                                    "[LLM] Unloaded LM Studio model: %s",
+                                    model_id,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "[LLM] Failed to unload model %s",
+                                    model_id,
+                                )
+        except Exception as exc:
+            logger.warning("[LLM] LM Studio unload sweep failed: %s", exc)
+
+        logger.info("[LLM] LM Studio unload complete: %d instances freed", unloaded)
+        return unloaded
+
+    @staticmethod
+    async def unload_ollama_model(base_url: str, model: str) -> bool:
+        """Immediately evict an Ollama model from VRAM.
+
+        Sends POST /api/generate with keep_alive="0" which tells Ollama
+        to unload the model from memory immediately.
+
+        Returns True if the unload request succeeded.
+        """
+        base_url = base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{base_url}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": "",
+                        "keep_alive": "0",
+                        "stream": False,
+                    },
+                )
+                resp.raise_for_status()
+                logger.info(
+                    "[LLM] Ollama model %s unloaded (keep_alive=0)", model,
+                )
+                return True
+        except Exception as exc:
+            logger.warning(
+                "[LLM] Failed to unload Ollama model %s: %s", model, exc,
+            )
+            return False
+
+    @staticmethod
+    async def unload_all_ollama_models(base_url: str) -> int:
+        """Unload ALL models currently loaded in Ollama VRAM.
+
+        GET /api/ps to list running models, then unload each one.
+        Returns the number of models successfully unloaded.
+        """
+        base_url = base_url.rstrip("/")
+        unloaded = 0
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                ps_resp = await client.get(f"{base_url}/api/ps")
+                ps_resp.raise_for_status()
+                ps_models = ps_resp.json().get("models", [])
+
+                for m in ps_models:
+                    model_name = m.get("name", "")
+                    if not model_name:
+                        continue
+                    try:
+                        await client.post(
+                            f"{base_url}/api/generate",
+                            json={
+                                "model": model_name,
+                                "prompt": "",
+                                "keep_alive": "0",
+                                "stream": False,
+                            },
+                        )
+                        unloaded += 1
+                        logger.info(
+                            "[LLM] Unloaded Ollama model: %s", model_name,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[LLM] Failed to unload Ollama model %s",
+                            model_name,
+                        )
+        except Exception as exc:
+            logger.warning("[LLM] Ollama unload sweep failed: %s", exc)
+
+        logger.info(
+            "[LLM] Ollama unload complete: %d models freed", unloaded,
+        )
+        return unloaded
+
+    @staticmethod
     async def verify_and_warm_ollama_model(
         base_url: str,
         model: str,
         *,
         keep_alive: str = "10m",
     ) -> dict:
-        """Verify an Ollama model exists and optionally pre-warm it.
+        """Verify an Ollama model exists, query VRAM, and pre-warm it.
 
-        GET /api/tags to check availability, then POST /api/generate
-        with an empty prompt and keep_alive to load it into VRAM.
+        GET /api/tags to check availability, POST /api/show to get the
+        model's architecture max context, GET /api/ps for VRAM usage,
+        then POST /api/generate with keep_alive to load into VRAM.
 
-        Parallel to load_model_with_config for LM Studio.
+        Returns a dict with model info AND recommended_ctx based on VRAM.
         """
         base_url = base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                # Step 1: Verify model exists
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                # Step 1: Verify model exists (flexible name matching)
                 tags_resp = await client.get(f"{base_url}/api/tags")
                 tags_resp.raise_for_status()
                 available = [m["name"] for m in tags_resp.json().get("models", [])]
-                model_found = model in available
 
-                pre_warmed = False
+                # Ollama tags always include :latest, so match flexibly
+                # e.g. "glm-ocr" should match "glm-ocr:latest" and vice-versa
+                model_found = model in available
+                if not model_found:
+                    # Try adding/removing :latest suffix
+                    alt = f"{model}:latest" if ":" not in model else model.split(":")[0]
+                    for avail in available:
+                        if avail == alt or avail.split(":")[0] == model.split(":")[0]:
+                            model_found = True
+                            logger.info(
+                                "[LLM] Fuzzy match: '%s' → '%s'", model, avail,
+                            )
+                            break
+
+                model_max_ctx = 0
+                vram_total_bytes = 0
+                recommended_ctx = 8192  # safe fallback
+
                 if model_found:
-                    # Step 2: Pre-warm into VRAM
-                    warm_resp = await client.post(
-                        f"{base_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": "",
-                            "keep_alive": keep_alive,
-                        },
-                    )
-                    warm_resp.raise_for_status()
-                    pre_warmed = True
-                    logger.info(
-                        "[LLM] Ollama model %s verified and pre-warmed (keep_alive=%s)",
-                        model,
-                        keep_alive,
-                    )
+                    # Step 2: Query model architecture for max context
+                    try:
+                        show_resp = await client.post(
+                            f"{base_url}/api/show",
+                            json={"name": model},
+                        )
+                        show_resp.raise_for_status()
+                        show_data = show_resp.json()
+
+                        # model_info contains architecture details
+                        model_info = show_data.get("model_info", {})
+                        for key, val in model_info.items():
+                            if "context_length" in key and isinstance(val, int):
+                                model_max_ctx = val
+                                break
+
+                        logger.info(
+                            "[LLM] Model %s architecture max context: %d",
+                            model, model_max_ctx,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[LLM] Could not query model info: %s", exc,
+                        )
+
+                    # Step 3: Query VRAM usage from running models
+                    try:
+                        ps_resp = await client.get(f"{base_url}/api/ps")
+                        ps_resp.raise_for_status()
+                        ps_models = ps_resp.json().get("models", [])
+                        for m in ps_models:
+                            vram = m.get("size_vram", 0)
+                            if vram > vram_total_bytes:
+                                vram_total_bytes = vram
+                    except Exception:
+                        pass  # ps may be empty if nothing loaded yet
+
+                    # Step 4+5: Probe-and-warm — find the maximum num_ctx
+                    # that Ollama can actually allocate, starting from the
+                    # user's desired context_size and halving on OOM.
+                    from app.config import settings as _cfg
+
+                    desired_ctx = _cfg.LLM_CONTEXT_SIZE
+                    if model_max_ctx > 0:
+                        desired_ctx = min(desired_ctx, model_max_ctx)
+                    # Floor at 2048
+                    desired_ctx = max(desired_ctx, 2048)
+
+                    _MIN_CTX = 2048
+                    attempt_ctx = desired_ctx
+                    warmed = False
+
+                    while attempt_ctx >= _MIN_CTX:
+                        logger.info(
+                            "[LLM] Warming %s with num_ctx=%d …",
+                            model, attempt_ctx,
+                        )
+                        try:
+                            warm_resp = await client.post(
+                                f"{base_url}/api/generate",
+                                json={
+                                    "model": model,
+                                    "prompt": "",
+                                    "keep_alive": keep_alive,
+                                    "stream": False,
+                                    "options": {
+                                        "num_ctx": attempt_ctx,
+                                    },
+                                },
+                            )
+                            warm_resp.raise_for_status()
+                            recommended_ctx = attempt_ctx
+                            warmed = True
+                            logger.info(
+                                "[LLM] ✅ Model %s warmed at num_ctx=%d",
+                                model, attempt_ctx,
+                            )
+                            break
+                        except httpx.HTTPStatusError as exc:
+                            if exc.response.status_code == 500:
+                                logger.warning(
+                                    "[LLM] num_ctx=%d too large (OOM), "
+                                    "halving → %d",
+                                    attempt_ctx, attempt_ctx // 2,
+                                )
+                                attempt_ctx //= 2
+                            else:
+                                raise
+
+                    if not warmed:
+                        # Last resort: try minimum
+                        recommended_ctx = _MIN_CTX
+                        warm_resp = await client.post(
+                            f"{base_url}/api/generate",
+                            json={
+                                "model": model,
+                                "prompt": "",
+                                "keep_alive": keep_alive,
+                                "stream": False,
+                                "options": {"num_ctx": _MIN_CTX},
+                            },
+                        )
+                        warm_resp.raise_for_status()
+                        logger.warning(
+                            "[LLM] Fell back to minimum num_ctx=%d",
+                            _MIN_CTX,
+                        )
 
                 return {
-                    "status": ("model_verified" if model_found else "model_not_found"),
+                    "status": (
+                        "model_verified" if model_found
+                        else "model_not_found"
+                    ),
                     "model": model,
                     "available_models": available,
                     "model_found": model_found,
-                    "pre_warmed": pre_warmed,
+                    "pre_warmed": model_found,
+                    "model_max_ctx": model_max_ctx,
+                    "recommended_ctx": recommended_ctx,
+                    "vram_bytes": vram_total_bytes,
                 }
         except Exception as exc:
             logger.warning("[LLM] Ollama model verification failed: %s", exc)

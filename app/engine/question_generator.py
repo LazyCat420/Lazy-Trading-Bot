@@ -57,8 +57,30 @@ class QuestionGenerator:
                 response_format="json",
                 max_tokens=1024,
             )
-            cleaned = LLMService.clean_json_response(raw)
-            questions = json.loads(cleaned)
+
+            # Try direct parse first (handles JSON arrays and objects)
+            stripped = raw.strip()
+            # Strip markdown code fences if present
+            if stripped.startswith("```"):
+                stripped = stripped.split("\n", 1)[-1]
+                if stripped.endswith("```"):
+                    stripped = stripped[:-3]
+                stripped = stripped.strip()
+
+            try:
+                questions = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                # Fall back to clean_json_response for embedded JSON
+                cleaned = LLMService.clean_json_response(raw)
+                questions = json.loads(cleaned)
+
+            # Unwrap if LLM returned a dict wrapping a list
+            # e.g. {"questions": [...]} or {"follow_up_questions": [...]}
+            if isinstance(questions, dict):
+                for _key, val in questions.items():
+                    if isinstance(val, list):
+                        questions = val
+                        break
 
             # Validate structure
             if not isinstance(questions, list):

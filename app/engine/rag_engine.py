@@ -76,7 +76,8 @@ def _fetch_transcript_texts(ticker: str) -> list[str]:
     ).fetchall()
     if rows:
         return [
-            f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
+            f"[{r[0] or 'Untitled'}] {(r[1] or '')[:5000]}"
+            for r in rows if r[1]
         ]
 
     # Fallback: search ALL transcripts for ticker mentions in the text
@@ -87,7 +88,8 @@ def _fetch_transcript_texts(ticker: str) -> list[str]:
     ).fetchall()
     if rows:
         return [
-            f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
+            f"[{r[0] or 'Untitled'}] {(r[1] or '')[:5000]}"
+            for r in rows if r[1]
         ]
 
     # Last resort: get latest transcripts (may discuss the sector)
@@ -96,7 +98,8 @@ def _fetch_transcript_texts(ticker: str) -> list[str]:
         "ORDER BY collected_at DESC LIMIT 3",
     ).fetchall()
     return [
-        f"[{r[0] or 'Untitled'}] {r[1] or ''}" for r in rows if r[1]
+        f"[{r[0] or 'Untitled'}] {(r[1] or '')[:5000]}"
+        for r in rows if r[1]
     ]
 
 
@@ -112,13 +115,13 @@ def _fetch_fundamental_texts(ticker: str) -> list[str]:
         [ticker],
     ).fetchone()
     if row and row[0]:
-        texts.append(f"Fundamentals: {row[0][:3000]}")
+        texts.append(f"Fundamentals: {row[0][:1500]}")
 
     # Financial history
     rows = db.execute(
         "SELECT year, revenue, net_income, gross_margin, operating_margin, "
         "net_margin, eps FROM financial_history "
-        "WHERE ticker = ? ORDER BY year DESC LIMIT 5",
+        "WHERE ticker = ? ORDER BY year DESC LIMIT 2",
         [ticker],
     ).fetchall()
     for r in rows:
@@ -131,7 +134,7 @@ def _fetch_fundamental_texts(ticker: str) -> list[str]:
     rows = db.execute(
         "SELECT year, total_assets, total_liabilities, stockholders_equity, "
         "current_ratio, total_debt, cash_and_equivalents "
-        "FROM balance_sheet WHERE ticker = ? ORDER BY year DESC LIMIT 5",
+        "FROM balance_sheet WHERE ticker = ? ORDER BY year DESC LIMIT 2",
         [ticker],
     ).fetchall()
     for r in rows:
@@ -144,7 +147,7 @@ def _fetch_fundamental_texts(ticker: str) -> list[str]:
     rows = db.execute(
         "SELECT year, operating_cashflow, free_cashflow, "
         "financing_cashflow, dividends_paid "
-        "FROM cash_flows WHERE ticker = ? ORDER BY year DESC LIMIT 5",
+        "FROM cash_flows WHERE ticker = ? ORDER BY year DESC LIMIT 2",
         [ticker],
     ).fetchall()
     for r in rows:
@@ -228,35 +231,29 @@ class RAGEngine:
         ticker: str,
     ) -> QAPair:
         """Search DuckDB data for the relevant source, then extract answer."""
-        fetcher = _SOURCE_FETCHERS.get(target_source, _fetch_news_texts)
-        raw_texts = fetcher(ticker)
-
-        # Cross-source fallback: if primary source empty, try others
-        if not raw_texts:
-            logger.info(
-                "[RAG] No %s data for %s — trying cross-source fallback",
-                target_source,
-                ticker,
-            )
-            for alt_source, alt_fetcher in _SOURCE_FETCHERS.items():
-                if alt_source == target_source:
-                    continue
-                raw_texts = alt_fetcher(ticker)
-                if raw_texts:
-                    logger.info(
-                        "[RAG] Found %d texts from %s (fallback for %s)",
-                        len(raw_texts), alt_source, target_source,
-                    )
-                    break
-
-        if not raw_texts:
-            logger.info(
-                "[RAG] No data at all for %s — returning empty",
-                ticker,
+        fetcher = _SOURCE_FETCHERS.get(target_source)
+        if not fetcher:
+            logger.warning(
+                "[RAG] Unknown source %s for %s — returning empty",
+                target_source, ticker,
             )
             return QAPair(
                 question=question,
-                answer="No data available for this source.",
+                answer=f"No specific data available for {target_source}.",
+                source=target_source,  # type: ignore[arg-type]
+                confidence="low",
+            )
+
+        raw_texts = fetcher(ticker)
+
+        if not raw_texts:
+            logger.info(
+                "[RAG] No %s data for %s — returning empty (no cross-source fallback)",
+                target_source, ticker,
+            )
+            return QAPair(
+                question=question,
+                answer=f"No specific data available for {target_source}.",
                 source=target_source,  # type: ignore[arg-type]
                 confidence="low",
             )
@@ -282,7 +279,7 @@ class RAGEngine:
         scores = bm25.get_scores(query_tokens)
         top_idx = sorted(
             range(len(scores)), key=lambda i: scores[i], reverse=True
-        )[:3]
+        )[:2]  # Top-2 chunks (trimmed from 3 for context efficiency)
         top_chunks = [all_chunks[i] for i in top_idx]
 
         # LLM answer extraction

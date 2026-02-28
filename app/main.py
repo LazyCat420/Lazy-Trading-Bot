@@ -421,6 +421,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
     model_id = merged.get("model", "")
     if model_id:
         from app.services.bot_registry import BotRegistry as _BReg
+
         # Check if a bot already exists for this model
         existing_bots = _BReg.list_bots(include_inactive=True)
         bot_for_model = None
@@ -450,15 +451,19 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
             )
             logger.info(
                 "[BotAutoReg] Created bot %s for model %s",
-                bot_for_model["bot_id"], model_id,
+                bot_for_model["bot_id"],
+                model_id,
             )
         else:
             # Update existing bot settings
-            _BReg.update_bot_settings(bot_for_model["bot_id"], {
-                "context_length": merged.get("context_size", 8192),
-                "temperature": merged.get("temperature", 0.3),
-                "top_p": merged.get("top_p", 1.0),
-            })
+            _BReg.update_bot_settings(
+                bot_for_model["bot_id"],
+                {
+                    "context_length": merged.get("context_size", 8192),
+                    "temperature": merged.get("temperature", 0.3),
+                    "top_p": merged.get("top_p", 1.0),
+                },
+            )
             # Re-activate if inactive
             if bot_for_model.get("status") == "inactive":
                 db = get_db()
@@ -482,6 +487,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
         if model_id:
             import httpx as _httpx
+
             load_payload = {
                 "model": model_id,
                 "context_length": ctx,
@@ -545,7 +551,9 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                 logger.info(
                     "[LM Studio] Model reloaded: ctx requested=%d, "
                     "actual=%s, load_time=%.1fs",
-                    ctx, actual_ctx, load_time or 0,
+                    ctx,
+                    actual_ctx,
+                    load_time or 0,
                 )
             except Exception as exc:
                 result["lmstudio_verified"] = {
@@ -557,7 +565,8 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                     ),
                 }
                 logger.warning(
-                    "[LM Studio] Model reload failed: %s", exc,
+                    "[LM Studio] Model reload failed: %s",
+                    exc,
                 )
 
     elif provider == "ollama":
@@ -572,9 +581,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                     # Step 1: Verify model exists via /api/tags
                     tags_resp = await client.get(f"{ollama_url}/api/tags")
                     tags_resp.raise_for_status()
-                    available = [
-                        m["name"] for m in tags_resp.json().get("models", [])
-                    ]
+                    available = [m["name"] for m in tags_resp.json().get("models", [])]
                     model_found = model_id in available
 
                     pre_warmed = False
@@ -586,6 +593,10 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                                 "model": model_id,
                                 "prompt": "",
                                 "keep_alive": "10m",
+                                "stream": False,
+                                "options": {
+                                    "num_ctx": 8192,
+                                },
                             },
                         )
                         warm_resp.raise_for_status()
@@ -598,8 +609,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
                     result["ollama_verified"] = {
                         "status": (
-                            "model_verified" if model_found
-                            else "model_not_found"
+                            "model_verified" if model_found else "model_not_found"
                         ),
                         "model": model_id,
                         "available_models": available,
@@ -616,7 +626,8 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
                     ),
                 }
                 logger.warning(
-                    "[Ollama] Model verification failed: %s", exc,
+                    "[Ollama] Model verification failed: %s",
+                    exc,
                 )
 
     return result
@@ -1064,6 +1075,7 @@ _price_monitor = PriceMonitor(_paper_trader)
 async def get_active_bot() -> dict:
     """Which bot is currently selected in the frontend."""
     from app.services.bot_registry import BotRegistry as _BReg
+
     bot = _BReg.get_bot(_active_bot_id)
     return {
         "bot_id": _active_bot_id,
@@ -1384,6 +1396,7 @@ async def run_full_loop(max_tickers: int = 10) -> dict:
             await _loop.run_full_loop()
             # Update bot stats after loop completes
             from app.services.bot_registry import BotRegistry as _BReg
+
             try:
                 _BReg.update_stats(bot_id)
                 _BReg.record_run(bot_id)
@@ -1639,6 +1652,7 @@ from app.services.bot_registry import BotRegistry  # noqa: E402
 
 class BotCreateRequest(BaseModel):
     """Request body for creating a new bot."""
+
     model_name: str
     display_name: str = ""
     provider: str = "lmstudio"
@@ -1655,6 +1669,7 @@ class BotCreateRequest(BaseModel):
 
 class BotSettingsUpdate(BaseModel):
     """Request body for updating bot settings."""
+
     display_name: str | None = None
     provider: str | None = None
     provider_url: str | None = None
@@ -1670,6 +1685,7 @@ class BotSettingsUpdate(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     """Request body for loading a model via LM Studio API."""
+
     model: str
     base_url: str = "http://localhost:1234"
     context_length: int = 0
@@ -1730,10 +1746,31 @@ async def update_bot_settings(bot_id: str, req: BotSettingsUpdate) -> dict:
 
 
 @app.delete("/api/bots/{bot_id}")
-async def deactivate_bot(bot_id: str) -> dict:
-    """Deactivate (soft-delete) a bot."""
-    BotRegistry.deactivate_bot(bot_id)
+async def deactivate_bot(
+    bot_id: str, hard: bool = Query(default=False),
+) -> dict:
+    """Deactivate (soft-delete) or hard-delete a bot.
+
+    Pass ?hard=true to permanently remove the bot and ALL its data.
+    """
+    if hard:
+        await asyncio.to_thread(BotRegistry.delete_bot, bot_id)
+        return {"status": "deleted", "bot_id": bot_id}
+    await asyncio.to_thread(BotRegistry.deactivate_bot, bot_id)
     return {"status": "deactivated", "bot_id": bot_id}
+
+
+class BotReorderRequest(BaseModel):
+    """Request body for reordering bots."""
+
+    order: list[str]  # list of bot_ids in desired order
+
+
+@app.put("/api/bots/reorder")
+async def reorder_bots(req: BotReorderRequest) -> dict:
+    """Set the queue order for Run All Bots."""
+    BotRegistry.reorder_bots(req.order)
+    return {"status": "reordered", "count": len(req.order)}
 
 
 @app.get("/api/leaderboard")
@@ -1778,6 +1815,7 @@ async def get_bot_orders(
 async def get_bot_watchlist(bot_id: str) -> dict:
     """Get watchlist for a specific bot."""
     from app.services.watchlist_manager import WatchlistManager
+
     bot = BotRegistry.get_bot(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
@@ -1815,6 +1853,495 @@ async def run_bot_loop(bot_id: str, max_tickers: int = 10) -> dict:
     }
 
 
+# ── Run-All-Bots Sequential Execution ─────────────────────────────
+
+_MAX_RUN_ALL_LOG = 500  # Cap in-memory log entries to prevent unbounded growth
+
+_run_all_state: dict = {
+    "running": False,
+    "total_bots": 0,
+    "completed": 0,
+    "current_bot": None,
+    "current_phase": None,
+    "results": [],
+    "log": [],
+    "started_at": None,
+}
+_run_all_task: asyncio.Task | None = None
+
+
+def _run_all_log(
+    message: str,
+    *,
+    level: str = "info",
+    phase: str = "system",
+    bot_id: str = "",
+    bot_name: str = "",
+) -> None:
+    """Append a structured log entry to the run-all state."""
+    entry = {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "level": level,
+        "phase": phase,
+        "bot_id": bot_id,
+        "bot_name": bot_name,
+        "message": message,
+    }
+    _run_all_state["log"].append(entry)
+    # Keep log bounded
+    if len(_run_all_state["log"]) > _MAX_RUN_ALL_LOG:
+        _run_all_state["log"] = _run_all_state["log"][-_MAX_RUN_ALL_LOG:]
+
+
+@app.post("/api/bots/run-all")
+async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
+    """Run the full loop for ALL active bots sequentially.
+
+    For each bot: hot-patches global settings with the bot's LLM config,
+    loads the model via LM Studio API, runs the autonomous loop, then
+    moves to the next bot.
+    """
+    global _run_all_task  # noqa: PLW0603
+
+    if _run_all_state["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Run-all is already in progress",
+        )
+
+    bots = BotRegistry.list_bots()
+    if not bots:
+        raise HTTPException(status_code=400, detail="No active bots to run")
+
+    # Reset state
+    _run_all_state.update(
+        {
+            "running": True,
+            "total_bots": len(bots),
+            "completed": 0,
+            "current_bot": None,
+            "current_phase": None,
+            "results": [],
+            "log": [],
+            "started_at": datetime.now().isoformat(),
+        }
+    )
+
+    bot_names = ", ".join(
+        b.get("display_name", b.get("model_name", "?")) for b in bots
+    )
+    _run_all_log(
+        f"Starting sequential run for {len(bots)} bots: {bot_names}",
+        level="system",
+        phase="system",
+    )
+
+    async def _run_all() -> None:
+        from app.services.llm_service import LLMService
+
+        for idx, bot in enumerate(bots):
+            bot_id = bot["bot_id"]
+            model_name = bot.get("model_name", "")
+            display_name = bot.get("display_name", model_name)
+            provider = bot.get("provider", "lmstudio")
+
+            _run_all_state["current_bot"] = {
+                "bot_id": bot_id,
+                "display_name": display_name,
+                "model_name": model_name,
+                "index": idx + 1,
+            }
+            _run_all_state["current_phase"] = "model_load"
+
+            _run_all_log(
+                f"▶ Starting bot {idx + 1}/{len(bots)}: {display_name}",
+                level="info",
+                phase="system",
+                bot_id=bot_id,
+                bot_name=display_name,
+            )
+
+            logger.info(
+                "[RunAll] ▶ Bot %d/%d: %s (%s)",
+                idx + 1,
+                len(bots),
+                display_name,
+                model_name,
+            )
+
+            bot_result: dict = {
+                "bot_id": bot_id,
+                "display_name": display_name,
+                "model_name": model_name,
+                "status": "pending",
+            }
+
+            try:
+                # ── 1. Hot-patch global settings with this bot's config ──
+                settings.LLM_PROVIDER = provider
+                settings.LLM_MODEL = model_name
+                settings.LLM_CONTEXT_SIZE = bot.get("context_length", 8192)
+                settings.LLM_TEMPERATURE = bot.get("temperature", 0.3)
+                settings.LLM_TOP_P = bot.get("top_p", 1.0)
+
+                # Sync active bot so Portfolio tab shows this bot's data
+                _set_active_bot(bot_id)
+
+                provider_url = bot.get("provider_url", "")
+                if provider_url:
+                    if provider == "lmstudio":
+                        settings.LMSTUDIO_URL = provider_url
+                    else:
+                        settings.OLLAMA_URL = provider_url
+
+                _run_all_log(
+                    f"Config applied: {provider} / ctx={bot.get('context_length', 8192)} "
+                    f"/ temp={bot.get('temperature', 0.3)}",
+                    level="info",
+                    phase="model_load",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+
+                # ── 2. Unload previous model, then warm new one (Ollama) ──
+                settings.LLM_PROVIDER = "ollama"  # force Ollama
+                ollama_url = settings.OLLAMA_URL.rstrip("/")
+
+                _run_all_log(
+                    "Unloading all Ollama models to free VRAM…",
+                    level="info",
+                    phase="model_unload",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                try:
+                    freed = await LLMService.unload_all_ollama_models(ollama_url)
+                    if freed:
+                        _run_all_log(
+                            f"🧹 Unloaded {freed} Ollama model(s) from VRAM",
+                            level="success",
+                            phase="model_unload",
+                            bot_id=bot_id,
+                            bot_name=display_name,
+                        )
+                        logger.info(
+                            "[RunAll] 🧹 Unloaded %d Ollama model(s) "
+                            "before warming %s",
+                            freed,
+                            model_name,
+                        )
+                except Exception as exc:
+                    _run_all_log(
+                        f"⚠️ Ollama pre-unload failed: {exc}",
+                        level="warn",
+                        phase="model_unload",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.warning(
+                        "[RunAll] ⚠️ Ollama pre-unload failed, "
+                        "attempting warm anyway",
+                    )
+
+                # Pre-warm the new model into VRAM
+                _run_all_log(
+                    f"Pre-warming Ollama model: {model_name}…",
+                    level="info",
+                    phase="model_load",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                _run_all_state["current_phase"] = "model_load"
+                try:
+                    warm = await LLMService.verify_and_warm_ollama_model(
+                        ollama_url,
+                        model_name,
+                        keep_alive="2h",
+                    )
+                    if warm.get("pre_warmed"):
+                        rec_ctx = warm.get("recommended_ctx", "?")
+                        _run_all_log(
+                            f"✅ Ollama model warmed: {model_name} "
+                            f"(recommended ctx={rec_ctx})",
+                            level="success",
+                            phase="model_load",
+                            bot_id=bot_id,
+                            bot_name=display_name,
+                        )
+                        logger.info(
+                            "[RunAll] ✅ Ollama model warmed: %s",
+                            model_name,
+                        )
+                    else:
+                        _run_all_log(
+                            f"⚠️ Ollama warm returned: {warm.get('status')}",
+                            level="warn",
+                            phase="model_load",
+                            bot_id=bot_id,
+                            bot_name=display_name,
+                        )
+                        logger.warning(
+                            "[RunAll] ⚠️ Ollama warm failed for %s: %s",
+                            model_name,
+                            warm.get("status"),
+                        )
+                except Exception as exc:
+                    _run_all_log(
+                        f"⚠️ Ollama warm failed: {exc} — attempting loop anyway",
+                        level="warn",
+                        phase="model_load",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.exception(
+                        "[RunAll] ⚠️ Ollama warm failed for %s, "
+                        "attempting loop anyway",
+                        model_name,
+                    )
+
+                # ── 2b. Smoke-test the model before running the loop ──
+                _run_all_log(
+                    "Verifying model can serve requests…",
+                    level="info",
+                    phase="model_load",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                try:
+                    test_llm = LLMService()
+                    await test_llm.chat(
+                        system="You are a test. Reply with exactly: OK",
+                        user="Say OK",
+                        response_format="text",
+                        max_tokens=10,
+                    )
+                    _run_all_log(
+                        "✅ Model verification passed",
+                        level="success",
+                        phase="model_load",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                except Exception as verify_exc:
+                    _run_all_log(
+                        f"❌ Model verification FAILED: {verify_exc} "
+                        f"— skipping bot",
+                        level="error",
+                        phase="model_load",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.error(
+                        "[RunAll] ❌ Model verification failed for %s: %s",
+                        model_name,
+                        verify_exc,
+                    )
+                    bot_result["status"] = "skipped"
+                    bot_result["error"] = (
+                        f"Model verification failed: {verify_exc}"
+                    )
+                    _run_all_state["results"].append(bot_result)
+                    _run_all_state["completed"] = idx + 1
+                    continue
+
+                # ── 3. Run the autonomous loop for this bot ──
+                _run_all_log(
+                    f"Starting autonomous loop (max_tickers={max_tickers})…",
+                    level="info",
+                    phase="discovery",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                _run_all_state["current_phase"] = "discovery"
+
+                loop = AutonomousLoop(
+                    max_tickers=max_tickers,
+                    bot_id=bot_id,
+                    model_name=model_name,
+                )
+                BotRegistry.record_run(bot_id)
+
+                # Run the loop — periodically merge sub-logs
+                import asyncio as _aio
+
+                loop_future = _aio.ensure_future(loop.run_full_loop())
+                last_sub_log_len = 0
+
+                while not loop_future.done():
+                    await _aio.sleep(2)
+                    # Merge new sub-log entries from the AutonomousLoop
+                    sub_log = loop._state.get("log", [])
+                    if len(sub_log) > last_sub_log_len:
+                        for entry in sub_log[last_sub_log_len:]:
+                            msg = entry.get("message", "")
+                            # Detect phase from message content
+                            phase_guess = "system"
+                            phase_val = loop._state.get("phase", "")
+                            if phase_val:
+                                phase_guess = phase_val
+                            # Detect level from message
+                            lvl = "info"
+                            if "error" in msg.lower() or "failed" in msg.lower():
+                                lvl = "error"
+                            elif "⚠" in msg or "warning" in msg.lower():
+                                lvl = "warn"
+                            elif "✅" in msg or "complete" in msg.lower():
+                                lvl = "success"
+                            _run_all_log(
+                                msg,
+                                level=lvl,
+                                phase=phase_guess,
+                                bot_id=bot_id,
+                                bot_name=display_name,
+                            )
+                        last_sub_log_len = len(sub_log)
+                    # Update current phase
+                    _run_all_state["current_phase"] = loop._state.get(
+                        "phase", "running",
+                    )
+
+                # Await the result to propagate any exceptions
+                await loop_future
+
+                # Final sub-log merge
+                sub_log = loop._state.get("log", [])
+                if len(sub_log) > last_sub_log_len:
+                    for entry in sub_log[last_sub_log_len:]:
+                        msg = entry.get("message", "")
+                        lvl = "info"
+                        if "error" in msg.lower() or "failed" in msg.lower():
+                            lvl = "error"
+                        elif "⚠" in msg or "warning" in msg.lower():
+                            lvl = "warn"
+                        elif "✅" in msg or "complete" in msg.lower():
+                            lvl = "success"
+                        _run_all_log(
+                            msg,
+                            level=lvl,
+                            phase=loop._state.get("phase", "done"),
+                            bot_id=bot_id,
+                            bot_name=display_name,
+                        )
+
+                # ── 4. Update stats after completion ──
+                BotRegistry.update_stats(bot_id)
+                bot_result["status"] = "done"
+                _run_all_log(
+                    f"✅ Bot {display_name} completed successfully",
+                    level="success",
+                    phase="system",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                logger.info(
+                    "[RunAll] ✅ Bot %s completed successfully",
+                    display_name,
+                )
+
+                # ── 5. Unload model after bot completes to free VRAM ──
+                _run_all_state["current_phase"] = "model_unload"
+                _run_all_log(
+                    f"Unloading model {model_name} to free VRAM…",
+                    level="info",
+                    phase="model_unload",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                try:
+                    await LLMService.unload_ollama_model(
+                        settings.OLLAMA_URL.rstrip("/"),
+                        model_name,
+                    )
+                    _run_all_log(
+                        f"🧹 Model {model_name} unloaded",
+                        level="success",
+                        phase="model_unload",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.info(
+                        "[RunAll] 🧹 Model %s unloaded after completion",
+                        model_name,
+                    )
+                except Exception as exc:
+                    _run_all_log(
+                        f"⚠️ Post-run unload failed: {exc}",
+                        level="warn",
+                        phase="model_unload",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.warning(
+                        "[RunAll] ⚠️ Post-run unload failed for %s",
+                        model_name,
+                    )
+
+            except Exception as exc:
+                bot_result["status"] = "error"
+                bot_result["error"] = str(exc)
+                _run_all_log(
+                    f"❌ Bot {display_name} failed: {exc}",
+                    level="error",
+                    phase="system",
+                    bot_id=bot_id,
+                    bot_name=display_name,
+                )
+                logger.exception(
+                    "[RunAll] ❌ Bot %s failed: %s",
+                    display_name,
+                    exc,
+                )
+                # Still try to unload on error to avoid VRAM leak
+                try:
+                    await LLMService.unload_ollama_model(
+                        settings.OLLAMA_URL.rstrip("/"),
+                        model_name,
+                    )
+                    _run_all_log(
+                        "🧹 Emergency unload after error completed",
+                        level="info",
+                        phase="model_unload",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                except Exception:
+                    pass
+
+            _run_all_state["results"].append(bot_result)
+            _run_all_state["completed"] = idx + 1
+
+        # All done
+        _run_all_state["running"] = False
+        _run_all_state["current_bot"] = None
+        _run_all_state["current_phase"] = None
+        _run_all_log(
+            f"🏁 All {len(bots)} bots completed",
+            level="success",
+            phase="system",
+        )
+        logger.info(
+            "[RunAll] 🏁 All %d bots completed",
+            len(bots),
+        )
+
+    _run_all_task = asyncio.create_task(_run_all())
+    return {
+        "status": "started",
+        "total_bots": len(bots),
+        "message": f"Running all {len(bots)} bots sequentially",
+    }
+
+
+@app.get("/api/bots/run-all/status")
+async def get_run_all_status() -> dict:
+    """Poll progress of the run-all-bots operation.
+
+    Returns full state including structured log entries for the live console.
+    """
+    return dict(_run_all_state)
+
+
+
 @app.post("/api/bots/{bot_id}/reset")
 async def reset_bot_portfolio(
     bot_id: str,
@@ -1839,6 +2366,7 @@ async def load_lm_model(req: ModelLoadRequest) -> dict:
     Returns the actual configuration applied by LM Studio.
     """
     from app.services.llm_service import LLMService
+
     config = {
         "context_length": req.context_length,
         "eval_batch_size": req.eval_batch_size,
@@ -1863,6 +2391,6 @@ async def get_loaded_model_info(
 ) -> dict:
     """Get currently loaded model details from LM Studio."""
     from app.services.llm_service import LLMService
+
     models = await LLMService.get_loaded_model_info(base_url)
     return {"count": len(models), "models": models}
-

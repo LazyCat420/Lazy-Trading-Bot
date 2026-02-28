@@ -26,7 +26,7 @@ from app.services.peer_fetcher import PeerFetcher
 from app.collectors.yfinance_collector import YFinanceCollector
 from app.utils.logger import logger
 
-_MAX_TURNS = 15  # Safety cap on LLM action loops
+_MAX_TURNS = 10  # Safety cap on LLM action loops
 _SYSTEM_PROMPT_TOKENS = 2500  # Approx tokens used by system prompt + tools
 _TOKENS_PER_TURN = 1000  # Approx tokens per assistant+user pair (tool results)
 
@@ -40,11 +40,19 @@ Returns current cash, positions, total value, realized P&L.
 Params: none
 Example: {"action": "get_portfolio", "params": {}}
 
-### get_all_candidates
-Returns a detailed summary of every analyzed ticker (conviction, scores,
-bull/bear case, catalysts, signal summary, data gaps).
+### get_market_overview
+Returns a COMPACT list of all analyzed tickers with scores and metadata.
+Use this FIRST to see what's available, then call get_dossier for tickers
+you want to investigate further.
 Params: none
-Example: {"action": "get_all_candidates", "params": {}}
+Example: {"action": "get_market_overview", "params": {}}
+
+### get_dossier
+Returns the FULL analysis for ONE ticker: executive summary, bull/bear case,
+key catalysts, and data quality notes. Call this only for tickers you want to
+investigate for potential trades.
+Params: ticker (str)
+Example: {"action": "get_dossier", "params": {"ticker": "NVDA"}}
 
 ### get_sector_peers
 MANDATORY before any buy. Returns 2-3 competitor stocks with their
@@ -94,6 +102,11 @@ IMPORTANT RULES:
 - After each action, you'll receive the result. Then decide your next action.
 - You MUST call "finish" when done. Do NOT keep calling tools forever.
 - Think about total portfolio allocation before placing trades.
+- Do NOT call place_buy for tickers you already own — the system handles
+  DCA automatically. Focus on NEW tickers not in your portfolio.
+- WORKFLOW: Start with get_portfolio, then get_market_overview to scan all
+  tickers. Call get_dossier ONLY for tickers you're considering trading.
+  Do NOT call get_dossier for every ticker — be selective.
 """
 
 
@@ -112,7 +125,14 @@ class PortfolioStrategist:
         self._prompt_path = settings.PROMPTS_DIR / "portfolio_strategist.md"
         self._actions_log: list[dict] = []
         self._audit = audit or StrategistAudit()
-        self._action_memory: list[str] = []  # Compact log of every action this session
+        # Track tickers that have failed a buy — prevent retry loops
+        self._failed_buy_tickers: set[str] = set()
+        # Compact portfolio state injected each turn (bounded, not growing)
+        self._portfolio_state: dict = {
+            "trades_this_session": [],  # Capped at 10 most recent
+            "positions_snapshot": {},   # ticker -> {qty, entry_price}
+            "cash_after_trades": None,
+        }
 
     async def run(self) -> dict:
         """Execute the full strategist loop — returns a summary dict."""
@@ -123,23 +143,64 @@ class PortfolioStrategist:
         # Build the system prompt
         system_prompt = self._build_system_prompt()
 
-        # Action loop: LLM outputs actions, we execute them
+        # ── Force-inject portfolio + market data BEFORE the LLM loop ──
+        # Instead of hoping the LLM calls these tools, we call them in code
+        # and inject the results so the LLM starts with real data.
+        portfolio_data = await self._tool_get_portfolio({})
+        market_data = await self._tool_get_market_overview({})
+
+        logger.info(
+            "[Strategist] Auto-injected: portfolio=$%.0f cash, %d positions | "
+            "market=%d candidates",
+            portfolio_data.get("cash_balance", 0),
+            portfolio_data.get("position_count", 0),
+            market_data.get("total", 0),
+        )
+
+        # Build held-tickers warning for prompt injection
+        held_tickers = [
+            p["ticker"] for p in portfolio_data.get("positions", [])
+        ]
+        held_section = ""
+        if held_tickers:
+            held_section = (
+                "\n\n## ⛔ ALREADY OWNED — DO NOT BUY THESE\n"
+                f"You already hold: {', '.join(held_tickers)}. "
+                "Do NOT attempt to buy any of these tickers. "
+                "The system auto-handles DCA. Focus on NEW tickers only."
+            )
+
+        # Pre-seed the conversation with the data the LLM needs
         conversation: list[dict] = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
-                    "You are the Portfolio Strategist. Analyze the portfolio "
-                    "and candidates, then make your trading decisions. "
-                    "Start by calling get_portfolio and get_all_candidates "
-                    "to see the current state."
+                    "You are the Portfolio Strategist. Here is your current "
+                    "portfolio and market data. Analyze it and make trading "
+                    "decisions.\n\n"
+                    "## Your Portfolio\n"
+                    f"```json\n{json.dumps(portfolio_data, indent=2)}\n```\n\n"
+                    "## Market Overview (all analyzed tickers)\n"
+                    f"```json\n{json.dumps(market_data, indent=2)}\n```"
+                    f"{held_section}\n\n"
+                    "NOW: Review the candidates above. Call get_dossier on "
+                    "your top 3-5 picks to see their full analysis, then "
+                    "place_buy for stocks that meet your criteria. "
+                    "You have cash to deploy — USE IT."
                 ),
             },
         ]
 
+        # Mark these tools as already used for the guardrail
         orders_placed: list[dict] = []
         triggers_set: list[dict] = []
         finish_summary = ""
+
+        # Track which key tools the LLM has called — used for guardrails
+        tools_used: set[str] = {"get_portfolio", "get_market_overview"}
+        _MAX_PREMATURE_FINISH_REJECTS = 2
+        premature_finish_count = 0
 
         for turn in range(_MAX_TURNS):
             logger.info("[Strategist] Turn %d/%d", turn + 1, _MAX_TURNS)
@@ -195,8 +256,39 @@ class PortfolioStrategist:
                 action_name, json.dumps(params)[:200],
             )
 
-            # Execute the action
+            # ── Guardrail: reject premature finish ──
+            # If the LLM tries to finish without scanning market data,
+            # reject and re-prompt. This prevents the "30 min of collection,
+            # 0 seconds of analysis" bug where the LLM lazily bails out.
             if action_name == "finish":
+                must_call_first = {"get_market_overview"}
+                missing = must_call_first - tools_used
+                if missing and premature_finish_count < _MAX_PREMATURE_FINISH_REJECTS:
+                    premature_finish_count += 1
+                    logger.warning(
+                        "[Strategist] REJECTED premature finish (attempt %d) "
+                        "— LLM hasn't called: %s",
+                        premature_finish_count, missing,
+                    )
+                    self._audit.log_turn(
+                        turn + 1, raw, "finish_REJECTED", params,
+                        {"reason": f"Must call {missing} first"},
+                    )
+                    conversation.append({"role": "assistant", "content": raw})
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "REJECTED: You cannot finish yet. You have NOT "
+                            "scanned the market. You MUST call "
+                            "get_market_overview first to see all available "
+                            "tickers, then call get_dossier on your top picks, "
+                            "then make trading decisions. You have $10,000 in "
+                            "cash — DEPLOY IT. Call get_market_overview NOW."
+                        ),
+                    })
+                    continue
+
+                # Legitimate finish — LLM has done the work
                 finish_summary = params.get("summary", "No summary provided")
                 self._actions_log.append({
                     "action": "finish",
@@ -206,6 +298,9 @@ class PortfolioStrategist:
                     turn + 1, raw, "finish", params, {"summary": finish_summary},
                 )
                 break
+
+            # Track tool usage for guardrail
+            tools_used.add(action_name)
 
             result = await self._execute_action(action_name, params)
 
@@ -225,23 +320,50 @@ class PortfolioStrategist:
 
             self._audit.log_turn(turn + 1, raw, action_name, params, result)
 
-            # ── Track action in compact memory ──
-            mem = f"{action_name}({json.dumps(params)[:80]})"
+            # ── Track action in compact portfolio state ──
             if result.get("status") == "filled":
-                side = result.get("side", "?")
-                mem = (
-                    f"{side.upper()} {result.get('ticker')} "
-                    f"x{result.get('qty')} @ ${result.get('price', 0):.2f}"
+                trade_entry = {
+                    "side": result.get("side", "?").upper(),
+                    "ticker": result.get("ticker", "?"),
+                    "qty": result.get("qty", 0),
+                    "price": result.get("price", 0),
+                }
+                trades = self._portfolio_state["trades_this_session"]
+                trades.append(trade_entry)
+                # Keep only last 10 trades to bound memory size
+                if len(trades) > 10:
+                    self._portfolio_state["trades_this_session"] = trades[-10:]
+
+            # Update positions snapshot from paper trader
+            try:
+                positions = self._trader.get_positions()
+                self._portfolio_state["positions_snapshot"] = {
+                    p["ticker"]: {
+                        "qty": p["qty"],
+                        "entry": round(p["avg_entry_price"], 2),
+                    }
+                    for p in positions
+                }
+                self._portfolio_state["cash_after_trades"] = round(
+                    self._trader.get_cash_balance(), 2,
                 )
-            elif result.get("error"):
-                mem += f" → REJECTED: {result['error'][:60]}"
-            self._action_memory.append(mem)
+            except Exception:
+                pass  # Non-critical — portfolio tool gives this too
 
             # Feed the result back to the LLM
             conversation.append({"role": "assistant", "content": raw})
+            # If a buy/sell failed, give the LLM a stronger nudge
+            result_text = json.dumps(result, indent=2)
+            if result.get("error") and action_name in ("place_buy", "place_sell"):
+                failed_ticker = params.get("ticker", "")
+                result_text += (
+                    f"\n\nIMPORTANT: {failed_ticker} buy/sell FAILED. "
+                    f"Do NOT retry {failed_ticker}. "
+                    f"Move on to a DIFFERENT ticker immediately."
+                )
             conversation.append({
                 "role": "user",
-                "content": f"Tool result:\n{json.dumps(result, indent=2)}",
+                "content": f"Tool result:\n{result_text}",
             })
 
             # ── Sliding window: keep conversation bounded ──
@@ -258,18 +380,19 @@ class PortfolioStrategist:
                 trim_count = overflow - max_msgs
                 conversation = [conversation[0]] + conversation[1 + trim_count:]
 
-            # ── Action memory: inject compact summary so LLM never forgets ──
-            if self._action_memory:
+            # ── Portfolio state: inject compact JSON so LLM stays oriented ──
+            if self._portfolio_state["trades_this_session"]:
+                state_json = json.dumps(self._portfolio_state, indent=None)
                 memory_text = (
-                    "ACTION MEMORY (what you have already done this session — "
-                    "do NOT repeat these actions):\n"
-                    + "\n".join(f"  • {m}" for m in self._action_memory)
+                    "PORTFOLIO STATE (your trades this session + current "
+                    "positions — do NOT repeat completed trades):\n"
+                    f"{state_json}"
                 )
-                # Replace or append memory in first user message
+                # Replace or append state in first user message
                 base_prompt = conversation[0]["content"]
-                # Strip any previous memory block
-                if "ACTION MEMORY" in base_prompt:
-                    base_prompt = base_prompt[:base_prompt.index("ACTION MEMORY")].rstrip()
+                # Strip any previous state block
+                if "PORTFOLIO STATE" in base_prompt:
+                    base_prompt = base_prompt[:base_prompt.index("PORTFOLIO STATE")].rstrip()
                 conversation[0] = {
                     "role": "user",
                     "content": f"{base_prompt}\n\n{memory_text}",
@@ -308,7 +431,10 @@ class PortfolioStrategist:
         """Route an action to the appropriate executor."""
         executors = {
             "get_portfolio": self._tool_get_portfolio,
-            "get_all_candidates": self._tool_get_all_candidates,
+            "get_market_overview": self._tool_get_market_overview,
+            "get_dossier": self._tool_get_dossier,
+            # Legacy alias for backwards compatibility with older prompts
+            "get_all_candidates": self._tool_get_market_overview,
             "get_sector_peers": self._tool_get_sector_peers,
             "place_buy": self._tool_place_buy,
             "place_sell": self._tool_place_sell,
@@ -343,9 +469,12 @@ class PortfolioStrategist:
             "daily_pnl_pct": round(daily_pnl, 2),
         }
 
-    async def _tool_get_all_candidates(self, _params: dict) -> dict:
-        """Return rich dossier summaries for all analyzed tickers."""
+    async def _tool_get_market_overview(self, _params: dict) -> dict:
+        """Return compact metadata for all analyzed tickers (no prose)."""
         candidates = []
+        positions = self._trader.get_positions()
+        held_map = {p["ticker"]: p["qty"] for p in positions}
+
         for ticker in self._tickers:
             dossier = DeepAnalysisService.get_latest_dossier(ticker)
             if not dossier:
@@ -359,74 +488,106 @@ class PortfolioStrategist:
             except Exception:
                 price = None
 
-            # Check if we already hold this stock
-            positions = self._trader.get_positions()
-            held_qty = 0
-            for p in positions:
-                if p["ticker"] == ticker:
-                    held_qty = p["qty"]
-                    break
-
-            # Extract scorecard data for setup quality
             scorecard = dossier.get("scorecard", {})
 
-            # Flag data gaps for the LLM
-            data_gaps: list[str] = []
-            if not dossier.get("executive_summary"):
-                data_gaps.append("no executive summary")
-            if not dossier.get("bull_case"):
-                data_gaps.append("no bull case")
-            if not dossier.get("bear_case"):
-                data_gaps.append("no bear case")
-            if not dossier.get("key_catalysts"):
-                data_gaps.append("no catalysts identified")
-            if not scorecard.get("trend_template_score"):
-                data_gaps.append("missing trend score")
-            if not scorecard.get("vcp_setup_score"):
-                data_gaps.append("missing VCP score")
-
+            # Compact entry — metadata only, no prose
             candidates.append({
                 "ticker": ticker,
                 "sector": dossier.get("sector", "Unknown"),
-                "industry": dossier.get("industry", "Unknown"),
-                "market_cap_tier": dossier.get("market_cap_tier", "unknown"),
-                # Quant scores
+                "conviction": dossier.get("conviction_score", 0.5),
                 "trend_score": scorecard.get("trend_template_score", 0),
                 "vcp_score": scorecard.get("vcp_setup_score", 0),
                 "rs_rating": scorecard.get("relative_strength_rating", 0),
-                # Conviction & signal
-                "conviction_score": dossier.get("conviction_score", 0.5),
-                "signal_summary": dossier.get(
-                    "scorecard", {},
-                ).get("signal_summary", ""),
-                # Full analysis text (no truncation)
-                "executive_summary": dossier.get("executive_summary", ""),
-                "bull_case": dossier.get("bull_case", ""),
-                "bear_case": dossier.get("bear_case", ""),
-                "key_catalysts": dossier.get("key_catalysts", []),
-                # Market data
-                "current_price": price,
-                "currently_held_qty": held_qty,
-                # Data quality
-                "data_gaps": data_gaps if data_gaps else None,
+                "signal": scorecard.get("signal_summary", "")[:80],
+                "price": price,
+                "held_qty": held_map.get(ticker, 0),
             })
 
         # Sort by conviction (highest first)
-        candidates.sort(key=lambda c: c["conviction_score"], reverse=True)
+        candidates.sort(key=lambda c: c["conviction"], reverse=True)
 
         # Log candidates to audit
         self._audit.log_candidates(candidates)
 
-        # Build sector summary for the LLM
+        # Split into new candidates vs already-held positions
+        new_candidates = [c for c in candidates if c.get("held_qty", 0) == 0]
+        held_positions = [c for c in candidates if c.get("held_qty", 0) > 0]
+        held_tickers = [c["ticker"] for c in held_positions]
+
+        # Build sector summary
         sector_counts: dict[str, int] = {}
         for c in candidates:
             s = c.get("sector", "Unknown")
             sector_counts[s] = sector_counts.get(s, 0) + 1
 
-        return {
-            "candidates": candidates,
-            "total": len(candidates),
+        result: dict = {
+            "candidates": new_candidates,
+            "total_new": len(new_candidates),
             "sector_breakdown": sector_counts,
+            "note": (
+                "These are NEW candidates you can BUY. "
+                "Call get_dossier(ticker) for full analysis."
+            ),
+        }
+        if held_tickers:
+            result["already_held"] = held_tickers
+            result["held_warning"] = (
+                f"⛔ DO NOT BUY: {', '.join(held_tickers)} — "
+                f"you already own these. Focus only on candidates above."
+            )
+        return result
+
+    async def _tool_get_dossier(self, params: dict) -> dict:
+        """Return the full analysis prose for ONE ticker."""
+        ticker = str(params.get("ticker", "")).upper().strip()
+        if not ticker:
+            return {"error": "Missing 'ticker' parameter"}
+
+        dossier = DeepAnalysisService.get_latest_dossier(ticker)
+        if not dossier:
+            return {"error": f"No dossier found for {ticker}"}
+
+        scorecard = dossier.get("scorecard", {})
+
+        # Flag data gaps for the LLM
+        data_gaps: list[str] = []
+        if not dossier.get("executive_summary"):
+            data_gaps.append("no executive summary")
+        if not dossier.get("bull_case"):
+            data_gaps.append("no bull case")
+        if not dossier.get("bear_case"):
+            data_gaps.append("no bear case")
+        if not dossier.get("key_catalysts"):
+            data_gaps.append("no catalysts identified")
+        if not scorecard.get("trend_template_score"):
+            data_gaps.append("missing trend score")
+        if not scorecard.get("vcp_setup_score"):
+            data_gaps.append("missing VCP score")
+
+        # Get current price
+        try:
+            from app.main import _fetch_one_quote
+            quote = _fetch_one_quote(ticker)
+            price = quote.get("price") if quote else None
+        except Exception:
+            price = None
+
+        return {
+            "ticker": ticker,
+            "sector": dossier.get("sector", "Unknown"),
+            "industry": dossier.get("industry", "Unknown"),
+            "market_cap_tier": dossier.get("market_cap_tier", "unknown"),
+            "conviction_score": dossier.get("conviction_score", 0.5),
+            "signal_summary": scorecard.get("signal_summary", ""),
+            # Full analysis prose (the deep dive)
+            "executive_summary": dossier.get("executive_summary", ""),
+            "bull_case": dossier.get("bull_case", ""),
+            "bear_case": dossier.get("bear_case", ""),
+            "key_catalysts": dossier.get("key_catalysts", []),
+            # Market data
+            "current_price": price,
+            # Data quality
+            "data_gaps": data_gaps if data_gaps else None,
         }
 
     async def _tool_get_sector_peers(self, params: dict) -> dict:
@@ -564,6 +725,29 @@ class PortfolioStrategist:
         if not ticker or qty <= 0:
             return {"error": "ticker and qty (>0) are required"}
 
+        # Guard: prevent retry loops on previously failed tickers
+        if ticker in self._failed_buy_tickers:
+            return {
+                "error": (
+                    f"ALREADY FAILED: {ticker} buy was already attempted and "
+                    f"failed this session. Do NOT retry — pick a DIFFERENT "
+                    f"ticker from your candidates list."
+                ),
+            }
+
+        # Guard: check if we already hold this ticker (before any work)
+        positions = self._trader.get_positions()
+        held_tickers = {p["ticker"] for p in positions}
+        if ticker in held_tickers:
+            self._failed_buy_tickers.add(ticker)
+            return {
+                "error": (
+                    f"POSITION EXISTS: You already own {ticker}. "
+                    f"The system auto-handles DCA (dollar-cost averaging). "
+                    f"Choose a DIFFERENT ticker to buy instead."
+                ),
+            }
+
         # Get current price
         try:
             from app.main import _fetch_one_quote
@@ -573,6 +757,7 @@ class PortfolioStrategist:
             price = None
 
         if not price:
+            self._failed_buy_tickers.add(ticker)
             return {"error": f"Could not fetch price for {ticker}"}
 
         # Safety check: don't let LLM blow the entire account
@@ -620,13 +805,28 @@ class PortfolioStrategist:
                 ),
             }
 
-        order = self._trader.buy(
-            ticker=ticker,
-            qty=qty,
-            price=price,
-            conviction_score=0.0,
-            signal=f"STRATEGIST_BUY: {reason[:100]}",
-        )
+        try:
+            order = self._trader.buy(
+                ticker=ticker,
+                qty=qty,
+                price=price,
+                conviction_score=0.0,
+                signal=f"STRATEGIST_BUY: {reason[:100]}",
+            )
+        except Exception as exc:
+            # Catch DuckDB constraint errors and other DB issues
+            self._failed_buy_tickers.add(ticker)
+            error_msg = str(exc)
+            if "Duplicate key" in error_msg or "primary key" in error_msg.lower():
+                return {
+                    "error": (
+                        f"POSITION EXISTS: You already own {ticker}. "
+                        f"The system auto-handles DCA (dollar-cost averaging). "
+                        f"This means {ticker} is already in your portfolio. "
+                        f"Choose a DIFFERENT ticker to buy instead."
+                    ),
+                }
+            return {"error": f"Buy failed for {ticker}: {error_msg}"}
 
         if order:
             from app.services.event_logger import log_event
@@ -651,6 +851,7 @@ class PortfolioStrategist:
                 "total_cost": order.qty * order.price,
                 "reason": reason,
             }
+        self._failed_buy_tickers.add(ticker)
         return {"error": f"Order rejected by paper trader for {ticker}"}
 
     async def _tool_place_sell(self, params: dict) -> dict:
@@ -783,13 +984,21 @@ class PortfolioStrategist:
 
     def _build_system_prompt(self) -> str:
         """Construct the full system prompt with tool descriptions."""
-        # Load the strategy prompt
+        # Load the base strategy prompt
         if self._prompt_path.exists():
             strategy = self._prompt_path.read_text(encoding="utf-8")
         else:
             strategy = "You are an autonomous trading strategist."
 
-        return f"{strategy}\n\n{TOOL_DESCRIPTIONS}"
+        # Load user's custom strategy (editable via UI)
+        user_strategy_path = settings.USER_CONFIG_DIR / "strategy.md"
+        user_strategy = ""
+        if user_strategy_path.exists():
+            raw = user_strategy_path.read_text(encoding="utf-8").strip()
+            if raw:
+                user_strategy = f"\n\n## User Custom Strategy\n\n{raw}"
+
+        return f"{strategy}{user_strategy}\n\n{TOOL_DESCRIPTIONS}"
 
     @staticmethod
     def _format_conversation(messages: list[dict]) -> str:

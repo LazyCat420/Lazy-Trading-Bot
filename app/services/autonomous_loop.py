@@ -9,17 +9,22 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-# Tickers analyzed within this window are skipped by collection / analysis.
-_ANALYSIS_CACHE_TTL = timedelta(hours=24)
-
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.discovery_service import DiscoveryService
 from app.services.event_logger import end_loop, log_event, set_bot_context, start_loop
 from app.services.paper_trader import PaperTrader
+from app.services.pipeline_health import (
+    HealthTracker,
+    clear_active_tracker,
+    set_active_tracker,
+)
 from app.services.pipeline_service import PipelineService
 from app.services.price_monitor import PriceMonitor
 from app.services.watchlist_manager import WatchlistManager
 from app.utils.logger import logger
+
+# Tickers analyzed within this window are skipped by collection / analysis.
+_ANALYSIS_CACHE_TTL = timedelta(hours=24)
 
 
 class AutonomousLoop:
@@ -66,10 +71,68 @@ class AutonomousLoop:
         t0 = time.time()
         loop_id = start_loop()
         set_bot_context(self.bot_id, self.model_name)
+
+        # ── Health tracker for this run ──
+        self._health = HealthTracker(loop_id=loop_id)
+        set_active_tracker(self._health)
+
         logger.info("=" * 60)
         logger.info("[AutoLoop] ▶ Starting full autonomous loop (%s)", loop_id)
         logger.info("=" * 60)
         log_event("system", "loop_start", "Full autonomous loop started")
+
+        # ── Pre-warm the LLM model before pipeline starts ──
+        # Ollama evicts models after 5 min idle. Data collection can take
+        # 30+ min, so we pre-load the model with a 2-hour keep_alive
+        # to ensure it stays in VRAM for the entire loop.
+        from app.config import settings
+
+        if settings.LLM_PROVIDER == "ollama":
+            from app.services.llm_service import LLMService
+
+            logger.info(
+                "[AutoLoop] Pre-warming Ollama model: %s @ %s",
+                settings.LLM_MODEL, settings.LLM_BASE_URL,
+            )
+            warm_result = await LLMService.verify_and_warm_ollama_model(
+                settings.LLM_BASE_URL,
+                settings.LLM_MODEL,
+                keep_alive="2h",
+            )
+            if warm_result.get("pre_warmed"):
+                rec_ctx = warm_result.get("recommended_ctx", 32768)
+                model_max = warm_result.get("model_max_ctx", 0)
+                vram_bytes = warm_result.get("vram_bytes", 0)
+                vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
+
+                # Apply the VRAM-based cap to settings
+                old_ctx = settings.LLM_CONTEXT_SIZE
+                settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx)
+
+                logger.info(
+                    "[AutoLoop] ✅ Model pre-warmed | "
+                    "VRAM=%.1fGB | model_max_ctx=%d | "
+                    "user_ctx=%d → effective_ctx=%d",
+                    vram_gb, model_max, old_ctx,
+                    settings.LLM_CONTEXT_SIZE,
+                )
+                self._health.record_check(
+                    "LLM model pre-warmed",
+                    passed=True,
+                    detail=(
+                        f"{settings.LLM_MODEL} "
+                        f"ctx={settings.LLM_CONTEXT_SIZE}"
+                    ),
+                )
+            else:
+                logger.warning(
+                    "[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result,
+                )
+                self._health.record_check(
+                    "LLM model pre-warmed",
+                    passed=False,
+                    detail=warm_result.get("status", "unknown"),
+                )
 
         report: dict[str, Any] = {
             "started_at": datetime.now().isoformat(),
@@ -83,6 +146,14 @@ class AutonomousLoop:
             self._do_discovery,
         )
         report["phases"]["discovery"] = discovery_result
+
+        # Health check: discovery found tickers?
+        disc_count = discovery_result.get("tickers_found", 0)
+        self._health.record_check(
+            "Discovery found tickers",
+            passed=disc_count > 0,
+            detail=f"{disc_count} tickers" if disc_count else "0 tickers",
+        )
 
         # ── Step 2: Auto-Import ───────────────────────────────────
         import_result = await self._run_phase(
@@ -108,6 +179,16 @@ class AutonomousLoop:
         )
         report["phases"]["analysis"] = analysis_result
 
+        # Health check: dossiers generated?
+        analyzed = analysis_result.get("analyzed", 0)
+        total_tickers = analysis_result.get("total", 0)
+        self._health.record_check(
+            "Dossiers generated",
+            passed=analyzed > 0,
+            detail=f"{analyzed}/{total_tickers} tickers"
+            if total_tickers else "no tickers to analyze",
+        )
+
         # ── Step 4: Trading (Signal Router + Paper Trader) ─────────
         trading_result = await self._run_phase(
             "trading",
@@ -115,6 +196,14 @@ class AutonomousLoop:
             self._do_trading,
         )
         report["phases"]["trading"] = trading_result
+
+        # Health check: strategist placed trades?
+        orders_count = trading_result.get("orders", 0)
+        self._health.record_check(
+            "Strategist placed trades",
+            passed=orders_count > 0,
+            detail=f"{orders_count} orders" if orders_count else "0 orders",
+        )
 
         # ── Done ──────────────────────────────────────────────────
         elapsed = round(time.time() - t0, 1)
@@ -132,6 +221,16 @@ class AutonomousLoop:
             metadata={"total_seconds": elapsed},
         )
         end_loop()
+
+        # ── Generate health report ──
+        try:
+            health_path = self._health.generate_report()
+            report["health_report"] = health_path
+            logger.info("[AutoLoop] Health report: %s", health_path)
+        except Exception as exc:
+            logger.warning("[AutoLoop] Health report generation failed: %s", exc)
+        finally:
+            clear_active_tracker()
 
         logger.info("[AutoLoop] ✓ Full loop completed in %.1fs", elapsed)
         return report
@@ -348,6 +447,7 @@ class AutonomousLoop:
         )
         dossiers = await self.deep_analysis.analyze_batch(
             tickers, concurrency=2, portfolio_context=portfolio_context,
+            bot_id=self.bot_id,
         )
 
         summaries = []
@@ -517,6 +617,10 @@ class AutonomousLoop:
         self._log(description)
         logger.info("[AutoLoop] Phase: %s — %s", phase_name, description)
 
+        # Track phase in health tracker
+        if hasattr(self, "_health"):
+            self._health.start_phase(phase_name)
+
         t0 = time.time()
         try:
             result = await coro_fn()
@@ -525,6 +629,10 @@ class AutonomousLoop:
             result["status"] = "success"
             self._state["phases"][phase_name] = "done"
             logger.info("[AutoLoop] Phase %s completed in %.1fs", phase_name, elapsed)
+
+            if hasattr(self, "_health"):
+                self._health.end_phase(phase_name, status="success")
+
             return result
         except Exception as exc:
             elapsed = round(time.time() - t0, 1)
@@ -532,6 +640,12 @@ class AutonomousLoop:
             error_msg = f"{phase_name} failed: {exc}"
             self._log(error_msg)
             logger.error("[AutoLoop] %s", error_msg, exc_info=True)
+
+            if hasattr(self, "_health"):
+                self._health.end_phase(
+                    phase_name, status="error", detail=str(exc)[:100],
+                )
+
             return {
                 "status": "error",
                 "error": str(exc),

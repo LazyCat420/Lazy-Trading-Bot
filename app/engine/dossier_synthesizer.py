@@ -43,33 +43,46 @@ Generate a JSON object with exactly these keys:
   "bull_case": "strongest arguments for buying (2-3 sentences)",
   "bear_case": "strongest arguments against buying (2-3 sentences)",
   "key_catalysts": ["catalyst 1", "catalyst 2", "catalyst 3"],
-  "conviction_score": 0.65,
+  "conviction_score": <CALCULATE — see calibration rules below>,
   "signal_summary": "One-line quant interpretation",
   "sector": "{sector}",
   "industry": "{industry}",
   "market_cap_tier": "{cap_tier}"
 }}
 
-Rules:
-- conviction_score: USE THE FULL 0.0-1.0 RANGE:
-  * 0.0-0.25: Strong SELL — serious red flags, deteriorating fundamentals
-  * 0.25-0.40: Lean SELL — more negatives than positives
-  * 0.40-0.60: RARE — only for genuinely 50/50 cases. AVOID this range.
-  * 0.60-0.75: Lean BUY — positive thesis with manageable risks
-  * 0.75-1.0: Strong BUY — compelling opportunity with multiple catalysts
-- IMPORTANT: Scores of 0.45-0.55 are WASTEFUL. Commit to a directional view.
-  Most stocks should score below 0.40 (avoid) or above 0.60 (consider buying).
-- CAP-TIER CONTEXT for conviction scoring:
-  * Mega/Large cap: Stable moats — moderate conviction is acceptable if fundamentals
-    are solid. Weight competitive position and cash flow over pure growth.
-  * Mid cap: Growth inflection — weight revenue growth trajectory and market
-    expansion heavily. Assign higher conviction for accelerating growth.
-  * Small/Micro cap: High risk/reward — require STRONGER catalysts to justify
-    conviction above 0.65. Always flag liquidity risk in bear case.
-- TECHNICAL SETUP RULES:
-  * If Trend Template Score > 80: This is a "Stage 2 Uptrend". Bias towards BUY.
-  * If VCP Score > 70 AND Trend > 80: This is a "Prime Setup". Conviction should be > 0.75 unless fundamentals are terrible.
-  * If Trend Score < 50: This is a broken trend/downtrend. Conviction MUST be < 0.40 (SELL/AVOID).
+CONVICTION SCORE CALIBRATION — you MUST calculate this from the data:
+
+Step 1: Start with the Trend Template Score as your base:
+  - Trend >= 80 → base = 0.70
+  - Trend 50-79 → base = 0.50
+  - Trend < 50  → base = 0.25
+
+Step 2: Adjust based on flags and data:
+  - bankruptcy_risk_high → subtract 0.20
+  - negative_sortino → subtract 0.10
+  - exceptional_calmar or strong_momentum_up → add 0.10
+  - piotroski_strong (F-Score >= 7) → add 0.05
+  - drawdown_exceeds_20pct → subtract 0.05
+  - Strong bull case from Q&A research → add 0.05
+  - Serious bear case risks from Q&A → subtract 0.05
+
+Step 3: Clamp the final score to [0.10, 0.95].
+
+CALIBRATION EXAMPLES (your scores MUST vary like this):
+  - Trend=100, RS=99, strong_momentum, no red flags → conviction ~0.80-0.85
+  - Trend=90, RS=88, drawdown, solid fundamentals → conviction ~0.65-0.70
+  - Trend=40, RS=70, bankruptcy_risk → conviction ~0.15-0.25
+  - Trend=0, RS=2, negative_sortino, drawdown → conviction ~0.10-0.20
+
+CRITICAL: Every stock MUST get a DIFFERENT score. If you give the same score
+to two stocks with different data, you have FAILED. The whole point is to RANK
+stocks by attractiveness.
+
+Additional rules:
+- CAP-TIER CONTEXT:
+  * Mega/Large cap: Weight competitive position and cash flow over pure growth.
+  * Mid cap: Weight revenue growth trajectory and market expansion heavily.
+  * Small/Micro cap: Require STRONGER catalysts for conviction above 0.70.
 - Be specific with numbers, dates, and percentages
 - Keep total output under 2000 characters
 - Factor in the portfolio context when assigning conviction
@@ -187,6 +200,16 @@ class DossierSynthesizer:
                     for p in kept
                 )
                 prompt = SYNTHESIS_SYSTEM_PROMPT.format(
+                    ticker=ticker,
+                    sector=scorecard.sector or "Unknown",
+                    industry=scorecard.industry or "Unknown",
+                    market_cap_formatted=mc_str,
+                    cap_tier=scorecard.market_cap_tier or "unknown",
+                    trend_score=int(t_score),
+                    trend_status=t_status,
+                    vcp_score=int(v_score),
+                    vcp_status=v_status,
+                    rs_rating=int(rs),
                     scorecard=sc_text,
                     qa_pairs=qa_text,
                     portfolio_section=portfolio_section,

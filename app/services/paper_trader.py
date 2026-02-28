@@ -208,6 +208,9 @@ class PaperTrader:
         self._store_order(order)
         db.commit()
 
+        # ── Alpha attribution: update source credibility ──
+        self._update_source_credibility(ticker, realized_pnl)
+
         return order
 
     # ------------------------------------------------------------------
@@ -602,6 +605,77 @@ class PaperTrader:
             "[PaperTrader:%s] Realized P&L: $%.2f (cumulative: $%.2f)",
             self.bot_id, pnl, current + pnl,
         )
+
+    def _update_source_credibility(self, ticker: str, realized_pnl: float) -> None:
+        """Update source credibility table based on realized P&L.
+
+        Looks up the original discovery source for this ticker and
+        adjusts its win/loss count and trust score.
+        """
+        try:
+            db = get_db()
+            # Find the most recent discovery source for this ticker
+            row = db.execute(
+                "SELECT source, source_detail FROM discovered_tickers "
+                "WHERE ticker = ? ORDER BY discovered_at DESC LIMIT 1",
+                [ticker],
+            ).fetchone()
+            if not row or not row[0]:
+                return
+
+            source_type = row[0]  # e.g., 'reddit', 'youtube'
+            source_detail = row[1] or source_type  # e.g., 'r/wallstreetbets'
+            source_id = f"{source_type}:{source_detail}"
+
+            now = datetime.now()
+            is_win = realized_pnl > 0
+
+            # Upsert: create or update the source_credibility row
+            existing = db.execute(
+                "SELECT win_count, loss_count, total_pnl FROM source_credibility "
+                "WHERE source_id = ?",
+                [source_id],
+            ).fetchone()
+
+            if existing:
+                win = existing[0] + (1 if is_win else 0)
+                loss = existing[1] + (0 if is_win else 1)
+                total = existing[2] + realized_pnl
+                trust = max(0.1, win / (win + loss)) if (win + loss) > 0 else 0.5
+                db.execute(
+                    "UPDATE source_credibility "
+                    "SET win_count = ?, loss_count = ?, total_pnl = ?, "
+                    "trust_score = ?, last_updated = ? "
+                    "WHERE source_id = ?",
+                    [win, loss, total, round(trust, 3), now, source_id],
+                )
+            else:
+                win = 1 if is_win else 0
+                loss = 0 if is_win else 1
+                trust = max(0.1, win / (win + loss)) if (win + loss) > 0 else 0.5
+                db.execute(
+                    "INSERT INTO source_credibility "
+                    "(source_id, source_type, win_count, loss_count, "
+                    "total_pnl, trust_score, last_updated) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [source_id, source_type, win, loss,
+                     realized_pnl, round(trust, 3), now],
+                )
+
+            db.commit()
+            logger.info(
+                "[PaperTrader:%s] Source credibility updated: %s → "
+                "%s (pnl=$%.2f, trust=%.2f)",
+                self.bot_id, source_id,
+                "WIN" if is_win else "LOSS",
+                realized_pnl, trust,
+            )
+        except Exception as exc:
+            # Non-critical — don't let attribution tracking break trading
+            logger.warning(
+                "[PaperTrader:%s] Source credibility update failed: %s",
+                self.bot_id, exc,
+            )
 
     def _ensure_initial_balance(self) -> None:
         """If no snapshots exist for this bot, create the initial one."""

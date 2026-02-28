@@ -50,9 +50,19 @@ class BotRegistry:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                bot_id, model_name, display_name, provider, provider_url,
-                context_length, temperature, top_p, max_tokens,
-                eval_batch_size, flash_attention, num_experts, gpu_offload,
+                bot_id,
+                model_name,
+                display_name,
+                provider,
+                provider_url,
+                context_length,
+                temperature,
+                top_p,
+                max_tokens,
+                eval_batch_size,
+                flash_attention,
+                num_experts,
+                gpu_offload,
             ],
         )
         logger.info("[BotRegistry] Registered bot %s (%s)", bot_id, display_name)
@@ -65,7 +75,8 @@ class BotRegistry:
         """Get a single bot by ID."""
         conn = get_db()
         rows = conn.execute(
-            "SELECT * FROM bots WHERE bot_id = ?", [bot_id],
+            "SELECT * FROM bots WHERE bot_id = ?",
+            [bot_id],
         ).fetchall()
         if not rows:
             return None
@@ -79,7 +90,7 @@ class BotRegistry:
         sql = "SELECT * FROM bots"
         if not include_inactive:
             sql += " WHERE status = 'active'"
-        sql += " ORDER BY created_at DESC"
+        sql += " ORDER BY queue_order ASC, created_at DESC"
         rows = conn.execute(sql).fetchall()
         if not rows:
             return []
@@ -92,9 +103,18 @@ class BotRegistry:
     def update_bot_settings(bot_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
         """Update LLM settings for a bot. Returns updated bot."""
         allowed = {
-            "display_name", "provider", "provider_url", "context_length",
-            "temperature", "top_p", "max_tokens", "eval_batch_size",
-            "flash_attention", "num_experts", "gpu_offload", "status",
+            "display_name",
+            "provider",
+            "provider_url",
+            "context_length",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "eval_batch_size",
+            "flash_attention",
+            "num_experts",
+            "gpu_offload",
+            "status",
         }
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
@@ -123,7 +143,8 @@ class BotRegistry:
 
         # Total trades
         total = conn.execute(
-            "SELECT COUNT(*) FROM orders WHERE bot_id = ?", [bot_id],
+            "SELECT COUNT(*) FROM orders WHERE bot_id = ?",
+            [bot_id],
         ).fetchone()[0]
 
         # Win rate (sells with realized_pnl > 0)
@@ -147,18 +168,28 @@ class BotRegistry:
 
         win_rate = (wins / sells * 100) if sells > 0 else 0.0
 
-        # Total PnL from snapshots
-        snapshots = conn.execute(
-            """SELECT realized_pnl, unrealized_pnl
+        # Total P&L = current portfolio value minus starting balance
+        # This captures BOTH realized gains from sells AND unrealized
+        # gains from held positions.
+        latest_snap = conn.execute(
+            """SELECT total_portfolio_value
                FROM portfolio_snapshots
                WHERE bot_id = ?
                ORDER BY timestamp DESC LIMIT 1""",
             [bot_id],
-        ).fetchall()
+        ).fetchone()
 
-        total_pnl = 0.0
-        if snapshots:
-            total_pnl = (snapshots[0][0] or 0) + (snapshots[0][1] or 0)
+        first_snap = conn.execute(
+            """SELECT total_portfolio_value
+               FROM portfolio_snapshots
+               WHERE bot_id = ?
+               ORDER BY timestamp ASC LIMIT 1""",
+            [bot_id],
+        ).fetchone()
+
+        current_value = latest_snap[0] if latest_snap and latest_snap[0] else 0.0
+        starting_value = first_snap[0] if first_snap and first_snap[0] else 0.0
+        total_pnl = current_value - starting_value
 
         # Max drawdown from snapshots
         snap_values = conn.execute(
@@ -189,6 +220,19 @@ class BotRegistry:
             [total, total_pnl, win_rate, max_dd, bot_id],
         )
 
+    # ── Reorder ────────────────────────────────────────────────
+
+    @staticmethod
+    def reorder_bots(order: list[str]) -> None:
+        """Set queue_order for bots. order is a list of bot_ids."""
+        conn = get_db()
+        for idx, bot_id in enumerate(order):
+            conn.execute(
+                "UPDATE bots SET queue_order = ? WHERE bot_id = ?",
+                [idx, bot_id],
+            )
+        logger.info("[BotRegistry] Reordered %d bots", len(order))
+
     # ── Delete / Deactivate ────────────────────────────────────
 
     @staticmethod
@@ -196,16 +240,42 @@ class BotRegistry:
         """Soft-delete: set status to 'inactive'."""
         conn = get_db()
         conn.execute(
-            "UPDATE bots SET status = 'inactive' WHERE bot_id = ?", [bot_id],
+            "UPDATE bots SET status = 'inactive' WHERE bot_id = ?",
+            [bot_id],
         )
         logger.info("[BotRegistry] Deactivated bot %s", bot_id)
+        return True
+
+    @staticmethod
+    def delete_bot(bot_id: str) -> bool:
+        """Hard-delete: remove bot and ALL its associated data."""
+        conn = get_db()
+        tables_with_bot_id = [
+            "watchlist",
+            "positions",
+            "orders",
+            "portfolio_snapshots",
+            "pipeline_events",
+            "price_triggers",
+        ]
+        for table in tables_with_bot_id:
+            try:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE bot_id = ?",  # noqa: S608
+                    [bot_id],
+                )
+            except Exception:
+                pass  # Table may not have bot_id column yet
+        # Remove the bot itself
+        conn.execute("DELETE FROM bots WHERE bot_id = ?", [bot_id])
+        logger.info("[BotRegistry] Hard-deleted bot %s and all data", bot_id)
         return True
 
     # ── Leaderboard ────────────────────────────────────────────
 
     @staticmethod
     def get_leaderboard() -> list[dict[str, Any]]:
-        """Return all active bots ranked by total P&L descending."""
+        """Return all active bots ranked by total portfolio value descending."""
         conn = get_db()
         rows = conn.execute("""
             SELECT
@@ -214,27 +284,83 @@ class BotRegistry:
                 best_trade_pnl, worst_trade_pnl,
                 sharpe_ratio, max_drawdown,
                 context_length, temperature, top_p,
-                status, created_at, last_run_at
+                status, created_at, last_run_at,
+                provider, queue_order
             FROM bots
             WHERE status = 'active'
-            ORDER BY total_pnl DESC
+            ORDER BY queue_order ASC, created_at ASC
         """).fetchall()
 
         if not rows:
             return []
 
         cols = [
-            "bot_id", "model_name", "display_name",
-            "total_trades", "total_pnl", "win_rate",
-            "best_trade_pnl", "worst_trade_pnl",
-            "sharpe_ratio", "max_drawdown",
-            "context_length", "temperature", "top_p",
-            "status", "created_at", "last_run_at",
+            "bot_id",
+            "model_name",
+            "display_name",
+            "total_trades",
+            "total_pnl",
+            "win_rate",
+            "best_trade_pnl",
+            "worst_trade_pnl",
+            "sharpe_ratio",
+            "max_drawdown",
+            "context_length",
+            "temperature",
+            "top_p",
+            "status",
+            "created_at",
+            "last_run_at",
+            "provider",
+            "queue_order",
         ]
 
         result = []
         for i, row in enumerate(rows):
             d = dict(zip(cols, row))
             d["rank"] = i + 1
+
+            # Fetch current total portfolio value and starting balance
+            bot_id = d["bot_id"]
+            latest = conn.execute(
+                """SELECT total_portfolio_value
+                   FROM portfolio_snapshots
+                   WHERE bot_id = ?
+                   ORDER BY timestamp DESC LIMIT 1""",
+                [bot_id],
+            ).fetchone()
+            first = conn.execute(
+                """SELECT total_portfolio_value
+                   FROM portfolio_snapshots
+                   WHERE bot_id = ?
+                   ORDER BY timestamp ASC LIMIT 1""",
+                [bot_id],
+            ).fetchone()
+
+            current_val = latest[0] if latest and latest[0] else 0.0
+            starting_val = first[0] if first and first[0] else 0.0
+            d["total_portfolio_value"] = round(current_val, 2)
+            d["starting_balance"] = round(starting_val, 2)
+            d["return_pct"] = (
+                round((current_val - starting_val) / starting_val * 100, 2)
+                if starting_val > 0
+                else 0.0
+            )
+
+            # Fetch current holdings (open positions) for this bot
+            pos_rows = conn.execute(
+                """SELECT ticker, qty, avg_entry_price
+                   FROM positions WHERE bot_id = ?""",
+                [bot_id],
+            ).fetchall()
+            d["positions"] = [
+                {
+                    "ticker": p[0],
+                    "qty": p[1],
+                    "avg_entry_price": round(p[2], 2),
+                }
+                for p in pos_rows
+            ]
+            d["positions_count"] = len(pos_rows)
             result.append(d)
         return result

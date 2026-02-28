@@ -37,6 +37,7 @@ class DeepAnalysisService:
 
     async def analyze_ticker(
         self, ticker: str, portfolio_context: dict | None = None,
+        bot_id: str | None = None,
     ) -> TickerDossier:
         """Run the full 4-layer funnel for a single ticker.
 
@@ -68,7 +69,7 @@ class DeepAnalysisService:
                 ticker, junk_hits,
             )
             from app.services.watchlist_manager import WatchlistManager
-            WatchlistManager().remove_ticker(ticker)
+            WatchlistManager(bot_id=bot_id or "default").remove_ticker(ticker)
             # Return a minimal dossier with zero conviction
             return TickerDossier(
                 ticker=ticker,
@@ -111,8 +112,8 @@ class DeepAnalysisService:
         # Persist the full dossier
         self._store_dossier(dossier)
 
-        # Update the watchlist entry with conviction info
-        self._update_watchlist(ticker, dossier)
+        # Update the watchlist entry with conviction info (bot-scoped)
+        self._update_watchlist(ticker, dossier, bot_id=bot_id)
 
         elapsed = (datetime.now() - t0).total_seconds()
         logger.info(
@@ -131,6 +132,7 @@ class DeepAnalysisService:
         tickers: list[str],
         concurrency: int = 2,
         portfolio_context: dict | None = None,
+        bot_id: str | None = None,
     ) -> list[TickerDossier]:
         """Analyze multiple tickers with bounded concurrency.
 
@@ -141,7 +143,9 @@ class DeepAnalysisService:
 
         async def _run(t: str) -> TickerDossier:
             async with sem:
-                return await self.analyze_ticker(t, portfolio_context=portfolio_context)
+                return await self.analyze_ticker(
+                    t, portfolio_context=portfolio_context, bot_id=bot_id,
+                )
 
         tasks = [_run(t) for t in tickers]
         dossiers = await asyncio.gather(*tasks, return_exceptions=True)
@@ -283,8 +287,14 @@ class DeepAnalysisService:
         logger.info("[DeepAnalysis] Stored dossier %s for %s", dossier_id, dossier.ticker)
 
     @staticmethod
-    def _update_watchlist(ticker: str, dossier: TickerDossier) -> None:
-        """Update the watchlist entry with analysis results."""
+    def _update_watchlist(
+        ticker: str, dossier: TickerDossier, *, bot_id: str | None = None,
+    ) -> None:
+        """Update the watchlist entry with analysis results.
+
+        When bot_id is provided, only updates the row for that specific bot,
+        preventing cross-bot cache poisoning of last_analyzed timestamps.
+        """
         db = get_db()
         now = datetime.now()
 
@@ -298,18 +308,32 @@ class DeepAnalysisService:
             signal = "HOLD"
 
         try:
-            db.execute(
-                """
-                UPDATE watchlist
-                SET signal = ?,
-                    confidence = ?,
-                    last_analyzed = ?,
-                    analysis_count = analysis_count + 1,
-                    updated_at = ?
-                WHERE ticker = ?
-                """,
-                [signal, conv, now, now, ticker],
-            )
+            if bot_id:
+                db.execute(
+                    """
+                    UPDATE watchlist
+                    SET signal = ?,
+                        confidence = ?,
+                        last_analyzed = ?,
+                        analysis_count = analysis_count + 1,
+                        updated_at = ?
+                    WHERE ticker = ? AND bot_id = ?
+                    """,
+                    [signal, conv, now, now, ticker, bot_id],
+                )
+            else:
+                db.execute(
+                    """
+                    UPDATE watchlist
+                    SET signal = ?,
+                        confidence = ?,
+                        last_analyzed = ?,
+                        analysis_count = analysis_count + 1,
+                        updated_at = ?
+                    WHERE ticker = ?
+                    """,
+                    [signal, conv, now, now, ticker],
+                )
             db.commit()
             logger.info(
                 "[DeepAnalysis] Updated watchlist %s → signal=%s, confidence=%.2f",
