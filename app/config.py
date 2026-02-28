@@ -1,6 +1,6 @@
 """Application configuration — environment variables and defaults.
 
-All LLM provider URLs live HERE. Change them once, affects everything.
+All LLM settings live HERE. Change them once, affects everything.
 Persistent LLM settings are stored in user_config/llm_config.json.
 """
 
@@ -25,15 +25,10 @@ class Settings:
     # Database
     DB_PATH: Path = DATA_DIR / "trading_bot.duckdb"
 
-    # ── LLM Provider URLs ──────────────────────────────────────────
-    # Defaults (overridden by llm_config.json if present, then by env vars)
+    # ── LLM Provider (Ollama only) ─────────────────────────────────
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    LMSTUDIO_URL: str = os.getenv("LMSTUDIO_URL", "http://localhost:1234")
 
-    # Which provider to use: "ollama" | "lmstudio"
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
-
-    # Model name (provider-specific, e.g. "gemma3:27b" for Ollama)
+    # Model name (e.g. "gemma3:27b" for Ollama)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
     LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "8192"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
@@ -50,9 +45,6 @@ class Settings:
     LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
     LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
 
-    # OpenAI / LM Studio API key (LM Studio usually doesn't need one)
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-
     # SEC EDGAR API — required User-Agent header
     SEC_USER_AGENT: str = os.getenv(
         "SEC_USER_AGENT",
@@ -61,9 +53,7 @@ class Settings:
 
     @property
     def LLM_BASE_URL(self) -> str:
-        """Computed: returns the active provider URL based on LLM_PROVIDER."""
-        if self.LLM_PROVIDER == "lmstudio":
-            return self.LMSTUDIO_URL.rstrip("/")
+        """Computed: returns the Ollama URL."""
         return self.OLLAMA_URL.rstrip("/")
 
     # Server
@@ -100,12 +90,8 @@ class Settings:
 
     def _apply_llm_config(self, data: dict[str, Any]) -> None:
         """Apply a config dict to the running settings instance."""
-        if "provider" in data:
-            self.LLM_PROVIDER = str(data["provider"])
         if "ollama_url" in data:
             self.OLLAMA_URL = str(data["ollama_url"])
-        if "lmstudio_url" in data:
-            self.LMSTUDIO_URL = str(data["lmstudio_url"])
         if "model" in data:
             self.LLM_MODEL = str(data["model"])
         if "context_size" in data:
@@ -154,9 +140,7 @@ class Settings:
     def get_llm_config(self) -> dict[str, Any]:
         """Return the current LLM configuration as a dict."""
         return {
-            "provider": self.LLM_PROVIDER,
             "ollama_url": self.OLLAMA_URL,
-            "lmstudio_url": self.LMSTUDIO_URL,
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
             "temperature": self.LLM_TEMPERATURE,

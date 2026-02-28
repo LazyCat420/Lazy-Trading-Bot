@@ -77,9 +77,7 @@ class PortfolioResetRequest(BaseModel):
 
 
 class LLMConfigRequest(BaseModel):
-    provider: str | None = None
     ollama_url: str | None = None
-    lmstudio_url: str | None = None
     model: str | None = None
     context_size: int | None = None
     temperature: float | None = None
@@ -148,7 +146,6 @@ async def health() -> dict:
         "api": "ok",
         "llm": llm_status,
         "config": {
-            "provider": settings.LLM_PROVIDER,
             "model": settings.LLM_MODEL,
             "base_url": settings.LLM_BASE_URL,
         },
@@ -402,15 +399,12 @@ async def get_llm_config() -> dict:
 async def update_llm_config(req: LLMConfigRequest) -> dict:
     """Save new LLM settings + hot-patch the running config.
 
-    For LM Studio: also reloads the model via /api/v1/models/load
-    with the new context_length, and returns the verified config
-    that LM Studio actually applied.
+    Verifies the Ollama model exists and pre-warms it into VRAM.
     """
     data = {k: v for k, v in req.model_dump().items() if v is not None}
     merged = settings.update_llm_config(data)
     logger.info(
-        "LLM config updated: provider=%s model=%s ctx=%s",
-        merged.get("provider"),
+        "LLM config updated: model=%s ctx=%s",
         merged.get("model"),
         merged.get("context_size"),
     )
@@ -432,15 +426,11 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
         if not bot_for_model:
             # Auto-create a bot entry for this model
-            _prov = merged.get("provider", "lmstudio")
-            if _prov == "ollama":
-                _prov_url = merged.get("ollama_url", "http://localhost:11434")
-            else:
-                _prov_url = merged.get("lmstudio_url", "http://localhost:1234")
+            _prov_url = merged.get("ollama_url", "http://localhost:11434")
             bot_for_model = _BReg.register_bot(
                 model_name=model_id,
                 display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
-                provider=_prov,
+                provider="ollama",
                 provider_url=_prov_url,
                 context_length=merged.get("context_size", 8192),
                 temperature=merged.get("temperature", 0.3),
@@ -478,181 +468,56 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
         result["active_bot_id"] = bot_for_model["bot_id"]
         result["active_bot_name"] = bot_for_model.get("display_name", model_id)
 
-    # ── LM Studio: reload model with new context_length ──────────
-    provider = merged.get("provider", "")
-    if provider == "lmstudio":
-        lms_url = merged.get("lmstudio_url", "http://localhost:1234").rstrip("/")
-        model_id = merged.get("model", "")
-        ctx = merged.get("context_size", 8192)
+    # ── Ollama: verify model exists + pre-warm into VRAM ──────────
+    model_id = merged.get("model", "")
+    if model_id:
+        ollama_url = merged.get(
+            "ollama_url", "http://localhost:11434"
+        ).rstrip("/")
+        try:
+            warm_result = await LLMService.verify_and_warm_ollama_model(
+                ollama_url, model_id, keep_alive="10m",
+            )
+            result["ollama_verified"] = warm_result
 
-        if model_id:
-            import httpx as _httpx
-
-            load_payload = {
-                "model": model_id,
-                "context_length": ctx,
-                "echo_load_config": True,
-            }
-            try:
-                async with _httpx.AsyncClient(timeout=60.0) as client:
-                    # ── Step 1: Unload ALL loaded models to free VRAM ──
-                    try:
-                        list_resp = await client.get(
-                            f"{lms_url}/api/v1/models",
-                        )
-                        if list_resp.status_code == 200:
-                            all_models = list_resp.json().get("models", [])
-                            for m in all_models:
-                                for inst in m.get("loaded_instances", []):
-                                    inst_id = inst.get("id", m.get("key"))
-                                    if not inst_id:
-                                        continue
-                                    try:
-                                        await client.post(
-                                            f"{lms_url}/api/v1/models/unload",
-                                            json={"instance_id": inst_id},
-                                        )
-                                        logger.info(
-                                            "[LM Studio] Unloaded instance %s "
-                                            "to free VRAM",
-                                            inst_id,
-                                        )
-                                    except Exception:
-                                        pass
-                    except Exception:
-                        # List endpoint failed — try loading anyway
-                        logger.debug(
-                            "[LM Studio] Could not list models for "
-                            "pre-unload, proceeding with load",
-                        )
-
-                    # ── Step 2: Load with new config ──
-                    resp = await client.post(
-                        f"{lms_url}/api/v1/models/load",
-                        json=load_payload,
-                    )
-                    resp.raise_for_status()
-                    load_result = resp.json()
-
-                # Extract the verified config LM Studio actually applied
-                load_config = load_result.get("load_config", {})
-                actual_ctx = load_config.get("context_length")
-                load_time = load_result.get("load_time_seconds")
-
-                result["lmstudio_verified"] = {
-                    "status": "model_reloaded",
-                    "model": model_id,
-                    "requested_context_length": ctx,
-                    "actual_context_length": actual_ctx,
-                    "context_match": actual_ctx == ctx if actual_ctx else None,
-                    "load_time_seconds": load_time,
-                    "full_load_config": load_config,
-                }
+            # Apply the recommended context size if probing found a cap
+            rec_ctx = warm_result.get("recommended_ctx")
+            if rec_ctx and rec_ctx != merged.get("context_size"):
+                settings.LLM_CONTEXT_SIZE = rec_ctx
+                result["config"]["context_size"] = rec_ctx
                 logger.info(
-                    "[LM Studio] Model reloaded: ctx requested=%d, "
-                    "actual=%s, load_time=%.1fs",
-                    ctx,
-                    actual_ctx,
-                    load_time or 0,
+                    "[Ollama] Context size adjusted to %d based on VRAM",
+                    rec_ctx,
                 )
-            except Exception as exc:
-                result["lmstudio_verified"] = {
-                    "status": "reload_failed",
-                    "error": str(exc),
-                    "note": (
-                        "Config was saved but LM Studio model reload failed. "
-                        "You may need to reload the model manually in LM Studio."
-                    ),
-                }
-                logger.warning(
-                    "[LM Studio] Model reload failed: %s",
-                    exc,
-                )
-
-    elif provider == "ollama":
-        # ── Ollama: verify model exists + pre-warm into VRAM ──────
-        ollama_url = merged.get("ollama_url", "http://localhost:11434").rstrip("/")
-        model_id = merged.get("model", "")
-        if model_id:
-            import httpx as _httpx
-
-            try:
-                async with _httpx.AsyncClient(timeout=60.0) as client:
-                    # Step 1: Verify model exists via /api/tags
-                    tags_resp = await client.get(f"{ollama_url}/api/tags")
-                    tags_resp.raise_for_status()
-                    available = [m["name"] for m in tags_resp.json().get("models", [])]
-                    model_found = model_id in available
-
-                    pre_warmed = False
-                    if model_found:
-                        # Step 2: Pre-warm model into VRAM
-                        warm_resp = await client.post(
-                            f"{ollama_url}/api/generate",
-                            json={
-                                "model": model_id,
-                                "prompt": "",
-                                "keep_alive": "10m",
-                                "stream": False,
-                                "options": {
-                                    "num_ctx": 8192,
-                                },
-                            },
-                        )
-                        warm_resp.raise_for_status()
-                        pre_warmed = True
-                        logger.info(
-                            "[Ollama] Model %s verified and pre-warmed "
-                            "(keep_alive=10m)",
-                            model_id,
-                        )
-
-                    result["ollama_verified"] = {
-                        "status": (
-                            "model_verified" if model_found else "model_not_found"
-                        ),
-                        "model": model_id,
-                        "available_models": available,
-                        "model_found": model_found,
-                        "pre_warmed": pre_warmed,
-                    }
-            except Exception as exc:
-                result["ollama_verified"] = {
-                    "status": "verification_failed",
-                    "error": str(exc),
-                    "note": (
-                        "Config was saved but Ollama model verification "
-                        "failed. Ensure the Ollama server is reachable."
-                    ),
-                }
-                logger.warning(
-                    "[Ollama] Model verification failed: %s",
-                    exc,
-                )
+        except Exception as exc:
+            result["ollama_verified"] = {
+                "status": "verification_failed",
+                "error": str(exc),
+                "note": (
+                    "Config was saved but Ollama model verification "
+                    "failed. Ensure the Ollama server is reachable."
+                ),
+            }
+            logger.warning(
+                "[Ollama] Model verification failed: %s", exc,
+            )
 
     return result
 
 
 @app.get("/api/llm-models")
 async def get_llm_models(
-    provider: str = Query(default=None),
     url: str = Query(default=None),
 ) -> dict:
-    """Fetch available models from the configured (or specified) LLM provider.
+    """Fetch available Ollama models.
 
     Query params let the frontend test arbitrary URLs before saving.
     """
-    _provider = provider or settings.LLM_PROVIDER
-    if url:
-        _url = url
-    elif _provider == "lmstudio":
-        _url = settings.LMSTUDIO_URL
-    else:
-        _url = settings.OLLAMA_URL
+    _url = url or settings.OLLAMA_URL
 
-    models = await LLMService.fetch_models(_provider, _url)
+    models = await LLMService.fetch_models(_url)
     return {
-        "provider": _provider,
+        "provider": "ollama",
         "url": _url,
         "models": models,
         "connected": len(models) > 0,
@@ -1655,8 +1520,8 @@ class BotCreateRequest(BaseModel):
 
     model_name: str
     display_name: str = ""
-    provider: str = "lmstudio"
-    provider_url: str = "http://localhost:1234"
+    provider: str = "ollama"
+    provider_url: str = "http://localhost:11434"
     context_length: int = 8192
     temperature: float = 0.3
     top_p: float = 1.0
@@ -1943,8 +1808,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
             bot_id = bot["bot_id"]
             model_name = bot.get("model_name", "")
             display_name = bot.get("display_name", model_name)
-            provider = bot.get("provider", "lmstudio")
-
             _run_all_state["current_bot"] = {
                 "bot_id": bot_id,
                 "display_name": display_name,
@@ -1978,7 +1841,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
 
             try:
                 # ── 1. Hot-patch global settings with this bot's config ──
-                settings.LLM_PROVIDER = provider
                 settings.LLM_MODEL = model_name
                 settings.LLM_CONTEXT_SIZE = bot.get("context_length", 8192)
                 settings.LLM_TEMPERATURE = bot.get("temperature", 0.3)
@@ -1989,13 +1851,10 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
 
                 provider_url = bot.get("provider_url", "")
                 if provider_url:
-                    if provider == "lmstudio":
-                        settings.LMSTUDIO_URL = provider_url
-                    else:
-                        settings.OLLAMA_URL = provider_url
+                    settings.OLLAMA_URL = provider_url
 
                 _run_all_log(
-                    f"Config applied: {provider} / ctx={bot.get('context_length', 8192)} "
+                    f"Config applied: ollama / ctx={bot.get('context_length', 8192)} "
                     f"/ temp={bot.get('temperature', 0.3)}",
                     level="info",
                     phase="model_load",
@@ -2003,8 +1862,7 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                     bot_name=display_name,
                 )
 
-                # ── 2. Unload previous model, then warm new one (Ollama) ──
-                settings.LLM_PROVIDER = "ollama"  # force Ollama
+                # ── 2. Unload previous model, then warm new one ──
                 ollama_url = settings.OLLAMA_URL.rstrip("/")
 
                 _run_all_log(

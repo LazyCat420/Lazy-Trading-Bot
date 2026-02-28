@@ -242,12 +242,23 @@ class WatchlistManager:
             """
             SELECT ticker, total_score, sentiment_hint
             FROM ticker_scores
-            WHERE is_validated = TRUE AND total_score >= ?
+            WHERE is_validated = TRUE
+              AND total_score >= ?
+              AND ticker NOT IN (
+                  SELECT ticker FROM watchlist
+                  WHERE status = 'active' AND bot_id = ?
+              )
             ORDER BY total_score DESC
             LIMIT ?
             """,
-            [min_score, max_tickers],
+            [min_score, self.bot_id, max_tickers],
         ).fetchall()
+
+        logger.info(
+            "[Watchlist] import_from_discovery: found %d candidates "
+            "(min_score=%.1f, excluding active watchlist for bot=%s)",
+            len(rows), min_score, self.bot_id,
+        )
 
         imported = []
         skipped = []

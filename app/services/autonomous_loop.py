@@ -86,53 +86,51 @@ class AutonomousLoop:
         # 30+ min, so we pre-load the model with a 2-hour keep_alive
         # to ensure it stays in VRAM for the entire loop.
         from app.config import settings
+        from app.services.llm_service import LLMService
 
-        if settings.LLM_PROVIDER == "ollama":
-            from app.services.llm_service import LLMService
+        logger.info(
+            "[AutoLoop] Pre-warming Ollama model: %s @ %s",
+            settings.LLM_MODEL, settings.LLM_BASE_URL,
+        )
+        warm_result = await LLMService.verify_and_warm_ollama_model(
+            settings.LLM_BASE_URL,
+            settings.LLM_MODEL,
+            keep_alive="2h",
+        )
+        if warm_result.get("pre_warmed"):
+            rec_ctx = warm_result.get("recommended_ctx", 32768)
+            model_max = warm_result.get("model_max_ctx", 0)
+            vram_bytes = warm_result.get("vram_bytes", 0)
+            vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
+
+            # Apply the VRAM-based cap to settings
+            old_ctx = settings.LLM_CONTEXT_SIZE
+            settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx)
 
             logger.info(
-                "[AutoLoop] Pre-warming Ollama model: %s @ %s",
-                settings.LLM_MODEL, settings.LLM_BASE_URL,
+                "[AutoLoop] ✅ Model pre-warmed | "
+                "VRAM=%.1fGB | model_max_ctx=%d | "
+                "user_ctx=%d → effective_ctx=%d",
+                vram_gb, model_max, old_ctx,
+                settings.LLM_CONTEXT_SIZE,
             )
-            warm_result = await LLMService.verify_and_warm_ollama_model(
-                settings.LLM_BASE_URL,
-                settings.LLM_MODEL,
-                keep_alive="2h",
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=True,
+                detail=(
+                    f"{settings.LLM_MODEL} "
+                    f"ctx={settings.LLM_CONTEXT_SIZE}"
+                ),
             )
-            if warm_result.get("pre_warmed"):
-                rec_ctx = warm_result.get("recommended_ctx", 32768)
-                model_max = warm_result.get("model_max_ctx", 0)
-                vram_bytes = warm_result.get("vram_bytes", 0)
-                vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
-
-                # Apply the VRAM-based cap to settings
-                old_ctx = settings.LLM_CONTEXT_SIZE
-                settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx)
-
-                logger.info(
-                    "[AutoLoop] ✅ Model pre-warmed | "
-                    "VRAM=%.1fGB | model_max_ctx=%d | "
-                    "user_ctx=%d → effective_ctx=%d",
-                    vram_gb, model_max, old_ctx,
-                    settings.LLM_CONTEXT_SIZE,
-                )
-                self._health.record_check(
-                    "LLM model pre-warmed",
-                    passed=True,
-                    detail=(
-                        f"{settings.LLM_MODEL} "
-                        f"ctx={settings.LLM_CONTEXT_SIZE}"
-                    ),
-                )
-            else:
-                logger.warning(
-                    "[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result,
-                )
-                self._health.record_check(
-                    "LLM model pre-warmed",
-                    passed=False,
-                    detail=warm_result.get("status", "unknown"),
-                )
+        else:
+            logger.warning(
+                "[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result,
+            )
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=False,
+                detail=warm_result.get("status", "unknown"),
+            )
 
         report: dict[str, Any] = {
             "started_at": datetime.now().isoformat(),

@@ -246,6 +246,39 @@ class TestWatchlistImport:
         log.info("Import empty result: %s", result)
         assert result["total_imported"] == 0
 
+    @patch("app.services.watchlist_manager.get_db")
+    @patch("app.services.watchlist_manager.PipelineService")
+    def test_import_excludes_active_tickers(
+        self, mock_pipeline: MagicMock, mock_get_db: MagicMock,
+    ) -> None:
+        """import_from_discovery SQL should exclude active watchlist tickers."""
+        from app.services.watchlist_manager import WatchlistManager
+
+        mock_db = MagicMock()
+        # ticker_scores query returns only NEW tickers (active ones excluded by SQL)
+        mock_db.execute.return_value.fetchall.return_value = [
+            ("NEWSTOCK", 10.0, "bullish"),
+        ]
+        # add_ticker check: ticker not in watchlist → returns None → "added"
+        mock_db.execute.return_value.fetchone.return_value = None
+        mock_get_db.return_value = mock_db
+
+        wm = WatchlistManager(bot_id="test_bot")
+        result = wm.import_from_discovery(min_score=3.0, max_tickers=10)
+        log.info("Import excludes active result: %s", result)
+
+        # Verify the first SQL call (ticker_scores query) contains NOT IN
+        first_call_sql = str(mock_db.execute.call_args_list[0])
+        assert "NOT IN" in first_call_sql, (
+            "SQL should contain NOT IN to exclude active watchlist tickers"
+        )
+        # Verify bot_id is in the parameter list
+        assert "test_bot" in first_call_sql, (
+            "SQL params should include bot_id for watchlist exclusion"
+        )
+        assert result["total_imported"] == 1
+        assert "NEWSTOCK" in result["imported"]
+
 
 # ══════════════════════════════════════════════════════════════════
 # 4. ANALYSIS TESTS (mock pipeline)

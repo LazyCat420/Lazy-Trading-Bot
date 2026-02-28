@@ -2409,9 +2409,7 @@ const SettingsPage = () => {
 
     // LLM config state
     const [llmConfig, setLlmConfig] = useState({
-        provider: "ollama",
         ollama_url: "",
-        lmstudio_url: "",
         model: "",
         context_size: 8192,
         temperature: 0.3,
@@ -2419,7 +2417,6 @@ const SettingsPage = () => {
     const [models, setModels] = useState([]);
     const [modelsFetching, setModelsFetching] = useState(false);
     const [llmConnected, setLlmConnected] = useState(null); // null = unknown, true/false
-    const [lmsVerification, setLmsVerification] = useState(null); // LM Studio reload result
 
     useEffect(() => {
         const load = async () => {
@@ -2436,7 +2433,7 @@ const SettingsPage = () => {
                 const llmData = await llmRes.json();
                 setLlmConfig(llmData);
                 // Auto-fetch models on load
-                fetchModels(llmData.provider, llmData.provider === "lmstudio" ? llmData.lmstudio_url : llmData.ollama_url);
+                fetchModels(llmData.ollama_url);
             } catch (e) {
                 console.error("Settings load error:", e);
             } finally {
@@ -2446,13 +2443,12 @@ const SettingsPage = () => {
         load();
     }, []);
 
-    const fetchModels = async (provider, url) => {
+    const fetchModels = async (url) => {
         if (!url) return;
         setModelsFetching(true);
         setLlmConnected(null);
         try {
             const params = new URLSearchParams();
-            if (provider) params.set("provider", provider);
             if (url) params.set("url", url);
             const res = await fetch(`/api/llm-models?${params}`);
             const data = await res.json();
@@ -2466,20 +2462,13 @@ const SettingsPage = () => {
         }
     };
 
-    const activeUrl = llmConfig.provider === "lmstudio" ? llmConfig.lmstudio_url : llmConfig.ollama_url;
-
     const setActiveUrl = (val) => {
-        if (llmConfig.provider === "lmstudio") {
-            setLlmConfig(prev => ({ ...prev, lmstudio_url: val }));
-        } else {
-            setLlmConfig(prev => ({ ...prev, ollama_url: val }));
-        }
+        setLlmConfig(prev => ({ ...prev, ollama_url: val }));
     };
 
     const saveLlmConfig = async () => {
         RetroSFX.click();
         setSaveStatus("saving");
-        setLmsVerification(null);
         try {
             const res = await fetch("/api/llm-config", {
                 method: "PUT",
@@ -2489,10 +2478,6 @@ const SettingsPage = () => {
             const data = await res.json();
             setSaveStatus("saved");
             RetroSFX.successChime();
-            // Show LM Studio verification result if present
-            if (data.lmstudio_verified) {
-                setLmsVerification(data.lmstudio_verified);
-            }
             // Notify other components (e.g. Autobot Monitor) to refresh bot label
             window.dispatchEvent(new CustomEvent("llm-config-saved"));
         } catch (e) {
@@ -2618,39 +2603,21 @@ const SettingsPage = () => {
                     </div>
 
                     <div className="grid grid-cols-2 gap-4 mb-4">
-                        {/* Provider */}
-                        <div>
-                            <label className="text-[10px] text-text-muted uppercase block mb-1.5">Provider</label>
-                            <select
-                                value={llmConfig.provider}
-                                onChange={e => {
-                                    const p = e.target.value;
-                                    setLlmConfig(prev => ({ ...prev, provider: p }));
-                                    setModels([]);
-                                    setLlmConnected(null);
-                                }}
-                                className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
-                            >
-                                <option value="ollama">Ollama</option>
-                                <option value="lmstudio">LM Studio</option>
-                            </select>
-                        </div>
-
-                        {/* URL */}
+                        {/* Ollama URL */}
                         <div>
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">
-                                {llmConfig.provider === "lmstudio" ? "LM Studio URL" : "Ollama URL"}
+                                Ollama URL
                             </label>
                             <div className="flex gap-2">
                                 <input
                                     type="text"
-                                    value={activeUrl}
+                                    value={llmConfig.ollama_url}
                                     onChange={e => setActiveUrl(e.target.value)}
                                     placeholder="http://10.0.0.30:11434"
                                     className="flex-1 bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
                                 />
                                 <button
-                                    onClick={() => fetchModels(llmConfig.provider, activeUrl)}
+                                    onClick={() => fetchModels(llmConfig.ollama_url)}
                                     disabled={modelsFetching}
                                     className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-secondary text-xs font-bold rounded transition flex items-center gap-1"
                                     title="Test connection & fetch models"
@@ -2768,64 +2735,7 @@ const SettingsPage = () => {
                             </div>
                         </div>
                     )}
-                    {/* LM Studio Verification Banner */}
-                    {lmsVerification && (
-                        React.createElement("div", {
-                            className: `mt-4 p-4 rounded-lg border ${lmsVerification.status === "model_reloaded" && lmsVerification.context_match
-                                ? "bg-emerald-500/10 border-emerald-500/30"
-                                : lmsVerification.status === "model_reloaded"
-                                    ? "bg-amber-500/10 border-amber-500/30"
-                                    : "bg-red-500/10 border-red-500/30"
-                                }`
-                        },
-                            React.createElement("div", { className: "flex items-center gap-2 mb-2" },
-                                React.createElement("span", {
-                                    className: `material-symbols-outlined text-lg ${lmsVerification.status === "model_reloaded" && lmsVerification.context_match
-                                        ? "text-emerald-400"
-                                        : lmsVerification.status === "model_reloaded"
-                                            ? "text-amber-400"
-                                            : "text-red-400"
-                                        }`
-                                }, lmsVerification.status === "model_reloaded" ? "verified" : "error"),
-                                React.createElement("span", { className: "text-sm font-bold text-white" },
-                                    lmsVerification.status === "model_reloaded"
-                                        ? "LM Studio Model Reloaded"
-                                        : "LM Studio Reload Failed"
-                                ),
-                                React.createElement("button", {
-                                    onClick: () => setLmsVerification(null),
-                                    className: "ml-auto text-text-muted hover:text-white text-xs"
-                                }, "✕")
-                            ),
-                            lmsVerification.status === "model_reloaded" && React.createElement("div", { className: "grid grid-cols-3 gap-4 text-xs" },
-                                React.createElement("div", null,
-                                    React.createElement("span", { className: "text-text-muted block" }, "Requested Context"),
-                                    React.createElement("span", { className: "text-white font-mono font-bold" },
-                                        (lmsVerification.requested_context_length || 0).toLocaleString()
-                                    )
-                                ),
-                                React.createElement("div", null,
-                                    React.createElement("span", { className: "text-text-muted block" }, "Actual Context"),
-                                    React.createElement("span", {
-                                        className: `font-mono font-bold ${lmsVerification.context_match ? "text-emerald-400" : "text-amber-400"
-                                            }`
-                                    },
-                                        (lmsVerification.actual_context_length || "?").toLocaleString(),
-                                        lmsVerification.context_match ? " ✓" : " ⚠"
-                                    )
-                                ),
-                                React.createElement("div", null,
-                                    React.createElement("span", { className: "text-text-muted block" }, "Load Time"),
-                                    React.createElement("span", { className: "text-white font-mono font-bold" },
-                                        (lmsVerification.load_time_seconds || 0).toFixed(1) + "s"
-                                    )
-                                )
-                            ),
-                            lmsVerification.status === "reload_failed" && React.createElement("p", {
-                                className: "text-xs text-red-300"
-                            }, lmsVerification.error || "Unknown error. Check LM Studio is running.")
-                        )
-                    )}
+
                 </div>
 
                 {/* Strategy Editor */}
@@ -5128,7 +5038,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                 }, `${positions.length} holding${positions.length > 1 ? "s" : ""}`)
                                             ),
                                             React.createElement("div", { className: "text-[10px] text-text-muted font-mono mt-0.5" },
-                                                `${bot.provider || "lmstudio"} • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
+                                                `ollama • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
                                             )
                                         ),
 

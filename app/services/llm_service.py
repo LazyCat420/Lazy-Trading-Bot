@@ -1,8 +1,7 @@
-"""Provider-agnostic LLM service — supports Ollama and LM Studio.
+"""Ollama LLM service — sends chat requests to Ollama.
 
-Provider URLs are centralized in app.config.settings:
-    OLLAMA_URL   — Ollama endpoint (default http://localhost:11434)
-    LMSTUDIO_URL — LM Studio endpoint (default http://localhost:1234)
+The Ollama URL is centralized in app.config.settings:
+    OLLAMA_URL — Ollama endpoint (default http://localhost:11434)
 
 Uses a module-level shared httpx.AsyncClient for connection pooling.
 This is critical for parallel LLM calls — when OLLAMA_NUM_PARALLEL > 1,
@@ -46,16 +45,12 @@ async def _get_shared_client() -> httpx.AsyncClient:
 
 
 class LLMService:
-    """Sends chat completion requests to Ollama or LM Studio (OpenAI-compatible).
+    """Sends chat completion requests to Ollama.
 
-    All config values (provider, model, context_size, temperature) are read
-    LIVE from settings on every call, so hot-patching via the Settings UI
+    All config values (model, context_size, temperature) are read LIVE
+    from settings on every call, so hot-patching via the Settings UI
     takes effect immediately — no restart needed.
     """
-
-    @property
-    def provider(self) -> str:
-        return settings.LLM_PROVIDER
 
     @property
     def base_url(self) -> str:
@@ -72,10 +67,6 @@ class LLMService:
     @property
     def context_size(self) -> int:
         return settings.LLM_CONTEXT_SIZE
-
-    @property
-    def api_key(self) -> str:
-        return settings.OPENAI_API_KEY
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -112,15 +103,9 @@ class LLMService:
         # Resolve effective temperature (per-request override > global config)
         effective_temp = temperature if temperature is not None else self.temperature
 
-        if self.provider == "ollama":
-            return await self._call_ollama(
-                messages, response_format, max_tokens, effective_temp
-            )
-        else:
-            # Both "lmstudio" and "openai" use the OpenAI-compatible API
-            return await self._call_openai(
-                messages, response_format, max_tokens, effective_temp
-            )
+        return await self._call_ollama(
+            messages, response_format, max_tokens, effective_temp
+        )
 
     async def _call_ollama(
         self,
@@ -198,142 +183,6 @@ class LLMService:
         elapsed = time.perf_counter() - t0
         logger.info(
             "⏱️  Ollama request DONE  → %.2fs, %d chars",
-            elapsed,
-            len(content),
-        )
-        log_llm_call(
-            context=_ctx,
-            model=self.model,
-            duration_seconds=elapsed,
-            tokens_used=tokens,
-        )
-        return content
-
-    async def _call_openai(
-        self,
-        messages: list[dict],
-        response_format: str,
-        max_tokens: int | None,
-        temperature: float,
-        *,
-        _retries: int = 0,
-    ) -> str:
-        """Call an OpenAI-compatible /v1/chat/completions endpoint.
-
-        Pre-validates prompt size against context_size (from Settings UI)
-        and trims proactively. On 400 errors, retries up to 2 times.
-        """
-        # ── Pre-validate prompt against configured context_size ──
-        # This makes the Settings UI context_size control effective
-        # for ALL providers including LM Studio.
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        est_tokens = total_chars // 4  # ~4 chars per token
-        ctx = self.context_size
-
-        if est_tokens > ctx and _retries == 0:
-            logger.warning(
-                "⚠️  Prompt (~%d tokens) exceeds context_size (%d), "
-                "pre-trimming before sending to %s",
-                est_tokens,
-                ctx,
-                self.provider,
-            )
-            messages = self._trim_messages(messages)
-            total_chars = sum(len(m.get("content", "")) for m in messages)
-            est_tokens = total_chars // 4
-        url = f"{self.base_url}/v1/chat/completions"
-        payload: dict = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-
-        # LM Studio does NOT support response_format — omit it entirely.
-        if response_format == "json" and self.provider != "lmstudio":
-            payload["response_format"] = {"type": "json_object"}
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        logger.info(
-            "⏱️  OpenAI request START → %s model=%s provider=%s "
-            "(~%d chars, ~%d est tokens, ctx=%d, retry=%d)",
-            url,
-            self.model,
-            self.provider,
-            total_chars,
-            est_tokens,
-            ctx,
-            _retries,
-        )
-        t0 = time.perf_counter()
-
-        # Derive a short context label from the system prompt
-        _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
-
-        try:
-            client = await _get_shared_client()
-            resp = await client.post(url, json=payload, headers=headers)
-        except httpx.ReadTimeout:
-            elapsed = time.perf_counter() - t0
-            logger.error(
-                "⏱️  OpenAI request TIMEOUT after %.1fs", elapsed,
-            )
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                timed_out=True,
-            )
-            raise
-        except Exception as exc:
-            elapsed = time.perf_counter() - t0
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                error=str(exc)[:120],
-            )
-            raise
-
-        # ── 400 Bad Request → retry with trimmed prompt ────────
-        if resp.status_code == 400 and _retries < 2:
-            body = resp.text
-            logger.warning(
-                "⚠️  400 from LLM (attempt %d), trimming prompt and retrying. Body: %s",
-                _retries + 1,
-                body[:300],
-            )
-            # Trim the longest message by ~40%
-            trimmed = self._trim_messages(messages)
-            return await self._call_openai(
-                trimmed,
-                response_format,
-                max_tokens,
-                temperature,
-                _retries=_retries + 1,
-            )
-
-        # Log diagnostic info on errors before raising
-        if resp.status_code >= 400:
-            body = resp.text
-            logger.error(
-                "❌ OpenAI endpoint returned %d: %s",
-                resp.status_code,
-                body[:500],
-            )
-        resp.raise_for_status()
-
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        tokens = data.get("usage", {}).get("total_tokens", 0)
-
-        elapsed = time.perf_counter() - t0
-        logger.info(
-            "⏱️  OpenAI request DONE  → %.2fs, %d chars",
             elapsed,
             len(content),
         )
@@ -432,8 +281,8 @@ class LLMService:
         return cleaned[start:]
 
     @staticmethod
-    async def fetch_models(provider: str, base_url: str) -> list[str]:
-        """Probe a provider URL and return available model names.
+    async def fetch_models(base_url: str) -> list[str]:
+        """Probe an Ollama URL and return available model names.
 
         Works independently of the current config — used by the frontend
         to test arbitrary URLs before saving them.
@@ -441,186 +290,11 @@ class LLMService:
         base_url = base_url.rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                if provider == "ollama":
-                    resp = await client.get(f"{base_url}/api/tags")
-                    resp.raise_for_status()
-                    return [m["name"] for m in resp.json().get("models", [])]
-                else:
-                    headers: dict[str, str] = {}
-                    api_key = settings.OPENAI_API_KEY
-                    if api_key:
-                        headers["Authorization"] = f"Bearer {api_key}"
-                    resp = await client.get(f"{base_url}/v1/models", headers=headers)
-                    resp.raise_for_status()
-                    return [m.get("id", "") for m in resp.json().get("data", [])]
-        except Exception:
-            return []
-
-    @staticmethod
-    async def load_model_with_config(
-        base_url: str,
-        model: str,
-        config: dict,
-    ) -> dict:
-        """Load a model via LM Studio v1 API with specific parameters.
-
-        POST /api/v1/models/load with echo_load_config=true.
-        Returns the actual load config applied by LM Studio.
-        Warns loudly if the applied context_length differs from requested.
-        """
-        url = f"{base_url.rstrip('/')}/api/v1/models/load"
-        payload: dict = {
-            "model": model,
-            "echo_load_config": True,
-        }
-        requested_ctx = 0
-        # Only include optional params if set
-        if config.get("context_length"):
-            requested_ctx = int(config["context_length"])
-            payload["context_length"] = requested_ctx
-        if config.get("eval_batch_size"):
-            payload["eval_batch_size"] = int(config["eval_batch_size"])
-        if "flash_attention" in config:
-            payload["flash_attention"] = bool(config["flash_attention"])
-        if config.get("num_experts"):
-            payload["num_experts"] = int(config["num_experts"])
-        if "offload_kv_cache_to_gpu" in config:
-            payload["offload_kv_cache_to_gpu"] = bool(config["offload_kv_cache_to_gpu"])
-
-        logger.info("[LLM] Loading model %s with config: %s", model, payload)
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        api_key = settings.OPENAI_API_KEY
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            result = resp.json()
-
-            load_time = result.get("load_time_seconds", 0)
-            load_cfg = result.get("load_config", {})
-            actual_ctx = load_cfg.get("context_length", 0)
-
-            logger.info(
-                "[LLM] Model loaded: %s (%.1fs) — actual load_config: %s",
-                model,
-                load_time,
-                load_cfg,
-            )
-
-            # ── Detect silent context cap ──
-            if requested_ctx and actual_ctx and actual_ctx < requested_ctx:
-                logger.warning(
-                    "⚠️  CONTEXT MISMATCH: requested %d but LM Studio "
-                    "applied %d for model %s — prompts may overflow!",
-                    requested_ctx,
-                    actual_ctx,
-                    model,
-                )
-
-            return result
-
-    @staticmethod
-    async def get_loaded_model_info(base_url: str) -> list[dict]:
-        """GET /v1/models — returns currently loaded model details."""
-        url = f"{base_url.rstrip('/')}/v1/models"
-        headers: dict[str, str] = {}
-        api_key = settings.OPENAI_API_KEY
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url, headers=headers)
+                resp = await client.get(f"{base_url}/api/tags")
                 resp.raise_for_status()
-                return resp.json().get("data", [])
+                return [m["name"] for m in resp.json().get("models", [])]
         except Exception:
             return []
-
-    @staticmethod
-    async def unload_all_lmstudio_models(base_url: str) -> int:
-        """Unload ALL loaded model instances from LM Studio to free VRAM.
-
-        GET /api/v1/models to list loaded instances, then
-        POST /api/v1/models/unload for each instance.
-
-        Returns the number of instances successfully unloaded.
-        """
-        base_url = base_url.rstrip("/")
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        api_key = settings.OPENAI_API_KEY
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        unloaded = 0
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                list_resp = await client.get(
-                    f"{base_url}/api/v1/models", headers=headers,
-                )
-                if list_resp.status_code != 200:
-                    logger.warning(
-                        "[LLM] Could not list LM Studio models for unload "
-                        "(status %d)",
-                        list_resp.status_code,
-                    )
-                    return 0
-
-                all_models = list_resp.json().get("models", [])
-                # Also handle the flat /v1/models format (list of {id: ...})
-                if not all_models:
-                    all_models = list_resp.json().get("data", [])
-
-                for m in all_models:
-                    # LM Studio v1 API returns loaded_instances per model
-                    instances = m.get("loaded_instances", [])
-                    if instances:
-                        for inst in instances:
-                            inst_id = inst.get("id", m.get("key"))
-                            if not inst_id:
-                                continue
-                            try:
-                                await client.post(
-                                    f"{base_url}/api/v1/models/unload",
-                                    json={"instance_id": inst_id},
-                                    headers=headers,
-                                )
-                                unloaded += 1
-                                logger.info(
-                                    "[LLM] Unloaded LM Studio instance: %s",
-                                    inst_id,
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "[LLM] Failed to unload instance %s",
-                                    inst_id,
-                                )
-                    else:
-                        # Fallback: try unloading by model id/key directly
-                        model_id = m.get("id") or m.get("key")
-                        if model_id:
-                            try:
-                                await client.post(
-                                    f"{base_url}/api/v1/models/unload",
-                                    json={"model": model_id},
-                                    headers=headers,
-                                )
-                                unloaded += 1
-                                logger.info(
-                                    "[LLM] Unloaded LM Studio model: %s",
-                                    model_id,
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "[LLM] Failed to unload model %s",
-                                    model_id,
-                                )
-        except Exception as exc:
-            logger.warning("[LLM] LM Studio unload sweep failed: %s", exc)
-
-        logger.info("[LLM] LM Studio unload complete: %d instances freed", unloaded)
-        return unloaded
 
     @staticmethod
     async def unload_ollama_model(base_url: str, model: str) -> bool:
@@ -871,50 +545,27 @@ class LLMService:
             }
 
     async def health_check(self) -> dict:
-        """Check connectivity to the LLM backend."""
+        """Check connectivity to the Ollama backend."""
         try:
-            if self.provider == "ollama":
-                url = f"{self.base_url}/api/tags"
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    models = [m["name"] for m in resp.json().get("models", [])]
-                    return {
-                        "status": "ok",
-                        "provider": "ollama",
-                        "active_url": self.base_url,
-                        "ollama_url": settings.OLLAMA_URL,
-                        "lmstudio_url": settings.LMSTUDIO_URL,
-                        "models": models,
-                        "configured_model": self.model,
-                        "model_available": self.model in models,
-                    }
-            else:
-                # LM Studio and OpenAI both use /v1/models
-                url = f"{self.base_url}/v1/models"
-                headers = {}
-                if self.api_key:
-                    headers["Authorization"] = f"Bearer {self.api_key}"
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(url, headers=headers)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    models = [m.get("id", "") for m in data.get("data", [])]
-                    return {
-                        "status": "ok",
-                        "provider": self.provider,
-                        "active_url": self.base_url,
-                        "ollama_url": settings.OLLAMA_URL,
-                        "lmstudio_url": settings.LMSTUDIO_URL,
-                        "models": models,
-                        "configured_model": self.model,
-                    }
+            url = f"{self.base_url}/api/tags"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                models = [m["name"] for m in resp.json().get("models", [])]
+                return {
+                    "status": "ok",
+                    "provider": "ollama",
+                    "active_url": self.base_url,
+                    "ollama_url": settings.OLLAMA_URL,
+                    "models": models,
+                    "configured_model": self.model,
+                    "model_available": self.model in models,
+                }
         except Exception as e:
             return {
                 "status": "error",
-                "provider": self.provider,
+                "provider": "ollama",
                 "active_url": self.base_url,
                 "ollama_url": settings.OLLAMA_URL,
-                "lmstudio_url": settings.LMSTUDIO_URL,
                 "error": str(e),
             }
