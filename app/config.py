@@ -148,8 +148,11 @@ class Settings:
             json.dumps(merged, indent=4) + "\n", encoding="utf-8"
         )
 
-        # Hot-patch the running singleton
-        self._apply_llm_config(merged)
+        # Hot-patch the running singleton with ONLY the new keys.
+        # We must NOT re-apply the full merged dict because the file
+        # may contain stale values (e.g. an old model name) that would
+        # overwrite a runtime hot-patch made by the run-all bot loop.
+        self._apply_llm_config(data)
         return merged
 
     def get_llm_config(self) -> dict[str, Any]:

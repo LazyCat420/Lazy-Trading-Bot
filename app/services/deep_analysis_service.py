@@ -20,6 +20,7 @@ from app.engine.quant_signals import QuantSignalEngine
 from app.engine.rag_engine import RAGEngine
 from app.models.dossier import TickerDossier
 from app.utils.logger import logger
+from app.services.event_logger import log_event
 
 
 class DeepAnalysisService:
@@ -85,6 +86,11 @@ class DeepAnalysisService:
 
         # Layer 2 — async LLM call
         logger.info("[DeepAnalysis] Layer 2: Generating follow-up questions …")
+        log_event(
+            "analysis", "layer_start",
+            f"Layer 2: Generating deep-dive questions for {ticker}",
+            {"ticker": ticker, "layer": 2}
+        )
         questions = await self._questions.generate(scorecard)
         logger.info(
             "[DeepAnalysis] Layer 2 done: %d questions generated",
@@ -93,6 +99,11 @@ class DeepAnalysisService:
 
         # Layer 3 — async LLM calls (one per question)
         logger.info("[DeepAnalysis] Layer 3: Searching data & extracting answers …")
+        log_event(
+            "analysis", "layer_start",
+            f"Layer 3: RAG search and answer extraction for {ticker}",
+            {"ticker": ticker, "layer": 3}
+        )
         qa_pairs = await self._rag.answer_all(questions, ticker)
         logger.info(
             "[DeepAnalysis] Layer 3 done: %d answers extracted",
@@ -101,6 +112,11 @@ class DeepAnalysisService:
 
         # Layer 4 — async LLM call (synthesis)
         logger.info("[DeepAnalysis] Layer 4: Synthesizing dossier …")
+        log_event(
+            "analysis", "layer_start",
+            f"Layer 4: Synthesizing final dossier for {ticker}",
+            {"ticker": ticker, "layer": 4}
+        )
         dossier = await self._synth.synthesize(
             scorecard, qa_pairs, portfolio_context=portfolio_context,
         )
@@ -284,7 +300,9 @@ class DeepAnalysisService:
             ],
         )
         db.commit()
-        logger.info("[DeepAnalysis] Stored dossier %s for %s", dossier_id, dossier.ticker)
+        logger.info(
+            "[DeepAnalysis] Stored dossier %s for %s", dossier_id, dossier.ticker
+        )
 
     @staticmethod
     def _update_watchlist(
@@ -342,4 +360,6 @@ class DeepAnalysisService:
                 conv,
             )
         except Exception as exc:
-            logger.warning("[DeepAnalysis] Watchlist update failed for %s: %s", ticker, exc)
+            logger.warning(
+                "[DeepAnalysis] Watchlist update failed for %s: %s", ticker, exc
+            )

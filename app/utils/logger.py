@@ -2,7 +2,7 @@
 
 Each server start creates a fresh timestamped log file.
 ``trading_bot.log`` always contains the current run.
-Only the 10 most recent log files are kept.
+Only the 10 most recent files are kept for logs AND reports.
 """
 
 import logging
@@ -12,20 +12,25 @@ from pathlib import Path
 
 from app.config import settings
 
-_MAX_LOG_FILES = 10  # Keep only this many log files
+_MAX_FILES = 10  # Keep only this many files per category
 
 
-def _prune_old_logs(logs_dir: Path) -> None:
-    """Delete oldest log files if we exceed _MAX_LOG_FILES."""
-    pattern = "trading_bot_*.log"
-    log_files = sorted(logs_dir.glob(pattern), key=lambda p: p.stat().st_mtime)
-    excess = len(log_files) - _MAX_LOG_FILES
+def prune_old_files(directory: Path, pattern: str, keep: int = _MAX_FILES) -> int:
+    """Delete oldest files matching *pattern* if count exceeds *keep*.
+
+    Returns the number of files deleted.
+    """
+    files = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime)
+    excess = len(files) - keep
+    deleted = 0
     if excess > 0:
-        for old in log_files[:excess]:
+        for old in files[:excess]:
             try:
                 old.unlink()
+                deleted += 1
             except OSError:
                 pass
+    return deleted
 
 
 def _setup_logger(name: str = "lazy_trader") -> logging.Logger:
@@ -77,11 +82,23 @@ def _setup_logger(name: str = "lazy_trader") -> logging.Logger:
         pass  # Non-critical if stable link fails
 
     # ── Prune old logs ──
-    _prune_old_logs(logs_dir)
+    deleted = prune_old_files(logs_dir, "trading_bot_*.log")
+    if deleted:
+        log.debug("Pruned %d old log file(s)", deleted)
+
+    # ── Prune old reports (health + audit) ──
+    reports_dir = settings.BASE_DIR / "reports"
+    if reports_dir.exists():
+        d1 = prune_old_files(reports_dir, "health_*.md")
+        d2 = prune_old_files(reports_dir, "strategist_audit_*.md")
+        if d1 or d2:
+            log.debug(
+                "Pruned %d old health report(s) and %d old audit report(s)",
+                d1, d2,
+            )
 
     log.info("Log started: %s", run_log.name)
     return log
 
 
 logger = _setup_logger()
-

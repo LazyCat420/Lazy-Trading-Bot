@@ -313,23 +313,55 @@ class HealthTracker:
             if phase_name not in phase_order:
                 dur = phase.get("duration")
                 dur_str = self._format_duration(dur) if dur is not None else "—"
-                lines.append(f"| {phase_name} | {dur_str} | {phase.get('status', '?')} |")
+                st = phase.get('status', '?')
+                lines.append(f"| {phase_name} | {dur_str} | {st} |")
 
         lines.append("")
 
-        # ── LLM Calls ──
+        # ── LLM Performance Summary ──
         if self._llm_calls:
+            total_dur = sum(c["duration"] for c in self._llm_calls)
+            avg_dur = total_dur / total_llm if total_llm else 0
+            max_call = max(self._llm_calls, key=lambda c: c["duration"])
+            total_tokens = sum(c.get("tokens", 0) for c in self._llm_calls)
+            errors = [c for c in self._llm_calls if c.get("error")]
+
             lines.append(
-                f"## LLM Calls ({total_llm} total"
-                f"{f', {len(timeouts)} timeouts' if timeouts else ''})"
+                f"## LLM Performance ({total_llm} calls, "
+                f"{self._format_duration(total_dur)} total)"
             )
             lines.append("")
-            lines.append("| # | Context | Model | Duration | Status |")
-            lines.append("|---|---------|-------|----------|--------|")
+            lines.append("| Metric | Value |")
+            lines.append("|--------|-------|")
+            lines.append(f"| Total calls | {total_llm} |")
+            lines.append(
+                f"| Total LLM time | {self._format_duration(total_dur)} |"
+            )
+            lines.append(f"| Avg call duration | {avg_dur:.1f}s |")
+            lines.append(
+                f"| Slowest call | {max_call['duration']}s "
+                f"({max_call['context'][:40]}) |"
+            )
+            if total_tokens:
+                lines.append(f"| Total tokens | {total_tokens:,} |")
+            lines.append(
+                f"| Timeouts | {len(timeouts)} |"
+            )
+            lines.append(
+                f"| Errors | {len(errors)} |"
+            )
+            lines.append("")
 
-            for i, call in enumerate(self._llm_calls, 1):
-                ctx = call["context"][:40]
-                model = call.get("model", "?")[:20]
+            # Show only the 5 slowest calls for debugging
+            slowest = sorted(
+                self._llm_calls, key=lambda c: c["duration"], reverse=True,
+            )[:5]
+            lines.append("### Slowest Calls")
+            lines.append("")
+            lines.append("| # | Context | Duration | Status |")
+            lines.append("|---|---------|----------|--------|")
+            for i, call in enumerate(slowest, 1):
+                ctx = call["context"][:50]
                 dur = f"{call['duration']}s"
                 if call["timed_out"]:
                     status = "❌ TIMEOUT"
@@ -337,7 +369,7 @@ class HealthTracker:
                     status = f"❌ {call['error'][:30]}"
                 else:
                     status = "✅"
-                lines.append(f"| {i} | {ctx} | {model} | {dur} | {status} |")
+                lines.append(f"| {i} | {ctx} | {dur} | {status} |")
 
             lines.append("")
 
@@ -379,6 +411,10 @@ class HealthTracker:
 
         report_text = "\n".join(lines)
         report_path.write_text(report_text, encoding="utf-8")
+
+        # Prune old health reports (keep 10)
+        from app.utils.logger import prune_old_files
+        prune_old_files(reports_dir, "health_*.md")
 
         logger.info(
             "[HealthTracker] Report written to %s", report_path,

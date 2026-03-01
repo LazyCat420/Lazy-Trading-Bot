@@ -3961,20 +3961,6 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     React.createElement("h2", { className: "text-white font-bold text-lg" }, "Autobot Monitor"),
                     React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${loopRunning ? "bg-green-500/20 text-green-400 animate-pulse" : isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` },
                         loopRunning ? "LOOP RUNNING" : stateLabel
-                    ),
-                    // ── Bot Selector (only show if there are bots) ──
-                    botList.length > 0 && React.createElement("select", {
-                        value: activeBotId,
-                        onChange: (e) => { RetroSFX.click(); switchBot(e.target.value); },
-                        className: "ml-3 bg-onyx-surface border border-border-dark rounded-lg px-3 py-1 text-xs font-mono text-white focus:border-primary focus:outline-none cursor-pointer min-w-[140px]",
-                        title: "Switch active bot — each bot has its own portfolio",
-                    },
-                        React.createElement("option", { value: "default" }, activeBotModelName ? `\uD83E\uDD16 Default Bot (${activeBotModelName})` : "\uD83E\uDD16 Default Bot"),
-                        ...botList.filter(b => b.bot_id !== "default").map(b =>
-                            React.createElement("option", { key: b.bot_id, value: b.bot_id },
-                                `\uD83E\uDD16 ${b.display_name || b.model_name}`
-                            )
-                        )
                     )
                 ),
                 React.createElement("div", { className: "flex items-center gap-2" },

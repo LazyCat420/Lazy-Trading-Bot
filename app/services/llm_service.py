@@ -31,10 +31,10 @@ async def _get_shared_client() -> httpx.AsyncClient:
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
-                connect=10.0,  # Fail fast if server is unreachable
-                read=300.0,  # LLM inference can be slow
-                write=30.0,  # Sending large prompts
-                pool=30.0,  # Waiting for a connection slot
+                connect=10.0,   # Fail fast if server is unreachable
+                read=600.0,    # 10 min — thinking models can be very slow
+                write=30.0,    # Sending large prompts
+                pool=30.0,     # Waiting for a connection slot
             ),
             limits=httpx.Limits(
                 max_connections=20,  # Up to 20 parallel TCP connections
@@ -114,14 +114,79 @@ class LLMService:
         max_tokens: int | None,
         temperature: float,
     ) -> str:
-        """Call the Ollama /api/chat endpoint using shared connection pool."""
+        """Call the Ollama /api/chat endpoint using shared connection pool.
+
+        Implements a dual-mode retry: if ``format=json`` returns an empty
+        response (some models can't handle GBNF grammar constraints), the
+        call is retried with ``format=text`` and an explicit JSON
+        instruction appended to the system prompt.
+        """
+        content = await self._send_ollama_request(
+            messages, response_format, max_tokens, temperature,
+        )
+
+        # ── Dual-mode retry for empty JSON responses ──
+        # Some models (e.g. GLM-4.7-flash) return 0 chars when
+        # format=json is used because they can't handle the GBNF
+        # grammar constraint.  Retry with format=text instead.
+        if (
+            not content.strip()
+            and response_format == "json"
+        ):
+            logger.warning(
+                "[LLM] Empty response with format=json — retrying "
+                "with format=text + JSON instructions",
+            )
+            # Append explicit JSON instruction to system prompt
+            retry_msgs = list(messages)  # shallow copy
+            if retry_msgs and retry_msgs[0].get("role") == "system":
+                retry_msgs[0] = {
+                    **retry_msgs[0],
+                    "content": (
+                        retry_msgs[0]["content"]
+                        + "\n\nIMPORTANT: You MUST respond with "
+                        "valid JSON only. No markdown, no "
+                        "explanations — pure JSON."
+                    ),
+                }
+            content = await self._send_ollama_request(
+                retry_msgs, "text", max_tokens, temperature,
+            )
+            if content.strip():
+                logger.info(
+                    "[LLM] Text-mode retry succeeded (%d chars)",
+                    len(content),
+                )
+            else:
+                logger.error(
+                    "[LLM] Text-mode retry also returned empty — "
+                    "model may be unresponsive",
+                )
+
+        return content
+
+    async def _send_ollama_request(
+        self,
+        messages: list[dict],
+        response_format: str,
+        max_tokens: int | None,
+        temperature: float,
+    ) -> str:
+        """Send a single request to the Ollama /api/chat endpoint."""
         url = f"{self.base_url}/api/chat"
 
-        # Context size: always send num_ctx so Ollama doesn't try to
-        # allocate the model's full default context (often 128K → OOM).
-        # Use the value from settings, which is set to a proven-safe max
-        # by verify_and_warm_ollama_model at startup.
-        effective_ctx = self.context_size if self.context_size > 0 else 8192
+        # Context size: Use the PROVEN loaded context for this model
+        # from vram_measurements. The config context_size is a desired
+        # maximum, but the actual ctx must match what the model was
+        # loaded with — sending a larger num_ctx causes 500 errors.
+        desired_ctx = self.context_size if self.context_size > 0 else 8192
+        measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
+        proven_ctx = measurement.get("ctx", 0)
+        if proven_ctx > 0:
+            effective_ctx = min(desired_ctx, proven_ctx)
+        else:
+            # No measurement yet — use a safe default
+            effective_ctx = min(desired_ctx, 8192)
 
         payload: dict = {
             "model": self.model,
@@ -140,15 +205,20 @@ class LLMService:
             payload["options"]["num_predict"] = max_tokens
 
         logger.info(
-            "⏱️  Ollama request START → %s model=%s format=%s",
+            "Ollama request START -> %s model=%s format=%s ctx=%d",
             url,
             self.model,
             response_format,
+            effective_ctx,
         )
         t0 = time.perf_counter()
 
         # Derive a short context label from the system prompt
-        _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
+        _ctx = (
+            messages[0].get("content", "")[:60]
+            if messages
+            else "unknown"
+        )
 
         try:
             client = await _get_shared_client()
@@ -157,7 +227,7 @@ class LLMService:
         except httpx.ReadTimeout:
             elapsed = time.perf_counter() - t0
             logger.error(
-                "⏱️  Ollama request TIMEOUT after %.1fs", elapsed,
+                "Ollama request TIMEOUT after %.1fs", elapsed,
             )
             log_llm_call(
                 context=_ctx,
@@ -168,24 +238,45 @@ class LLMService:
             raise
         except Exception as exc:
             elapsed = time.perf_counter() - t0
+            logger.warning(
+                "Ollama request FAILED -> %.1fs: %s",
+                elapsed, str(exc)[:120],
+            )
             log_llm_call(
                 context=_ctx,
                 model=self.model,
                 duration_seconds=elapsed,
                 error=str(exc)[:120],
             )
+            # Return empty string for 500 errors so the retry can kick in
+            # instead of crashing the whole pipeline
+            if "500" in str(exc):
+                return ""
             raise
 
         data = resp.json()
-        content = data.get("message", {}).get("content", "")
+        msg = data.get("message", {})
+        content = msg.get("content", "")
+        thinking = msg.get("thinking", "")
         tokens = data.get("eval_count", 0)
 
         elapsed = time.perf_counter() - t0
-        logger.info(
-            "⏱️  Ollama request DONE  → %.2fs, %d chars",
-            elapsed,
-            len(content),
-        )
+
+        # Log thinking model output separately
+        if thinking:
+            think_tokens = data.get("thinking_eval_count", 0)
+            logger.info(
+                "Ollama request DONE  -> %.2fs, %d chars "
+                "(thinking: %d chars, %d tokens)",
+                elapsed, len(content),
+                len(thinking), think_tokens,
+            )
+        else:
+            logger.info(
+                "Ollama request DONE  -> %.2fs, %d chars",
+                elapsed, len(content),
+            )
+
         log_llm_call(
             context=_ctx,
             model=self.model,
@@ -591,6 +682,21 @@ class LLMService:
                     desired_ctx = min(desired_ctx, model_max_ctx)
                 desired_ctx = max(desired_ctx, 2048)
 
+                # ── Step 3b: Cap to proven loaded ctx ────────────
+                # If we've successfully loaded this model before,
+                # use that proven ctx as the ceiling. This avoids
+                # repeatedly trying a ctx that we KNOW causes OOM.
+                cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
+                if cached and cached.get("ctx"):
+                    proven_ctx = cached["ctx"]
+                    if desired_ctx > proven_ctx:
+                        logger.info(
+                            "[LLM] Capping ctx from %d to proven "
+                            "loaded ctx=%d for %s",
+                            desired_ctx, proven_ctx, model,
+                        )
+                        desired_ctx = proven_ctx
+
                 # ── Step 4: Estimate VRAM ────────────────────────
                 estimate = LLMService.estimate_model_vram(
                     model_info, model_file_size, desired_ctx,
@@ -677,111 +783,150 @@ class LLMService:
                         clamped_est["total_bytes"] / (1024**3),
                     )
 
-                # ── Step 6: Flush VRAM + single load attempt ──────
+                # ── Step 6: Check if model already loaded, flush only if needed ──
                 import asyncio
 
+                already_loaded = False
                 try:
-                    freed = await LLMService.unload_all_ollama_models(
-                        base_url,
-                    )
-                    if freed > 0:
-                        logger.info(
-                            "[LLM] Flushed %d model(s) before load",
-                            freed,
-                        )
-                        await asyncio.sleep(2)
-                except Exception as flush_exc:
-                    logger.warning(
-                        "[LLM] VRAM flush failed: %s", flush_exc,
-                    )
-
-                logger.info(
-                    "[LLM] Loading %s at num_ctx=%d "
-                    "(num_gpu=999, keep_alive=%s) …",
-                    model, load_ctx, keep_alive,
-                )
-                try:
-                    warm_resp = await client.post(
-                        f"{base_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": "",
-                            "keep_alive": keep_alive,
-                            "stream": False,
-                            "options": {
-                                "num_ctx": load_ctx,
-                                "num_gpu": 999,
-                            },
-                        },
-                    )
-                    warm_resp.raise_for_status()
-                    logger.info(
-                        "[LLM] ✅ Model %s loaded at num_ctx=%d%s",
-                        model, load_ctx,
-                        " (clamped from %d)" % desired_ctx
-                        if clamped else "",
-                    )
-                except httpx.HTTPStatusError:
-                    # OOM even after math check — step down 15% at a
-                    # time until it fits (avoids overshooting like 50%)
-                    clamped = True
-                    attempt_ctx = load_ctx
-                    loaded = False
-                    while attempt_ctx > 2048:
-                        attempt_ctx = max(
-                            int(attempt_ctx * 0.85) // 1024 * 1024,
-                            2048,
-                        )
-                        logger.warning(
-                            "[LLM] OOM at ctx=%d — trying %d (−15%%)",
-                            load_ctx, attempt_ctx,
-                        )
-                        try:
-                            warm_resp = await client.post(
-                                f"{base_url}/api/generate",
-                                json={
-                                    "model": model,
-                                    "prompt": "",
-                                    "keep_alive": keep_alive,
-                                    "stream": False,
-                                    "options": {
-                                        "num_ctx": attempt_ctx,
-                                        "num_gpu": 999,
-                                    },
-                                },
-                            )
-                            warm_resp.raise_for_status()
-                            load_ctx = attempt_ctx
-                            loaded = True
+                    ps_resp = await client.get(f"{base_url}/api/ps")
+                    ps_resp.raise_for_status()
+                    for m_info in ps_resp.json().get("models", []):
+                        m_name = m_info.get("name", "")
+                        if (
+                            m_name == model
+                            or m_name.split(":")[0]
+                            == model.split(":")[0]
+                        ):
+                            already_loaded = True
                             logger.info(
-                                "[LLM] ✅ Loaded at ctx=%d",
-                                load_ctx,
+                                "[LLM] ✅ Model %s already loaded in VRAM"
+                                " — extending keep_alive to %s"
+                                " (skipping flush+reload)",
+                                model, keep_alive,
                             )
+                            # Just extend keep_alive, no reload needed
+                            try:
+                                await client.post(
+                                    f"{base_url}/api/generate",
+                                    json={
+                                        "model": model,
+                                        "prompt": "",
+                                        "keep_alive": keep_alive,
+                                        "stream": False,
+                                    },
+                                )
+                            except Exception:
+                                pass  # Best-effort keep_alive extension
                             break
-                        except httpx.HTTPStatusError:
-                            load_ctx = attempt_ctx
-                            continue
+                except Exception as ps_exc:
+                    logger.debug(
+                        "[LLM] /api/ps check failed: %s", ps_exc,
+                    )
 
-                    if not loaded:
-                        return {
-                            "status": "oom_error",
-                            "model": model,
-                            "available_models": [
-                                m["name"] for m in tags_data
-                            ],
-                            "model_found": True,
-                            "pre_warmed": False,
-                            "model_max_ctx": model_max_ctx,
-                            "requested_ctx": desired_ctx,
-                            "suggested_ctx": 2048,
-                            "kv_rate_bytes_per_token": kv_per_tok,
-                            "estimated_vram_gb": round(est_gb, 1),
-                            "total_vram_gb": round(total_gb, 1),
-                            "message": (
-                                f"Cannot load {model} even at "
-                                f"ctx={attempt_ctx}."
-                            ),
-                        }
+                if not already_loaded:
+                    try:
+                        freed = await LLMService.unload_all_ollama_models(
+                            base_url,
+                        )
+                        if freed > 0:
+                            logger.info(
+                                "[LLM] Flushed %d model(s) before load",
+                                freed,
+                            )
+                            await asyncio.sleep(2)
+                    except Exception as flush_exc:
+                        logger.warning(
+                            "[LLM] VRAM flush failed: %s", flush_exc,
+                        )
+
+                if not already_loaded:
+                    logger.info(
+                        "[LLM] Loading %s at num_ctx=%d "
+                        "(num_gpu=999, keep_alive=%s) …",
+                        model, load_ctx, keep_alive,
+                    )
+                    try:
+                        warm_resp = await client.post(
+                            f"{base_url}/api/generate",
+                            json={
+                                "model": model,
+                                "prompt": "",
+                                "keep_alive": keep_alive,
+                                "stream": False,
+                                "options": {
+                                    "num_ctx": load_ctx,
+                                    "num_gpu": 999,
+                                },
+                            },
+                        )
+                        warm_resp.raise_for_status()
+                        logger.info(
+                            "[LLM] ✅ Model %s loaded at num_ctx=%d%s",
+                            model, load_ctx,
+                            " (clamped from %d)" % desired_ctx
+                            if clamped else "",
+                        )
+                    except httpx.HTTPStatusError:
+                        # OOM even after math check — step down 15% at a
+                        # time until it fits (avoids overshooting like 50%)
+                        clamped = True
+                        attempt_ctx = load_ctx
+                        loaded = False
+                        while attempt_ctx > 2048:
+                            attempt_ctx = max(
+                                int(attempt_ctx * 0.85) // 1024 * 1024,
+                                2048,
+                            )
+                            logger.warning(
+                                "[LLM] OOM at ctx=%d — trying %d (−15%%)",
+                                load_ctx, attempt_ctx,
+                            )
+                            try:
+                                warm_resp = await client.post(
+                                    f"{base_url}/api/generate",
+                                    json={
+                                        "model": model,
+                                        "prompt": "",
+                                        "keep_alive": keep_alive,
+                                        "stream": False,
+                                        "options": {
+                                            "num_ctx": attempt_ctx,
+                                            "num_gpu": 999,
+                                        },
+                                    },
+                                )
+                                warm_resp.raise_for_status()
+                                load_ctx = attempt_ctx
+                                loaded = True
+                                logger.info(
+                                    "[LLM] ✅ Loaded at ctx=%d",
+                                    load_ctx,
+                                )
+                                break
+                            except httpx.HTTPStatusError:
+                                load_ctx = attempt_ctx
+                                continue
+
+                        if not loaded:
+                            return {
+                                "status": "oom_error",
+                                "model": model,
+                                "available_models": [
+                                    m["name"] for m in tags_data
+                                ],
+                                "model_found": True,
+                                "pre_warmed": False,
+                                "model_max_ctx": model_max_ctx,
+                                "requested_ctx": desired_ctx,
+                                "suggested_ctx": 2048,
+                                "kv_rate_bytes_per_token": kv_per_tok,
+                                "estimated_vram_gb": round(est_gb, 1),
+                                "total_vram_gb": round(total_gb, 1),
+                                "message": (
+                                    f"Cannot load {model} even at "
+                                    f"ctx={attempt_ctx}."
+                                ),
+                            }
 
                 recommended_ctx = load_ctx
 

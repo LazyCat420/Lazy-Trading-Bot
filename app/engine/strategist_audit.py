@@ -216,5 +216,10 @@ class StrategistAudit:
 
         report = "\n".join(lines)
         path.write_text(report, encoding="utf-8")
+
+        # Prune old audit reports (keep 10)
+        from app.utils.logger import prune_old_files
+        prune_old_files(REPORTS_DIR, "strategist_audit_*.md")
+
         logger.info("[Audit] Report written to %s", path)
         return str(path)

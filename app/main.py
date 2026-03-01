@@ -1524,6 +1524,20 @@ async def _auto_start_scheduler() -> None:
     result = _scheduler.start()
     logger.info("[Boot] Scheduler auto-started: %s", result)
 
+    # Auto-select the first registered bot so the Portfolio tab
+    # doesn't show orphaned data from the phantom "default" bot.
+    try:
+        registered = BotRegistry.list_bots()
+        if registered:
+            first_bot_id = registered[0]["bot_id"]
+            _set_active_bot(first_bot_id)
+            logger.info(
+                "[Boot] Active bot auto-set to first registered bot: %s",
+                first_bot_id,
+            )
+    except Exception:
+        logger.warning("[Boot] Could not auto-select active bot")
+
 
 @app.post("/api/scheduler/start")
 async def scheduler_start() -> dict:
@@ -1922,6 +1936,16 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
     async def _run_all() -> None:
         from app.services.llm_service import LLMService
 
+        # ── Snapshot the user's config so we can restore after ──
+        # The loop hot-patches settings.LLM_MODEL per bot, but
+        # the user's chosen model should be restored when done.
+        _saved_model = settings.LLM_MODEL
+        _saved_ctx = settings.LLM_CONTEXT_SIZE
+        _saved_temp = settings.LLM_TEMPERATURE
+        _saved_top_p = settings.LLM_TOP_P
+        _saved_url = settings.OLLAMA_URL
+        _saved_bot_id = _get_active_bot_id()
+
         for idx, bot in enumerate(bots):
             bot_id = bot["bot_id"]
             model_name = bot.get("model_name", "")
@@ -2301,7 +2325,27 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
             _run_all_state["results"].append(bot_result)
             _run_all_state["completed"] = idx + 1
 
-        # All done
+        # All done — restore the user's original config
+        settings.LLM_MODEL = _saved_model
+        settings.LLM_CONTEXT_SIZE = _saved_ctx
+        settings.LLM_TEMPERATURE = _saved_temp
+        settings.LLM_TOP_P = _saved_top_p
+        settings.OLLAMA_URL = _saved_url
+        _set_active_bot(_saved_bot_id)
+        # Persist restored config to disk
+        settings.update_llm_config({
+            "model": _saved_model,
+            "context_size": _saved_ctx,
+            "temperature": _saved_temp,
+            "top_p": _saved_top_p,
+            "ollama_url": _saved_url,
+        })
+        logger.info(
+            "[RunAll] Restored user config: model=%s, "
+            "active_bot=%s",
+            _saved_model, _saved_bot_id,
+        )
+
         _run_all_state["running"] = False
         _run_all_state["current_bot"] = None
         _run_all_state["current_phase"] = None
