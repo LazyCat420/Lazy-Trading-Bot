@@ -398,26 +398,58 @@ class LLMService:
         return 0
 
     @staticmethod
-    def get_total_gpu_memory_bytes() -> int:
-        """Query nvidia-smi for total GPU memory.  Returns bytes, or 0."""
-        import subprocess
+    async def get_ollama_server_memory_bytes(
+        base_url: str,
+        model: str,
+    ) -> int:
+        """Probe the remote Ollama server for its total available memory.
 
+        Ollama has no API to query total system memory directly.
+        Instead, we send a request with an impossibly large num_ctx
+        (1M tokens), which triggers an OOM error whose message
+        reveals the server's available memory:
+
+            "model requires X GiB than is available (Y GiB)"
+
+        We parse Y from that error.  Returns bytes, or 0.
+        """
+        import re
+
+        base_url = base_url.rstrip("/")
         try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                total_mib = int(result.stdout.strip().split("\n")[0].strip())
-                return total_mib * 1024 * 1024
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{base_url}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": "",
+                        "stream": False,
+                        "keep_alive": "0",
+                        "options": {"num_ctx": 1_048_576},
+                    },
+                )
+                if resp.status_code == 500:
+                    body = resp.text
+                    # Parse: "...than is available (77.6 GiB)"
+                    match = re.search(
+                        r"available\s*\((\d+(?:\.\d+)?)\s*GiB\)", body,
+                    )
+                    if match:
+                        avail_gib = float(match.group(1))
+                        total_bytes = int(avail_gib * (1024 ** 3))
+                        logger.info(
+                            "[LLM] Probed Ollama server memory: %.1f GiB",
+                            avail_gib,
+                        )
+                        return total_bytes
+                    logger.debug(
+                        "[LLM] Could not parse memory from OOM: %s",
+                        body[:200],
+                    )
         except Exception as exc:
-            logger.debug("[LLM] nvidia-smi total failed: %s", exc)
+            logger.debug(
+                "[LLM] Ollama memory probe failed: %s", exc,
+            )
         return 0
 
     @staticmethod
@@ -590,7 +622,9 @@ class LLMService:
                 estimate = LLMService.estimate_model_vram(
                     model_info, model_file_size, desired_ctx,
                 )
-                total_gpu = LLMService.get_total_gpu_memory_bytes()
+                total_gpu = await LLMService.get_ollama_server_memory_bytes(
+                    base_url, model,
+                )
                 kv_per_tok = estimate["kv_bytes_per_token"]
 
                 est_gb = estimate["total_bytes"] / (1024**3)

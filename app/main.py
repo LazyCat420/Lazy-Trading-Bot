@@ -410,10 +410,14 @@ async def get_vram_estimate(model: str = "") -> dict:
     target_model = model or _cfg.LLM_MODEL
     base_url = _cfg.LLM_BASE_URL
 
-    # Total GPU memory
-    total_bytes = LLMService.get_total_gpu_memory_bytes()
+    # Total GPU memory — probe the remote Ollama server
+    total_bytes = 0
     if _cfg.SYSTEM_TOTAL_VRAM_GB > 0:
-        total_bytes = _cfg.SYSTEM_TOTAL_VRAM_GB * 1024**3
+        total_bytes = int(_cfg.SYSTEM_TOTAL_VRAM_GB * 1024**3)
+    else:
+        total_bytes = await LLMService.get_ollama_server_memory_bytes(
+            base_url, target_model,
+        )
 
     total_gb = round(total_bytes / (1024**3), 1) if total_bytes else 0
 

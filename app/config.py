@@ -123,6 +123,8 @@ class Settings:
             self.LLM_NUM_EXPERTS = int(data["num_experts"])
         if "gpu_offload" in data:
             self.LLM_GPU_OFFLOAD = bool(data["gpu_offload"])
+        if "system_total_vram_gb" in data:
+            self.SYSTEM_TOTAL_VRAM_GB = int(data["system_total_vram_gb"])
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.
@@ -161,6 +163,7 @@ class Settings:
             "flash_attention": self.LLM_FLASH_ATTENTION,
             "num_experts": self.LLM_NUM_EXPERTS,
             "gpu_offload": self.LLM_GPU_OFFLOAD,
+            "system_total_vram_gb": self.SYSTEM_TOTAL_VRAM_GB,
         }
         # Attach VRAM measurement data for the current model (if cached)
         vram = self.LLM_VRAM_MEASUREMENTS.get(self.LLM_MODEL)
