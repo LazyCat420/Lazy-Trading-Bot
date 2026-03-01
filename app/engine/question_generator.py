@@ -58,6 +58,12 @@ class QuestionGenerator:
                 max_tokens=1024,
             )
 
+            # Debug: log what the LLM actually returned
+            logger.info(
+                "[QuestionGen] %s raw response (%d chars): %.300s",
+                scorecard.ticker, len(raw), raw.strip(),
+            )
+
             # Try direct parse first (handles JSON arrays and objects)
             stripped = raw.strip()
             # Strip markdown code fences if present
@@ -74,13 +80,35 @@ class QuestionGenerator:
                 cleaned = LLMService.clean_json_response(raw)
                 questions = json.loads(cleaned)
 
-            # Unwrap if LLM returned a dict wrapping a list
-            # e.g. {"questions": [...]} or {"follow_up_questions": [...]}
-            if isinstance(questions, dict):
-                for _key, val in questions.items():
-                    if isinstance(val, list):
-                        questions = val
-                        break
+            # ── Robust unwrapping ────────────────────────────────
+            # LLMs love to wrap arrays in dicts, sometimes nested.
+            # Walk through dicts to find the first list value.
+            def _find_list(obj: object, depth: int = 0) -> list | None:
+                """Recursively find the first list in a nested dict."""
+                if isinstance(obj, list):
+                    return obj
+                if isinstance(obj, dict) and depth < 3:
+                    for val in obj.values():
+                        found = _find_list(val, depth + 1)
+                        if found is not None:
+                            return found
+                return None
+
+            if not isinstance(questions, list):
+                found = _find_list(questions)
+                if found is not None:
+                    questions = found
+                elif isinstance(questions, dict):
+                    # Single question object? Wrap it.
+                    if "question" in questions:
+                        questions = [questions]
+                    else:
+                        logger.warning(
+                            "[QuestionGen] %s: parsed JSON has no list: %s",
+                            scorecard.ticker,
+                            list(questions.keys()),
+                        )
+                        raise ValueError("LLM returned non-list")
 
             # Validate structure
             if not isinstance(questions, list):
