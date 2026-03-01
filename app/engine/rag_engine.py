@@ -196,6 +196,48 @@ def _fetch_insider_texts(ticker: str) -> list[str]:
             texts.append(f"Transactions: {r[3][:2000]}")
     return texts
 
+def _fetch_institutional_texts(ticker: str) -> list[str]:
+    """Fetch SEC 13F institutional holdings for this ticker."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT f.filer_name, h.filing_date, h.shares, h.value_usd "
+            "FROM sec_13f_holdings h "
+            "LEFT JOIN sec_13f_filers f ON h.cik = f.cik "
+            "WHERE h.ticker = ? ORDER BY h.value_usd DESC LIMIT 20",
+            [ticker],
+        ).fetchall()
+    except Exception:
+        return []  # Table may not exist yet
+    texts: list[str] = []
+    for r in rows:
+        filer = r[0] or "Unknown Fund"
+        fdate = str(r[1]) if r[1] else "N/A"
+        shares = f"{r[2]:,}" if r[2] else "N/A"
+        val = f"${r[3] / 1e6:.1f}M" if r[3] else "N/A"
+        texts.append(
+            f"{filer} (filed {fdate}): {shares} shares, value={val}"
+        )
+    return texts
+
+
+def _fetch_congress_texts(ticker: str) -> list[str]:
+    """Fetch congressional stock trades for this ticker."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT member_name, tx_date, tx_type, amount_range "
+            "FROM congressional_trades "
+            "WHERE ticker = ? ORDER BY tx_date DESC LIMIT 20",
+            [ticker],
+        ).fetchall()
+    except Exception:
+        return []  # Table may not exist yet
+    return [
+        f"{r[0]} ({r[1]}): {r[2]} — {r[3]}"
+        for r in rows if r[0]
+    ]
+
 
 # Map target_source → fetch function
 _SOURCE_FETCHERS = {
@@ -204,6 +246,8 @@ _SOURCE_FETCHERS = {
     "fundamentals": _fetch_fundamental_texts,
     "technicals": _fetch_technical_texts,
     "insider": _fetch_insider_texts,
+    "institutional": _fetch_institutional_texts,
+    "congress": _fetch_congress_texts,
 }
 
 

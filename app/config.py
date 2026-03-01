@@ -31,6 +31,9 @@ class Settings:
     # Model name (e.g. "gemma3:27b" for Ollama)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
     LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "8192"))
+    LLM_CALL_TIMEOUT_SECONDS: int = int(
+        os.getenv("LLM_CALL_TIMEOUT_SECONDS", "180")
+    )
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
     LLM_DISCOVERY_TEMPERATURE: float = float(
         os.getenv("LLM_DISCOVERY_TEMPERATURE", "0.6")

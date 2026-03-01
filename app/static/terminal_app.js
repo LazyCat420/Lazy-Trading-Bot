@@ -3158,7 +3158,11 @@ const useMonitorData = () => {
                     const sr = await fetch("/api/bots/run-all/status");
                     const st = await sr.json();
                     setRunAllStatus(st);
-
+                    // Refresh pipeline events so Activity Log stays alive
+                    try {
+                        const evRes = await fetch("/api/pipeline/events?limit=200").then(r => r.json());
+                        setPipelineEvents(evRes.events || []);
+                    } catch (_) { /* best effort */ }
                     // Sync active bot with the currently-running bot
                     // so Portfolio tab shows the right data
                     if (st.current_bot) {
@@ -3300,6 +3304,12 @@ const useMonitorData = () => {
                 const sr = await fetch("/api/bot/loop-status");
                 const st = await sr.json();
                 setLoopStatus(st);
+                // Also refresh pipeline events during active runs
+                // so the Activity Log stays alive (not just every 30s)
+                try {
+                    const evRes = await fetch("/api/pipeline/events?limit=200").then(r => r.json());
+                    setPipelineEvents(evRes.events || []);
+                } catch (_) { /* best effort */ }
                 if (!st.running) {
                     clearInterval(loopPollRef.current);
                     loopPollRef.current = null;
@@ -3310,7 +3320,7 @@ const useMonitorData = () => {
             } catch (e) {
                 console.error("Loop poll error:", e);
             }
-        }, 2000);
+        }, 3000);
     }, [fetchAll]);
 
     // On mount: fetch data + check if a loop is already running

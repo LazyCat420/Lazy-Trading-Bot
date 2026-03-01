@@ -347,53 +347,62 @@ class PipelineService:
                 logger.error("Step 4 (Technicals) failed: %s", e)
 
         # ----------------------------------------------------------
-        # Parallel batch: Steps 10, 10b, 11, 12 run concurrently
-        # (All depend only on price_history which is already available)
+        # Step 10: Risk Metrics (depends on price data)
+        # Step 10b: Quant Scorecard (skipped in data mode — recomputed
+        #   by DeepAnalysis Layer 1 during the analysis phase)
         # ----------------------------------------------------------
         quant_scorecard = None
 
         if mode != "news" and price_history:
-            # Steps 10 + 10b run in parallel (both pure-compute, no I/O conflict)
+            # Step 10: Risk metrics — always needed (stored in DuckDB)
             async def _step_risk():
                 return await self.risk_computer.compute(ticker)
 
-            async def _step_quant():
-                return QuantSignalEngine().compute(ticker)
-
-            logger.info("Running Steps 10+10b in parallel for %s …", ticker)
-            risk_result, quant_result = await asyncio.gather(
-                _step("risk_metrics", _step_risk()),
-                _step("quant_scorecard", _step_quant()),
-            )
-            # Unpack risk metrics
-            r_name, r_data, r_exc = risk_result
-            if r_exc:
-                result.status["risk_metrics"] = {"status": "error", "error": str(r_exc)}
-                result.errors.append(f"Risk metrics: {r_exc}")
-                logger.error("Step 10 (Risk Metrics) failed: %s", r_exc)
-            else:
-                risk_metrics = r_data
+            try:
+                risk_metrics = await _step_risk()
                 result.status["risk_metrics"] = {"status": "ok"}
-            # Unpack quant scorecard
-            q_name, q_data, q_exc = quant_result
-            if q_exc:
-                result.status["quant_scorecard"] = {"status": "error", "error": str(q_exc)}
-                result.errors.append(f"Quant scorecard: {q_exc}")
-                logger.error("Step 10b (Quant Scorecard) failed: %s", q_exc)
-            else:
-                quant_scorecard = q_data
-                result.status["quant_scorecard"] = {
-                    "status": "ok",
-                    "flags": quant_scorecard.flags if quant_scorecard else [],
+            except Exception as e:
+                result.status["risk_metrics"] = {
+                    "status": "error", "error": str(e),
                 }
-                if quant_scorecard:
-                    logger.info(
-                        "📊 Quant scorecard for %s: %d flags",
-                        ticker, len(quant_scorecard.flags),
+                result.errors.append(f"Risk metrics: {e}")
+                logger.error("Step 10 (Risk Metrics) failed: %s", e)
+
+            # Step 10b: Quant scorecard — only for full/quick modes
+            # (data mode skips this; DeepAnalysis recomputes it)
+            if mode != "data":
+                async def _step_quant():
+                    return QuantSignalEngine().compute(ticker)
+
+                try:
+                    quant_scorecard = await _step_quant()
+                    result.status["quant_scorecard"] = {
+                        "status": "ok",
+                        "flags": (
+                            quant_scorecard.flags
+                            if quant_scorecard else []
+                        ),
+                    }
+                    if quant_scorecard:
+                        logger.info(
+                            "📊 Quant scorecard for %s: %d flags",
+                            ticker, len(quant_scorecard.flags),
+                        )
+                except Exception as e:
+                    result.status["quant_scorecard"] = {
+                        "status": "error",
+                        "error": str(e),
+                    }
+                    result.errors.append(
+                        f"Quant scorecard: {e}"
+                    )
+                    logger.error(
+                        "Step 10b (Quant Scorecard) failed: %s",
+                        e,
                     )
 
         # Steps 11 + 12: News and YouTube scraping run in parallel
-        if mode in ("full", "news"):
+        if mode in ("full", "news", "data"):
             async def _step_news():
                 await self.news_collector.collect(ticker)
                 return await self.news_collector.get_all_historical(ticker)
@@ -804,7 +813,7 @@ class PipelineService:
                 result.status["risk_metrics"] = {"status": "ok"}
 
         # Step 11: News
-        if mode in ("full", "news"):
+        if mode in ("full", "news", "data"):
             _, _, ns_exc = await _tracked_step(
                 "news_scrape", self.news_collector.collect(ticker),
             )
@@ -823,7 +832,7 @@ class PipelineService:
                 result.status["news"] = {"status": "ok", "articles": len(news)}
 
         # Step 12: YouTube
-        if mode in ("full", "news"):
+        if mode in ("full", "news", "data"):
             _, yt_new, ys_exc = await _tracked_step(
                 "youtube_scrape", self.yt_collector.collect(ticker),
             )

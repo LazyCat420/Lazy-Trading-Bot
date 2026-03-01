@@ -366,6 +366,12 @@ class AutonomousLoop:
         async def _collect_one(ticker: str) -> str | None:
             async with sem:
                 try:
+                    log_event(
+                        "collection",
+                        "collection_ticker_start",
+                        f"Collecting data for ${ticker}",
+                        ticker=ticker,
+                    )
                     pipeline = PipelineService()
                     await pipeline.run(ticker, mode="data")
                     log_event(
@@ -631,6 +637,12 @@ class AutonomousLoop:
         self._log(description)
         logger.info("[AutoLoop] Phase: %s — %s", phase_name, description)
 
+        # Emit phase start to Activity Log
+        log_event(
+            phase_name, "phase_start", description,
+            status="running",
+        )
+
         # Track phase in health tracker
         if hasattr(self, "_health"):
             self._health.start_phase(phase_name)
@@ -644,6 +656,14 @@ class AutonomousLoop:
             self._state["phases"][phase_name] = "done"
             logger.info("[AutoLoop] Phase %s completed in %.1fs", phase_name, elapsed)
 
+            # Emit phase complete to Activity Log
+            log_event(
+                phase_name, "phase_complete",
+                f"{phase_name.title()} completed in {elapsed}s",
+                status="success",
+                metadata={"duration_seconds": elapsed},
+            )
+
             if hasattr(self, "_health"):
                 self._health.end_phase(phase_name, status="success")
 
@@ -654,6 +674,17 @@ class AutonomousLoop:
             error_msg = f"{phase_name} failed: {exc}"
             self._log(error_msg)
             logger.error("[AutoLoop] %s", error_msg, exc_info=True)
+
+            # Emit phase error to Activity Log
+            log_event(
+                phase_name, "phase_error",
+                f"{phase_name.title()} failed: {exc}",
+                status="error",
+                metadata={
+                    "error": str(exc)[:200],
+                    "duration_seconds": elapsed,
+                },
+            )
 
             if hasattr(self, "_health"):
                 self._health.end_phase(

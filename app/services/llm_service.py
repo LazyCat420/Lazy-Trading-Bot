@@ -11,6 +11,7 @@ creating and destroying their own connection.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
@@ -220,14 +221,22 @@ class LLMService:
             else "unknown"
         )
 
+        # Hard timeout ceiling (configurable, default 180s)
+        _timeout = settings.LLM_CALL_TIMEOUT_SECONDS
+
         try:
             client = await _get_shared_client()
-            resp = await client.post(url, json=payload)
+            resp = await asyncio.wait_for(
+                client.post(url, json=payload),
+                timeout=_timeout,
+            )
             resp.raise_for_status()
-        except httpx.ReadTimeout:
+        except (httpx.ReadTimeout, asyncio.TimeoutError):
             elapsed = time.perf_counter() - t0
             logger.error(
-                "Ollama request TIMEOUT after %.1fs", elapsed,
+                "Ollama request TIMEOUT after %.1fs "
+                "(limit=%ds)",
+                elapsed, _timeout,
             )
             log_llm_call(
                 context=_ctx,
@@ -259,6 +268,44 @@ class LLMService:
         content = msg.get("content", "")
         thinking = msg.get("thinking", "")
         tokens = data.get("eval_count", 0)
+
+        # ── Thinking-model fallback ───────────────────────
+        # Some thinking models (e.g. olmo-3:32b, qwen3) put all
+        # their reasoning in `thinking` and leave `content` empty.
+        # Try to extract JSON from the thinking text.
+        if not content.strip() and thinking.strip():
+            # Try to find a JSON object or array in the thinking
+            import json as _json
+
+            # Look for the last JSON block in thinking text
+            # (the answer usually comes after the reasoning)
+            json_match = re.search(
+                r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})',
+                thinking,
+                re.DOTALL,
+            )
+            if json_match:
+                candidate = json_match.group(1)
+                try:
+                    _json.loads(candidate)  # Validate it's real JSON
+                    content = candidate
+                    logger.info(
+                        "[LLM] Extracted JSON from thinking field "
+                        "(%d chars)",
+                        len(content),
+                    )
+                except _json.JSONDecodeError:
+                    pass  # Not valid JSON, keep content empty
+
+            # If still empty, return the raw thinking text
+            # so the caller can try to parse it
+            if not content.strip() and thinking.strip():
+                content = thinking
+                logger.warning(
+                    "[LLM] Using raw thinking text as response "
+                    "(%d chars) — no JSON found",
+                    len(content),
+                )
 
         elapsed = time.perf_counter() - t0
 

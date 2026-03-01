@@ -1,397 +1,357 @@
 // ***************************************************************
-// SYNTHWAVE SFX ENGINE — Warm 80s synth sounds via Web Audio API
+// SYNTHWAVE SFX ENGINE — Warm, smooth 80s synth sounds
 // ***************************************************************
 //
-// All sounds are synthesized in real-time. No MP3s needed.
-// Warm analog-style tones with reverb and chorus for that
-// smooth retrowave / outrun aesthetic.
+// All sounds use:
+//   - Low frequencies (80-500Hz base, warm range)
+//   - Sine & triangle waves only (no harsh sawtooth/square)
+//   - Slow attack/release (no sharp transients)
+//   - Gentle detuning for analog warmth
+//   - Sub-bass undertones for body
 //
-// Usage:
-//   RetroSFX.click()           — soft synth tap (buttons, tabs)
-//   RetroSFX.computeStart()    — gentle pulsing pad (returns stop fn)
-//   RetroSFX.modemHandshake()  — synthwave boot sequence (~3s)
-//   RetroSFX.successChime()    — dreamy rising arpeggio
-//   RetroSFX.alertBuzz()       — warm low warning tone
-//   RetroSFX.powerUp()         — analog pad sweep on load
+// Public API:
+//   RetroSFX.init()           — lazy-init AudioContext
+//   RetroSFX.click()          — soft UI tap
+//   RetroSFX.computeStart()   — ambient pad (returns stop fn)
+//   RetroSFX.modemHandshake() — warm launch sequence
+//   RetroSFX.successChime()   — gentle success arpeggio
+//   RetroSFX.alertBuzz()      — smooth low warning
+//   RetroSFX.powerUp()        — warm power sweep
 // ***************************************************************
 
 const RetroSFX = (() => {
     let ctx = null;
     let masterGain = null;
-    let reverbNode = null;
     let initialized = false;
     let muted = false;
 
     // ── Lazy init (requires user gesture) ─────────────────────
-    const init = () => {
-        if (initialized) return true;
+    function init() {
+        if (initialized) return;
         try {
             ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-            // Warm low-pass filter — removes harshness, keeps warmth
-            const warmFilter = ctx.createBiquadFilter();
-            warmFilter.type = "lowpass";
-            warmFilter.frequency.value = 3500;
-            warmFilter.Q.value = 0.5;
-
-            // Gentle compressor
-            const compressor = ctx.createDynamicsCompressor();
-            compressor.threshold.value = -18;
-            compressor.ratio.value = 3;
-            compressor.attack.value = 0.01;
-            compressor.release.value = 0.2;
-
-            // Master volume — keep it gentle
             masterGain = ctx.createGain();
-            masterGain.gain.value = 0.25;
-
-            // Build reverb (convolution impulse)
-            reverbNode = createReverb(1.2, 2.0);
-
-            // Dry path: filter → compressor → master → out
-            warmFilter.connect(compressor);
-            compressor.connect(masterGain);
+            masterGain.gain.value = 0.35; // Keep overall volume gentle
             masterGain.connect(ctx.destination);
-
-            // Wet path: filter → reverb → master → out
-            const reverbGain = ctx.createGain();
-            reverbGain.gain.value = 0.3; // reverb mix
-            warmFilter.connect(reverbGain);
-            reverbGain.connect(reverbNode);
-            reverbNode.connect(masterGain);
-
-            // Store the entry point for all sounds
-            ctx._masterInput = warmFilter;
-
             initialized = true;
-            console.log("[RetroSFX] Initialized — Synthwave Audio Engine ready");
-            return true;
         } catch (e) {
-            console.warn("[RetroSFX] Web Audio API not available:", e);
-            return false;
+            console.warn("[SFX] AudioContext failed:", e);
         }
-    };
+    }
 
-    // ── Helper: create simple reverb impulse ──────────────────
-    const createReverb = (decay, duration) => {
-        const rate = 44100;
-        const len = rate * duration;
-        const impulse = ctx.createBuffer(2, len, rate);
-        for (let ch = 0; ch < 2; ch++) {
-            const data = impulse.getChannelData(ch);
-            for (let i = 0; i < len; i++) {
-                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
-            }
-        }
-        const conv = ctx.createConvolver();
-        conv.buffer = impulse;
-        return conv;
-    };
-
-    // ── Helper: connect node → master chain ───────────────────
-    const toMaster = (node) => {
-        node.connect(ctx._masterInput);
+    // ── Helper: connect to master ─────────────────────────────
+    function toMaster(node) {
+        node.connect(masterGain);
         return node;
-    };
+    }
 
-    // ── Helper: detuned pair for chorus-like thickness ─────────
-    const createDetunedPair = (freq, type, detuneCents = 8) => {
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        osc1.type = type;
-        osc2.type = type;
-        osc1.frequency.value = freq;
-        osc2.frequency.value = freq;
-        osc1.detune.value = -detuneCents;
-        osc2.detune.value = detuneCents;
-        return [osc1, osc2];
-    };
+    // ── Helper: create a warm oscillator with slow fade ────────
+    function warmOsc(freq, type, startTime, duration, volume = 0.15) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, startTime);
+        gain.gain.linearRampToValueAtTime(volume, startTime + Math.min(0.08, duration * 0.3));
+        gain.gain.setValueAtTime(volume, startTime + duration * 0.6);
+        gain.gain.linearRampToValueAtTime(0, startTime + duration);
+        osc.connect(gain);
+        toMaster(gain);
+        osc.start(startTime);
+        osc.stop(startTime + duration + 0.05);
+        return osc;
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 1. SOFT SYNTH TAP — Gentle sine blip with harmonic
+    // 1. SOFT TAP — Gentle low sine blip
+    //    A warm "tok" sound, like tapping glass underwater
     // ═══════════════════════════════════════════════════════════
-    const click = () => {
-        if (!init() || muted) return;
+    function click() {
+        init();
+        if (muted || !ctx) return;
         const t = ctx.currentTime;
 
-        // Warm sine tap
+        // Soft sine tap at 280Hz
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.type = "sine";
-        osc.frequency.setValueAtTime(880, t);
-        osc.frequency.exponentialRampToValueAtTime(440, t + 0.06);
-        gain.gain.setValueAtTime(0.15, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+        osc.frequency.setValueAtTime(280, t);
+        osc.frequency.exponentialRampToValueAtTime(180, t + 0.08);
+        gain.gain.setValueAtTime(0.12, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
         osc.connect(gain);
         toMaster(gain);
         osc.start(t);
-        osc.stop(t + 0.1);
+        osc.stop(t + 0.12);
 
-        // Soft harmonic overtone
-        const h = ctx.createOscillator();
-        const hg = ctx.createGain();
-        h.type = "triangle";
-        h.frequency.setValueAtTime(1320, t);
-        h.frequency.exponentialRampToValueAtTime(660, t + 0.05);
-        hg.gain.setValueAtTime(0.06, t);
-        hg.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-        h.connect(hg);
-        toMaster(hg);
-        h.start(t);
-        h.stop(t + 0.08);
-    };
+        // Tiny sub-bass thud for warmth
+        const sub = ctx.createOscillator();
+        const subG = ctx.createGain();
+        sub.type = "sine";
+        sub.frequency.value = 100;
+        subG.gain.setValueAtTime(0.06, t);
+        subG.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+        sub.connect(subG);
+        toMaster(subG);
+        sub.start(t);
+        sub.stop(t + 0.08);
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 2. GENTLE PULSE PAD — Slow LFO-modulated sine pad
-    //    Returns a stop() function to fade out and cancel
+    // 2. AMBIENT PAD — Slow-breathing warm drone
+    //    Plays during loading/compute. Returns stop() function.
     // ═══════════════════════════════════════════════════════════
-    const computeStart = () => {
-        if (!init() || muted) return () => { };
-        let running = true;
+    function computeStart() {
+        init();
+        if (muted || !ctx) return () => { };
+
         const t = ctx.currentTime;
+        const nodes = [];
 
-        // Base pad — detuned sine pair for warmth
-        const [osc1, osc2] = createDetunedPair(220, "sine", 6);
-        const padGain = ctx.createGain();
-        padGain.gain.setValueAtTime(0, t);
-        padGain.gain.linearRampToValueAtTime(0.06, t + 0.5);
+        // Deep warm pad: C3 (130Hz) + E3 (165Hz) detuned pair
+        [130.81, 164.81].forEach(freq => {
+            const osc1 = ctx.createOscillator();
+            const osc2 = ctx.createOscillator();
+            const gain = ctx.createGain();
 
-        osc1.connect(padGain);
-        osc2.connect(padGain);
-        toMaster(padGain);
+            osc1.type = "sine";
+            osc2.type = "triangle";
+            osc1.frequency.value = freq;
+            osc2.frequency.value = freq + 1.5; // Slow beat frequency
 
-        // LFO for gentle pulse
+            gain.gain.setValueAtTime(0, t);
+            gain.gain.linearRampToValueAtTime(0.06, t + 1.5);
+
+            osc1.connect(gain);
+            osc2.connect(gain);
+            toMaster(gain);
+
+            osc1.start(t);
+            osc2.start(t);
+            nodes.push({ osc1, osc2, gain });
+        });
+
+        // Gentle LFO shimmer on the pad
         const lfo = ctx.createOscillator();
         const lfoGain = ctx.createGain();
         lfo.type = "sine";
-        lfo.frequency.value = 2.5; // gentle pulse rate
-        lfoGain.gain.value = 0.03;
+        lfo.frequency.value = 0.3; // Very slow breathing
+        lfoGain.gain.value = 8; // Subtle pitch wobble
         lfo.connect(lfoGain);
-        lfoGain.connect(padGain.gain);
-
-        osc1.start(t);
-        osc2.start(t);
+        nodes.forEach(n => {
+            lfoGain.connect(n.osc1.frequency);
+        });
         lfo.start(t);
 
-        // Occasional soft blip on top
+        // Periodic soft blip every ~3s
         let blipTimer = null;
-        const scheduleBlip = () => {
-            if (!running) return;
+        let running = true;
+        function scheduleBlip() {
+            if (!running || !ctx) return;
             const now = ctx.currentTime;
-            const note = [330, 440, 523.25, 659.25][Math.floor(Math.random() * 4)];
-            const blipOsc = ctx.createOscillator();
-            const blipGain = ctx.createGain();
-            blipOsc.type = "triangle";
-            blipOsc.frequency.value = note;
-            blipGain.gain.setValueAtTime(0.04, now);
-            blipGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-            blipOsc.connect(blipGain);
-            toMaster(blipGain);
-            blipOsc.start(now);
-            blipOsc.stop(now + 0.2);
+            warmOsc(220, "sine", now, 0.3, 0.04);
+            warmOsc(330, "sine", now + 0.15, 0.25, 0.02);
+            blipTimer = setTimeout(scheduleBlip, 3000 + Math.random() * 1500);
+        }
+        blipTimer = setTimeout(scheduleBlip, 2000);
 
-            blipTimer = setTimeout(scheduleBlip, 300 + Math.random() * 500);
-        };
-        blipTimer = setTimeout(scheduleBlip, 200);
-
-        // Return stop function with smooth fade-out
-        return () => {
+        // Return stop function
+        return function stop() {
             running = false;
             if (blipTimer) clearTimeout(blipTimer);
             const now = ctx.currentTime;
-            padGain.gain.cancelScheduledValues(now);
-            padGain.gain.setValueAtTime(padGain.gain.value, now);
-            padGain.gain.linearRampToValueAtTime(0, now + 0.5);
-            osc1.stop(now + 0.6);
-            osc2.stop(now + 0.6);
-            lfo.stop(now + 0.6);
+            nodes.forEach(n => {
+                n.gain.gain.linearRampToValueAtTime(0, now + 0.8);
+                try { n.osc1.stop(now + 1); } catch { }
+                try { n.osc2.stop(now + 1); } catch { }
+            });
+            try { lfo.stop(now + 1); } catch { }
         };
-    };
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 3. SYNTHWAVE BOOT — Warm pad swell + arpeggio (~3s)
-    //    Replaces the harsh modem handshake
+    // 3. SYNTHWAVE LAUNCH — Warm pad + gentle rising arpeggio
+    //    Plays when starting a bot run (~3s)
     // ═══════════════════════════════════════════════════════════
-    const modemHandshake = () => {
-        if (!init() || muted) return;
+    function modemHandshake() {
+        init();
+        if (muted || !ctx) return;
         const t = ctx.currentTime;
 
-        // Phase 1: Sub bass swell (0 → 1.5s)
-        const sub = ctx.createOscillator();
-        const subGain = ctx.createGain();
-        sub.type = "sine";
-        sub.frequency.setValueAtTime(55, t);
-        sub.frequency.linearRampToValueAtTime(110, t + 1.5);
-        subGain.gain.setValueAtTime(0, t);
-        subGain.gain.linearRampToValueAtTime(0.12, t + 0.8);
-        subGain.gain.linearRampToValueAtTime(0.08, t + 1.5);
-        subGain.gain.linearRampToValueAtTime(0, t + 2.0);
-        sub.connect(subGain);
-        toMaster(subGain);
-        sub.start(t);
-        sub.stop(t + 2.1);
-
-        // Phase 2: Warm pad chord (0.5 → 2.5s) — Cmaj7 voicing
-        const padNotes = [261.63, 329.63, 392, 493.88]; // C4, E4, G4, B4
-        padNotes.forEach((freq) => {
-            const [o1, o2] = createDetunedPair(freq, "triangle", 10);
-            const g = ctx.createGain();
-            g.gain.setValueAtTime(0, t + 0.5);
-            g.gain.linearRampToValueAtTime(0.04, t + 1.2);
-            g.gain.linearRampToValueAtTime(0.03, t + 2.0);
-            g.gain.exponentialRampToValueAtTime(0.001, t + 2.8);
-            o1.connect(g);
-            o2.connect(g);
-            toMaster(g);
-            o1.start(t + 0.5);
-            o2.start(t + 0.5);
-            o1.stop(t + 3.0);
-            o2.stop(t + 3.0);
+        // ── Deep warm pad (C2 + G2) ──
+        const padFreqs = [65.41, 98.0]; // C2, G2
+        padFreqs.forEach(freq => {
+            const osc = ctx.createOscillator();
+            const osc2 = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "sine";
+            osc2.type = "triangle";
+            osc.frequency.value = freq;
+            osc2.frequency.value = freq * 1.002; // Warm detune
+            gain.gain.setValueAtTime(0, t);
+            gain.gain.linearRampToValueAtTime(0.10, t + 0.6);
+            gain.gain.setValueAtTime(0.10, t + 2.2);
+            gain.gain.linearRampToValueAtTime(0, t + 3.5);
+            osc.connect(gain);
+            osc2.connect(gain);
+            toMaster(gain);
+            osc.start(t);
+            osc2.start(t);
+            osc.stop(t + 3.8);
+            osc2.stop(t + 3.8);
         });
 
-        // Phase 3: Descending arpeggio sparkle (1.5 → 3.0s)
-        const arpNotes = [987.77, 783.99, 659.25, 523.25, 392]; // B5→G4
+        // ── Gentle rising arpeggio (Cmaj7 voiced low) ──
+        // C3, E3, G3, B3, C4 — all sine, gentle
+        const arpNotes = [130.81, 164.81, 196.0, 246.94, 261.63];
         arpNotes.forEach((freq, i) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sine";
-            osc.frequency.value = freq;
-            const start = t + 1.5 + i * 0.2;
-            gain.gain.setValueAtTime(0.08, start);
-            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
-            osc.connect(gain);
-            toMaster(gain);
-            osc.start(start);
-            osc.stop(start + 0.5);
+            const delay = 0.4 + i * 0.35;
+            warmOsc(freq, "sine", t + delay, 0.8, 0.07);
+            // Ghost triangle harmonic one octave up, very quiet
+            warmOsc(freq * 2, "triangle", t + delay + 0.05, 0.5, 0.015);
         });
-    };
+
+        // ── Sub-bass swell underneath ──
+        const sub = ctx.createOscillator();
+        const subG = ctx.createGain();
+        sub.type = "sine";
+        sub.frequency.value = 55; // A1 — deep sub
+        subG.gain.setValueAtTime(0, t);
+        subG.gain.linearRampToValueAtTime(0.08, t + 1.0);
+        subG.gain.setValueAtTime(0.08, t + 2.5);
+        subG.gain.linearRampToValueAtTime(0, t + 3.5);
+        sub.connect(subG);
+        toMaster(subG);
+        sub.start(t);
+        sub.stop(t + 3.8);
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 4. SUCCESS CHIME — Dreamy pentatonic arpeggio with shimmer
+    // 4. SUCCESS CHIME — Warm pentatonic arpeggio
+    //    Gentle ascending notes: G3, A3, B3, D4, G4
     // ═══════════════════════════════════════════════════════════
-    const successChime = () => {
-        if (!init() || muted) return;
+    function successChime() {
+        init();
+        if (muted || !ctx) return;
         const t = ctx.currentTime;
-        // Pentatonic rise: C5 → D5 → E5 → G5 → shimmer on C6
-        const notes = [523.25, 587.33, 659.25, 783.99, 1046.50];
 
+        // Pentatonic ascent — warm and resolved
+        const notes = [196.0, 220.0, 246.94, 293.66, 392.0]; // G3 A3 B3 D4 G4
         notes.forEach((freq, i) => {
-            const [o1, o2] = createDetunedPair(freq, "sine", 6);
-            const gain = ctx.createGain();
-            const start = t + i * 0.1;
-            const isLast = i === notes.length - 1;
-            const dur = isLast ? 0.6 : 0.25;
-
-            gain.gain.setValueAtTime(isLast ? 0.12 : 0.1, start);
-            gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
-
-            o1.connect(gain);
-            o2.connect(gain);
-            toMaster(gain);
-            o1.start(start);
-            o2.start(start);
-            o1.stop(start + dur + 0.05);
-            o2.stop(start + dur + 0.05);
+            const delay = i * 0.12;
+            warmOsc(freq, "sine", t + delay, 0.45, 0.09);
+            // Soft triangle echo
+            warmOsc(freq, "triangle", t + delay + 0.06, 0.3, 0.025);
         });
 
-        // Shimmer: high sine harmonic on the last note
-        const shimmer = ctx.createOscillator();
-        const sGain = ctx.createGain();
-        shimmer.type = "sine";
-        shimmer.frequency.value = 2093; // C7
-        const sStart = t + 0.4;
-        sGain.gain.setValueAtTime(0.03, sStart);
-        sGain.gain.exponentialRampToValueAtTime(0.001, sStart + 0.8);
-        shimmer.connect(sGain);
-        toMaster(sGain);
-        shimmer.start(sStart);
-        shimmer.stop(sStart + 0.9);
-    };
+        // Gentle low pad underneath
+        const pad = ctx.createOscillator();
+        const padG = ctx.createGain();
+        pad.type = "sine";
+        pad.frequency.value = 98.0; // G2
+        padG.gain.setValueAtTime(0, t);
+        padG.gain.linearRampToValueAtTime(0.05, t + 0.15);
+        padG.gain.setValueAtTime(0.05, t + 0.5);
+        padG.gain.linearRampToValueAtTime(0, t + 0.9);
+        pad.connect(padG);
+        toMaster(padG);
+        pad.start(t);
+        pad.stop(t + 1.0);
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 5. WARM ALERT — Gentle low tone (not harsh buzz)
+    // 5. WARM WARNING — Smooth descending sine sweep
+    //    Recognizable as a warning but NOT harsh or piercing
     // ═══════════════════════════════════════════════════════════
-    const alertBuzz = () => {
-        if (!init() || muted) return;
+    function alertBuzz() {
+        init();
+        if (muted || !ctx) return;
         const t = ctx.currentTime;
 
-        // Two falling sine tones — warm, not aggressive
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
+        // Descending sine sweep: 200Hz → 100Hz (very smooth)
+        const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc1.type = "sine";
-        osc2.type = "triangle";
-        osc1.frequency.setValueAtTime(440, t);
-        osc1.frequency.exponentialRampToValueAtTime(220, t + 0.2);
-        osc2.frequency.setValueAtTime(330, t);
-        osc2.frequency.exponentialRampToValueAtTime(165, t + 0.25);
-
-        gain.gain.setValueAtTime(0.15, t);
-        gain.gain.setValueAtTime(0.12, t + 0.15);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-
-        osc1.connect(gain);
-        osc2.connect(gain);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(200, t);
+        osc.frequency.exponentialRampToValueAtTime(100, t + 0.6);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.12, t + 0.08);
+        gain.gain.setValueAtTime(0.12, t + 0.35);
+        gain.gain.linearRampToValueAtTime(0, t + 0.7);
+        osc.connect(gain);
         toMaster(gain);
-        osc1.start(t);
-        osc2.start(t);
-        osc1.stop(t + 0.4);
-        osc2.stop(t + 0.4);
-    };
+        osc.start(t);
+        osc.stop(t + 0.8);
+
+        // Sub-bass rumble underneath
+        const sub = ctx.createOscillator();
+        const subG = ctx.createGain();
+        sub.type = "sine";
+        sub.frequency.value = 60;
+        subG.gain.setValueAtTime(0, t);
+        subG.gain.linearRampToValueAtTime(0.07, t + 0.05);
+        subG.gain.linearRampToValueAtTime(0, t + 0.5);
+        sub.connect(subG);
+        toMaster(subG);
+        sub.start(t);
+        sub.stop(t + 0.6);
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // 6. POWER UP — Analog synth pad sweep with shimmer
+    // 6. POWER UP — Warm analog sweep with gentle shimmer
     // ═══════════════════════════════════════════════════════════
-    const powerUp = () => {
-        if (!init() || muted) return;
+    function powerUp() {
+        init();
+        if (muted || !ctx) return;
         const t = ctx.currentTime;
 
-        // Rising pad swell
-        const [o1, o2] = createDetunedPair(110, "triangle", 12);
-        const padGain = ctx.createGain();
-        o1.frequency.exponentialRampToValueAtTime(440, t + 0.8);
-        o2.frequency.exponentialRampToValueAtTime(440, t + 0.8);
-        padGain.gain.setValueAtTime(0, t);
-        padGain.gain.linearRampToValueAtTime(0.1, t + 0.3);
-        padGain.gain.setValueAtTime(0.1, t + 0.6);
-        padGain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
-        o1.connect(padGain);
-        o2.connect(padGain);
-        toMaster(padGain);
-        o1.start(t);
-        o2.start(t);
-        o1.stop(t + 1.3);
-        o2.stop(t + 1.3);
+        // Rising sine sweep: 80Hz → 300Hz (warm range only)
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(80, t);
+        osc.frequency.exponentialRampToValueAtTime(300, t + 1.2);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.10, t + 0.3);
+        gain.gain.setValueAtTime(0.10, t + 0.9);
+        gain.gain.linearRampToValueAtTime(0, t + 1.5);
+        osc.connect(gain);
+        toMaster(gain);
+        osc.start(t);
+        osc.stop(t + 1.6);
 
-        // Arrival chime — two gentle notes
-        const chimeNotes = [659.25, 880]; // E5, A5
-        chimeNotes.forEach((freq, i) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sine";
-            osc.frequency.value = freq;
-            const start = t + 0.7 + i * 0.12;
-            gain.gain.setValueAtTime(0.1, start);
-            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
-            osc.connect(gain);
-            toMaster(gain);
-            osc.start(start);
-            osc.stop(start + 0.5);
-        });
-    };
+        // Detuned triangle for warmth
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = "triangle";
+        osc2.frequency.setValueAtTime(82, t);
+        osc2.frequency.exponentialRampToValueAtTime(302, t + 1.2);
+        gain2.gain.setValueAtTime(0, t);
+        gain2.gain.linearRampToValueAtTime(0.04, t + 0.3);
+        gain2.gain.linearRampToValueAtTime(0, t + 1.5);
+        osc2.connect(gain2);
+        toMaster(gain2);
+        osc2.start(t);
+        osc2.stop(t + 1.6);
+
+        // Resolution chord at the end: C4 + E4
+        warmOsc(261.63, "sine", t + 1.1, 0.6, 0.06);
+        warmOsc(329.63, "sine", t + 1.15, 0.55, 0.04);
+    }
 
     // ── Volume / Mute controls ────────────────────────────────
-    const setVolume = (v) => {
+    function setVolume(v) {
+        init();
         if (masterGain) masterGain.gain.value = Math.max(0, Math.min(1, v));
-    };
+    }
 
-    const toggleMute = () => {
+    function toggleMute() {
         muted = !muted;
-        console.log(`[RetroSFX] ${muted ? "Muted" : "Unmuted"}`);
+        if (masterGain) masterGain.gain.value = muted ? 0 : 0.35;
         return muted;
-    };
+    }
 
-    const isMuted = () => muted;
+    function isMuted() { return muted; }
 
     // ── Public API ────────────────────────────────────────────
     return {

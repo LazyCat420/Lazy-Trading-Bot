@@ -89,7 +89,7 @@ class DeepAnalysisService:
         log_event(
             "analysis", "layer_start",
             f"Layer 2: Generating deep-dive questions for {ticker}",
-            {"ticker": ticker, "layer": 2}
+            metadata={"ticker": ticker, "layer": 2},
         )
         questions = await self._questions.generate(scorecard)
         logger.info(
@@ -102,7 +102,7 @@ class DeepAnalysisService:
         log_event(
             "analysis", "layer_start",
             f"Layer 3: RAG search and answer extraction for {ticker}",
-            {"ticker": ticker, "layer": 3}
+            metadata={"ticker": ticker, "layer": 3},
         )
         qa_pairs = await self._rag.answer_all(questions, ticker)
         logger.info(
@@ -115,7 +115,7 @@ class DeepAnalysisService:
         log_event(
             "analysis", "layer_start",
             f"Layer 4: Synthesizing final dossier for {ticker}",
-            {"ticker": ticker, "layer": 4}
+            metadata={"ticker": ticker, "layer": 4},
         )
         dossier = await self._synth.synthesize(
             scorecard, qa_pairs, portfolio_context=portfolio_context,

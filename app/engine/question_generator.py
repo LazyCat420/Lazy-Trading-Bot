@@ -20,7 +20,8 @@ questions that would help determine if this is a BUY, HOLD, or SELL.
 
 Rules:
 - Questions must be ANSWERABLE from: news articles, YouTube transcripts,
-  company financials, technical indicators, or insider activity data.
+  company financials, technical indicators, insider activity data,
+  institutional 13F holdings, or congressional stock trades.
 - Each question should target a DIFFERENT data source.
 - Prioritize questions about the anomaly flags.
 - Be specific: "What caused the volume spike on Feb 14?" not "Why volume?"
@@ -29,7 +30,7 @@ Respond ONLY with a JSON array of exactly 5 objects:
 [
   {
     "question": "...",
-    "target_source": "news" | "transcripts" | "fundamentals" | "technicals" | "insider",
+    "target_source": "news" | "transcripts" | "fundamentals" | "technicals" | "insider" | "institutional" | "congress",
     "priority": "high" | "medium" | "low"
   }
 ]

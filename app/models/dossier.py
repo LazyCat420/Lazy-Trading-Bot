@@ -68,7 +68,8 @@ class QAPair(BaseModel):
     question: str
     answer: str = "No data available."
     source: Literal[
-        "news", "transcripts", "fundamentals", "technicals", "insider"
+        "news", "transcripts", "fundamentals", "technicals",
+        "insider", "institutional", "congress",
     ] = "news"
     confidence: Literal["high", "medium", "low"] = "medium"
 
