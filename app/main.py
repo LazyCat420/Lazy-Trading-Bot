@@ -402,7 +402,7 @@ async def get_vram_estimate(model: str = "") -> dict:
     """Return VRAM estimation data for the frontend slider.
 
     Queries Ollama's /api/show + /api/tags for model architecture
-    and nvidia-smi for GPU memory.  Returns everything needed for
+    and config for total GPU memory.  Returns everything needed for
     clientside VRAM prediction — NO model loading involved.
     """
     from app.config import settings as _cfg
@@ -410,15 +410,8 @@ async def get_vram_estimate(model: str = "") -> dict:
     target_model = model or _cfg.LLM_MODEL
     base_url = _cfg.LLM_BASE_URL
 
-    # Total GPU memory — probe the remote Ollama server
-    total_bytes = 0
-    if _cfg.SYSTEM_TOTAL_VRAM_GB > 0:
-        total_bytes = int(_cfg.SYSTEM_TOTAL_VRAM_GB * 1024**3)
-    else:
-        total_bytes = await LLMService.get_ollama_server_memory_bytes(
-            base_url, target_model,
-        )
-
+    # Total GPU memory from config (SYSTEM_TOTAL_VRAM_GB)
+    total_bytes = LLMService.get_total_vram_bytes()
     total_gb = round(total_bytes / (1024**3), 1) if total_bytes else 0
 
     result: dict = {
@@ -471,6 +464,31 @@ async def get_vram_estimate(model: str = "") -> dict:
                 model_info, model_file_size, 1,
             )
             result["kv_bytes_per_token"] = est["kv_bytes_per_token"]
+
+            # Override with cached real kv_rate from previous load
+            # (much more accurate — includes Ollama overhead)
+            # BUT: sanity-check against Jetson unified-memory inflation
+            theoretical_rate = est["kv_bytes_per_token"]
+            cached = _cfg.LLM_VRAM_MEASUREMENTS.get(target_model)
+            if cached and cached.get("real_kv_rate"):
+                cached_rate = cached["real_kv_rate"]
+                if (
+                    theoretical_rate > 0
+                    and cached_rate > theoretical_rate * 4.0
+                ):
+                    # Inflated — use theoretical × 1.5 instead
+                    result["kv_bytes_per_token"] = theoretical_rate * 1.5
+                    result["using_cached_rate"] = False
+                    result["cache_rejected"] = True
+                    logger.warning(
+                        "[VRAM] Cached kv_rate %.0f > 4× theoretical "
+                        "%.0f — using %.0f (theo×1.5)",
+                        cached_rate, theoretical_rate,
+                        theoretical_rate * 1.5,
+                    )
+                else:
+                    result["kv_bytes_per_token"] = cached_rate
+                    result["using_cached_rate"] = True
 
     except Exception as exc:
         logger.warning("[VRAM] Estimate endpoint error: %s", exc)
@@ -1693,6 +1711,23 @@ async def get_bot(bot_id: str) -> dict:
     if not bot:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
     return bot
+
+
+@app.delete("/api/bots/{bot_id}")
+async def delete_bot_endpoint(bot_id: str, hard: bool = False) -> dict:
+    """Delete a bot from the leaderboard.
+
+    ?hard=true  → permanently delete bot + all related data
+    ?hard=false → soft delete (set status='deleted')
+    """
+    deleted = BotRegistry.delete_bot(bot_id, hard=hard)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    return {
+        "status": "deleted",
+        "bot_id": bot_id,
+        "hard": hard,
+    }
 
 
 @app.put("/api/bots/{bot_id}/settings")

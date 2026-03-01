@@ -79,7 +79,7 @@ class TestEstimateModelVram:
         assert est["kv_bytes_per_token"] == 57_344
         assert est["kv_bytes"] == 57_344 * 60000
         assert est["weights_bytes"] == 17_800_000_000
-        assert est["total_bytes"] == 17_800_000_000 + 57_344 * 60000
+        assert est["total_bytes"] == 17_800_000_000 + 57_344 * 60000 + int(1.5 * (1024**3))
 
     def test_missing_fields_returns_weights_only(self):
         from app.services.llm_service import LLMService
@@ -91,7 +91,7 @@ class TestEstimateModelVram:
         )
         assert est["fields_found"] is False
         assert est["kv_bytes"] == 0
-        assert est["total_bytes"] == 10_000_000_000
+        assert est["total_bytes"] == 10_000_000_000 + int(1.5 * (1024**3))
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +99,8 @@ class TestEstimateModelVram:
 # ---------------------------------------------------------------------------
 
 class TestPredictedOOM:
-    def test_returns_oom_without_loading(self):
-        """When estimate > 85% of total GPU, return oom_error without any
-        /api/generate call (zero model loads)."""
+    def test_clamps_ctx_when_exceeds_ceiling(self):
+        """When estimate > safe ceiling, clamp ctx and load at lower value."""
         from app.config import settings
         from app.services.llm_service import LLMService
 
@@ -110,12 +109,19 @@ class TestPredictedOOM:
         async def mock_post(url, **kwargs):
             if "/api/show" in url:
                 return _mock_resp(200, SHOW_DATA)
-            raise AssertionError(f"Should not call: {url}")
+            if "/api/generate" in url:
+                return _mock_resp(200, {})
+            return _mock_resp(200, {})
 
         async def mock_get(url, **kwargs):
             if "/api/tags" in url:
                 return _mock_resp(200, TAGS_DATA)
-            raise AssertionError(f"Unexpected GET: {url}")
+            if "/api/ps" in url:
+                return _mock_resp(200, {
+                    "models": [{"name": "gemma3:27b",
+                                "size_vram": 19_000_000_000}],
+                })
+            return _mock_resp(200, {})
 
         with patch("httpx.AsyncClient") as mock_cls:
             client = AsyncMock()
@@ -125,11 +131,18 @@ class TestPredictedOOM:
             client.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = client
 
-            # Total GPU = 20 GiB. 85% ceiling = 17 GiB.
+            # Total GPU = 20 GiB. Safe ceiling = 15 GiB.
             # Estimate for 128k ctx ≈ 17.8 + 7.0 = ~24.8 GiB → exceeds
-            with patch.object(
-                LLMService, "get_total_gpu_memory_bytes",
-                return_value=20 * 1024**3,
+            # Code should clamp ctx down and still load
+            with (
+                patch.object(
+                    LLMService, "get_total_vram_bytes",
+                    return_value=20 * 1024**3,
+                ),
+                patch.object(
+                    LLMService, "unload_all_ollama_models",
+                    return_value=0,
+                ),
             ):
                 result = asyncio.get_event_loop().run_until_complete(
                     LLMService.verify_and_warm_ollama_model(
@@ -137,15 +150,10 @@ class TestPredictedOOM:
                     )
                 )
 
-        assert result["status"] == "oom_error"
-        assert result["pre_warmed"] is False
-        assert result["suggested_ctx"] > 0
-        assert result["suggested_ctx"] < 128000
-        assert "total_vram_gb" in result
-        # /api/generate never called
-        gen_calls = [c for c in client.post.call_args_list
-                     if "/api/generate" in str(c)]
-        assert len(gen_calls) == 0
+        assert result["status"] == "model_verified"
+        assert result["pre_warmed"] is True
+        # Context should be clamped below 128000
+        assert result["recommended_ctx"] < 128000
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +197,7 @@ class TestEstimateOKWarm:
             # Estimate ≈ 17.8 + 3.3 = ~21 GiB → fits
             with (
                 patch.object(
-                    LLMService, "get_total_gpu_memory_bytes",
+                    LLMService, "get_total_vram_bytes",
                     return_value=64 * 1024**3,
                 ),
                 patch.object(
@@ -247,7 +255,7 @@ class TestUnexpectedOOM:
 
             with (
                 patch.object(
-                    LLMService, "get_total_gpu_memory_bytes",
+                    LLMService, "get_total_vram_bytes",
                     return_value=64 * 1024**3,
                 ),
                 patch.object(
@@ -262,5 +270,5 @@ class TestUnexpectedOOM:
                 )
 
         assert result["status"] == "oom_error"
-        assert result["suggested_ctx"] == (int(60000 * 0.75) // 4096) * 4096
+        assert result["suggested_ctx"] == 2048
         assert "total_vram_gb" in result

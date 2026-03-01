@@ -45,9 +45,9 @@ class Settings:
     LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
     LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
 
-    # In-session VRAM measurement cache (populated by verify_and_warm).
+    # Persistent VRAM measurement cache.
     # Key = model name, value = {"ctx": int, "size_vram": int, "kv_rate": float}
-    # Survives hot-reloads but resets on server restart.
+    # Persisted to llm_config.json so it survives server restarts.
     LLM_VRAM_MEASUREMENTS: dict = {}
 
     # Total system GPU memory in GB (0 = auto-detect via nvidia-smi).
@@ -125,6 +125,10 @@ class Settings:
             self.LLM_GPU_OFFLOAD = bool(data["gpu_offload"])
         if "system_total_vram_gb" in data:
             self.SYSTEM_TOTAL_VRAM_GB = int(data["system_total_vram_gb"])
+        if "vram_measurements" in data and isinstance(
+            data["vram_measurements"], dict,
+        ):
+            self.LLM_VRAM_MEASUREMENTS = data["vram_measurements"]
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.

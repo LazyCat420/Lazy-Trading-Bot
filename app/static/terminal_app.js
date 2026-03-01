@@ -2541,23 +2541,27 @@ const SettingsPage = () => {
     };
 
     // Compute estimated VRAM (GB) for a given context size
+    // Matches backend: weights + KV cache + 1.5 GB graph overhead
+    const GRAPH_OVERHEAD_GB = 1.5;
+    const OS_RESERVE_GB = 5;  // Reserved for OS/background processes
+
     const computeEstVramGb = (ctx) => {
         if (!vramEstimate || !vramEstimate.kv_bytes_per_token) return null;
         const kvBytes = vramEstimate.kv_bytes_per_token * ctx;
         const totalBytes = vramEstimate.model_weight_gb * (1024 ** 3) + kvBytes;
-        return totalBytes / (1024 ** 3);
+        return totalBytes / (1024 ** 3) + GRAPH_OVERHEAD_GB;
     };
 
-    // Get zone: green (<85%), yellow (85-95%), red (>95%)
+    // Get zone based on safe ceiling (total - 5GB OS reserve)
     const getVramZone = (ctx) => {
         if (!vramEstimate || !vramEstimate.total_vram_gb) return { zone: "unknown", label: "" };
         const estGb = computeEstVramGb(ctx);
         if (estGb === null) return { zone: "unknown", label: "" };
         const totalGb = vramEstimate.total_vram_gb;
-        const pct = estGb / totalGb;
-        if (pct < 0.85) return { zone: "safe", color: "text-green-400", bg: "bg-green-500/20", border: "border-green-500/30", label: `Safe ✅ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
-        if (pct < 0.95) return { zone: "risk", color: "text-amber-400", bg: "bg-amber-500/20", border: "border-amber-500/30", label: `High Risk ⚠️ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
-        return { zone: "danger", color: "text-red-400", bg: "bg-red-500/20", border: "border-red-500/30", label: `Will Fail ❌ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
+        const safeGb = totalGb - OS_RESERVE_GB;
+        if (estGb < safeGb * 0.9) return { zone: "safe", color: "text-green-400", bg: "bg-green-500/20", border: "border-green-500/30", label: `Safe ✅ — ${estGb.toFixed(1)} / ${safeGb.toFixed(0)} GB safe (${totalGb} total)` };
+        if (estGb < safeGb) return { zone: "risk", color: "text-amber-400", bg: "bg-amber-500/20", border: "border-amber-500/30", label: `Tight ⚠️ — ${estGb.toFixed(1)} / ${safeGb.toFixed(0)} GB safe (${totalGb} total)` };
+        return { zone: "danger", color: "text-red-400", bg: "bg-red-500/20", border: "border-red-500/30", label: `Will Fail ❌ — ${estGb.toFixed(1)} / ${safeGb.toFixed(0)} GB safe (${totalGb} total)` };
     };
 
     const saveStrategy = async () => {
@@ -2772,19 +2776,18 @@ const SettingsPage = () => {
                                     style={{
                                         background: vramEstimate ? (() => {
                                             const maxCtx = vramEstimate.model_max_ctx || 131072;
-                                            // Calculate zone boundaries as percentages
-                                            const safeCtx85 = (() => {
-                                                if (!vramEstimate.kv_bytes_per_token || !vramEstimate.total_vram_gb) return maxCtx;
-                                                const safe85 = (vramEstimate.total_vram_gb * 0.85 * (1024 ** 3) - vramEstimate.model_weight_gb * (1024 ** 3)) / vramEstimate.kv_bytes_per_token;
-                                                return Math.max(2048, Math.min(safe85, maxCtx));
-                                            })();
-                                            const safeCtx95 = (() => {
-                                                if (!vramEstimate.kv_bytes_per_token || !vramEstimate.total_vram_gb) return maxCtx;
-                                                const safe95 = (vramEstimate.total_vram_gb * 0.95 * (1024 ** 3) - vramEstimate.model_weight_gb * (1024 ** 3)) / vramEstimate.kv_bytes_per_token;
-                                                return Math.max(2048, Math.min(safe95, maxCtx));
-                                            })();
-                                            const greenPct = Math.min(((safeCtx85 - 2048) / (maxCtx - 2048)) * 100, 100);
-                                            const yellowPct = Math.min(((safeCtx95 - 2048) / (maxCtx - 2048)) * 100, 100);
+                                            // Calculate zone boundaries using safe ceiling (total - 5GB)
+                                            const safeGb = vramEstimate.total_vram_gb - OS_RESERVE_GB;
+                                            const weightBytes = vramEstimate.model_weight_gb * (1024 ** 3);
+                                            const graphBytes = GRAPH_OVERHEAD_GB * (1024 ** 3);
+                                            const kv = vramEstimate.kv_bytes_per_token;
+                                            if (!kv || safeGb <= 0) return '#334155';
+                                            // Green zone: 90% of safe ceiling
+                                            const greenCtx = Math.max(2048, Math.min((safeGb * 0.9 * (1024 ** 3) - weightBytes - graphBytes) / kv, maxCtx));
+                                            // Yellow zone: 100% of safe ceiling
+                                            const yellowCtx = Math.max(2048, Math.min((safeGb * (1024 ** 3) - weightBytes - graphBytes) / kv, maxCtx));
+                                            const greenPct = Math.min(((greenCtx - 2048) / (maxCtx - 2048)) * 100, 100);
+                                            const yellowPct = Math.min(((yellowCtx - 2048) / (maxCtx - 2048)) * 100, 100);
                                             return `linear-gradient(to right, #22c55e 0%, #22c55e ${greenPct}%, #f59e0b ${greenPct}%, #f59e0b ${yellowPct}%, #ef4444 ${yellowPct}%, #ef4444 100%)`;
                                         })() : '#334155',
                                     }}

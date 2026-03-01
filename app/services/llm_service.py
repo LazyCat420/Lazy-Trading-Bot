@@ -375,15 +375,26 @@ class LLMService:
         return unloaded
 
     @staticmethod
-    def get_free_gpu_memory_bytes() -> int:
-        """Query nvidia-smi for free GPU memory.  Returns bytes, or 0."""
+    def get_total_vram_bytes() -> int:
+        """Get total VRAM/unified-memory for the Ollama server.
+
+        Uses SYSTEM_TOTAL_VRAM_GB from config (set via Settings UI
+        or llm_config.json).  For Jetson Orin AGX 64GB, set to 64.
+        nvidia-smi does NOT work on Jetson (unified memory), so we
+        rely on the explicit config value.
+        """
+        from app.config import settings as _cfg
+
+        if _cfg.SYSTEM_TOTAL_VRAM_GB > 0:
+            return int(_cfg.SYSTEM_TOTAL_VRAM_GB * (1024 ** 3))
+        # Fallback: nvidia-smi for discrete GPUs (not Jetson)
         import subprocess
 
         try:
             result = subprocess.run(
                 [
                     "nvidia-smi",
-                    "--query-gpu=memory.free",
+                    "--query-gpu=memory.total",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output=True,
@@ -391,66 +402,24 @@ class LLMService:
                 timeout=10,
             )
             if result.returncode == 0:
-                free_mib = int(result.stdout.strip().split("\n")[0].strip())
-                return free_mib * 1024 * 1024
+                total_mib = int(
+                    result.stdout.strip().split("\n")[0].strip(),
+                )
+                return total_mib * 1024 * 1024
         except Exception as exc:
             logger.debug("[LLM] nvidia-smi failed: %s", exc)
         return 0
 
     @staticmethod
-    async def get_ollama_server_memory_bytes(
-        base_url: str,
-        model: str,
-    ) -> int:
-        """Probe the remote Ollama server for its total available memory.
+    def get_safe_ceiling_bytes() -> int:
+        """Get the safe VRAM ceiling (total - 5 GiB for OS overhead).
 
-        Ollama has no API to query total system memory directly.
-        Instead, we send a request with an impossibly large num_ctx
-        (1M tokens), which triggers an OOM error whose message
-        reveals the server's available memory:
-
-            "model requires X GiB than is available (Y GiB)"
-
-        We parse Y from that error.  Returns bytes, or 0.
+        On Jetson unified memory, the OS and background processes
+        need ~4-6 GiB.  We reserve 5 GiB as a safety buffer.
         """
-        import re
-
-        base_url = base_url.rstrip("/")
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    f"{base_url}/api/generate",
-                    json={
-                        "model": model,
-                        "prompt": "",
-                        "stream": False,
-                        "keep_alive": "0",
-                        "options": {"num_ctx": 1_048_576},
-                    },
-                )
-                if resp.status_code == 500:
-                    body = resp.text
-                    # Parse: "...than is available (77.6 GiB)"
-                    match = re.search(
-                        r"available\s*\((\d+(?:\.\d+)?)\s*GiB\)", body,
-                    )
-                    if match:
-                        avail_gib = float(match.group(1))
-                        total_bytes = int(avail_gib * (1024 ** 3))
-                        logger.info(
-                            "[LLM] Probed Ollama server memory: %.1f GiB",
-                            avail_gib,
-                        )
-                        return total_bytes
-                    logger.debug(
-                        "[LLM] Could not parse memory from OOM: %s",
-                        body[:200],
-                    )
-        except Exception as exc:
-            logger.debug(
-                "[LLM] Ollama memory probe failed: %s", exc,
-            )
-        return 0
+        total = LLMService.get_total_vram_bytes()
+        _OS_RESERVE = 5 * (1024 ** 3)  # 5 GiB
+        return max(total - _OS_RESERVE, 0) if total else 0
 
     @staticmethod
     def estimate_model_vram(
@@ -500,10 +469,14 @@ class LLMService:
             kv_bytes_per_token = 2 * block_count * head_count_kv * head_dim * 2
             kv_bytes = kv_bytes_per_token * num_ctx
 
+        # Graph overhead: ~1.5 GiB static buffer for compute graphs
+        _GRAPH_OVERHEAD = int(1.5 * (1024 ** 3))
+
         return {
-            "total_bytes": model_file_size + kv_bytes,
+            "total_bytes": model_file_size + kv_bytes + _GRAPH_OVERHEAD,
             "weights_bytes": model_file_size,
             "kv_bytes": kv_bytes,
+            "graph_overhead": _GRAPH_OVERHEAD,
             "kv_bytes_per_token": kv_bytes_per_token,
             "fields_found": fields_found,
         }
@@ -622,81 +595,91 @@ class LLMService:
                 estimate = LLMService.estimate_model_vram(
                     model_info, model_file_size, desired_ctx,
                 )
-                total_gpu = await LLMService.get_ollama_server_memory_bytes(
-                    base_url, model,
-                )
+                total_gpu = LLMService.get_total_vram_bytes()
+                safe_ceiling = LLMService.get_safe_ceiling_bytes()
                 kv_per_tok = estimate["kv_bytes_per_token"]
+
+                # ── Self-correct from cached measurements ─────────
+                # If we've loaded this model before, use the REAL
+                # kv_rate measured from /api/ps (often 1.5-2x higher
+                # than the theoretical formula due to Ollama overhead,
+                # attention buffers, and CUDA fragmentation).
+                cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
+                if cached and cached.get("real_kv_rate"):
+                    real_rate = cached["real_kv_rate"]
+                    logger.info(
+                        "[LLM] Using cached kv_rate for %s: "
+                        "%.0f B/tok (theoretical: %.0f)",
+                        model, real_rate, kv_per_tok,
+                    )
+                    kv_per_tok = real_rate
+                    # Recalculate with real rate
+                    estimate["kv_bytes"] = int(kv_per_tok * desired_ctx)
+                    estimate["total_bytes"] = (
+                        estimate["weights_bytes"]
+                        + estimate["kv_bytes"]
+                        + estimate.get("graph_overhead", 0)
+                    )
+                    estimate["kv_bytes_per_token"] = kv_per_tok
 
                 est_gb = estimate["total_bytes"] / (1024**3)
                 total_gb = total_gpu / (1024**3) if total_gpu else 0
+                safe_gb = safe_ceiling / (1024**3) if safe_ceiling else 0
 
                 logger.info(
                     "[LLM] VRAM estimate for %s @ ctx=%d: "
-                    "%.1f GiB needed (weights=%.1f + KV=%.1f), "
-                    "%.1f GiB total GPU",
-                    model,
-                    desired_ctx,
-                    est_gb,
+                    "%.1f GiB needed (weights=%.1f + KV=%.1f + "
+                    "graph=1.5), total=%.1f GiB, safe=%.1f GiB%s",
+                    model, desired_ctx, est_gb,
                     estimate["weights_bytes"] / (1024**3),
                     estimate["kv_bytes"] / (1024**3),
-                    total_gb,
+                    total_gb, safe_gb,
+                    " [cached kv_rate]" if cached
+                    and cached.get("real_kv_rate") else "",
                 )
 
-                # ── Step 5: Check if it fits ─────────────────────
-                # Use 85% of total GPU as the safe ceiling
-                # (leaves room for OS/Ubuntu overhead on Jetson)
-                safe_ceiling = int(total_gpu * 0.85) if total_gpu else 0
+                # ── Step 5b: Clamp desired_ctx to safe ceiling ───
+                # On Jetson (unified memory + Linux overcommit),
+                # probing is unreliable because empty prompts always
+                # succeed regardless of num_ctx. We MUST trust the
+                # VRAM math and clamp before loading.
+                load_ctx = desired_ctx
+                clamped = False
                 if (
                     safe_ceiling > 0
                     and estimate["fields_found"]
                     and estimate["total_bytes"] > safe_ceiling
                 ):
-                    # Will NOT fit — calculate max ctx that DOES fit
+                    graph_oh = estimate.get("graph_overhead", 0)
                     available_for_kv = max(
-                        safe_ceiling - estimate["weights_bytes"], 0,
+                        safe_ceiling
+                        - estimate["weights_bytes"]
+                        - graph_oh,
+                        0,
                     )
-
                     if kv_per_tok > 0:
-                        suggested_ctx = (
-                            available_for_kv // kv_per_tok // 4096
-                        ) * 4096
+                        load_ctx = (
+                            available_for_kv // kv_per_tok // 1024
+                        ) * 1024
                     else:
-                        suggested_ctx = 8192
-                    suggested_ctx = max(suggested_ctx, 2048)
+                        load_ctx = 8192
+                    load_ctx = max(load_ctx, 2048)
+                    clamped = True
 
-                    sug_est = LLMService.estimate_model_vram(
-                        model_info, model_file_size, suggested_ctx,
+                    clamped_est = LLMService.estimate_model_vram(
+                        model_info, model_file_size, load_ctx,
+                    )
+                    logger.warning(
+                        "[LLM] ctx=%d needs %.1f GiB > %.1f GiB safe "
+                        "ceiling → clamped to ctx=%d (%.1f GiB)",
+                        desired_ctx, est_gb, safe_gb,
+                        load_ctx,
+                        clamped_est["total_bytes"] / (1024**3),
                     )
 
-                    message = (
-                        f"Estimated VRAM for ctx={desired_ctx:,}: "
-                        f"{est_gb:.1f} GiB, but safe ceiling is "
-                        f"{safe_ceiling / (1024**3):.1f} GiB "
-                        f"(85% of {total_gb:.0f} GiB). "
-                        f"Max safe context: {suggested_ctx:,} "
-                        f"tokens (~{sug_est['total_bytes'] / (1024**3):.1f}"
-                        f" GiB)."
-                    )
-                    logger.warning("[LLM] %s", message)
-
-                    return {
-                        "status": "oom_error",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": False,
-                        "model_max_ctx": model_max_ctx,
-                        "requested_ctx": desired_ctx,
-                        "suggested_ctx": suggested_ctx,
-                        "kv_rate_bytes_per_token": kv_per_tok,
-                        "estimated_vram_gb": round(est_gb, 1),
-                        "total_vram_gb": round(total_gb, 1),
-                        "message": message,
-                    }
-
-                # ── Step 5b: Flush VRAM before loading ──────────
-                # Evict ALL models so this model gets 100% VRAM
+                # ── Step 6: Flush VRAM + single load attempt ──────
                 import asyncio
+
                 try:
                     freed = await LLMService.unload_all_ollama_models(
                         base_url,
@@ -707,28 +690,15 @@ class LLMService:
                             freed,
                         )
                         await asyncio.sleep(2)
-                        # Verify VRAM is clear
-                        ps_check = await client.get(
-                            f"{base_url}/api/ps",
-                        )
-                        still_loaded = len(
-                            ps_check.json().get("models", []),
-                        )
-                        if still_loaded:
-                            logger.warning(
-                                "[LLM] %d model(s) still in VRAM "
-                                "after flush",
-                                still_loaded,
-                            )
                 except Exception as flush_exc:
                     logger.warning(
                         "[LLM] VRAM flush failed: %s", flush_exc,
                     )
 
-                # ── Step 6: Load the model ───────────────────────
                 logger.info(
-                    "[LLM] Estimate OK — warming %s at num_ctx=%d …",
-                    model, desired_ctx,
+                    "[LLM] Loading %s at num_ctx=%d "
+                    "(num_gpu=999, keep_alive=%s) …",
+                    model, load_ctx, keep_alive,
                 )
                 try:
                     warm_resp = await client.post(
@@ -739,108 +709,190 @@ class LLMService:
                             "keep_alive": keep_alive,
                             "stream": False,
                             "options": {
-                                "num_ctx": desired_ctx,
+                                "num_ctx": load_ctx,
+                                "num_gpu": 999,
                             },
                         },
                     )
                     warm_resp.raise_for_status()
-                    recommended_ctx = desired_ctx
                     logger.info(
-                        "[LLM] ✅ Model %s warmed at num_ctx=%d",
-                        model, desired_ctx,
+                        "[LLM] ✅ Model %s loaded at num_ctx=%d%s",
+                        model, load_ctx,
+                        " (clamped from %d)" % desired_ctx
+                        if clamped else "",
                     )
-
-                    # Measure actual VRAM via /api/ps
-                    size_vram = 0
-                    try:
-                        ps_resp = await client.get(
-                            f"{base_url}/api/ps",
+                except httpx.HTTPStatusError:
+                    # OOM even after math check — step down 15% at a
+                    # time until it fits (avoids overshooting like 50%)
+                    clamped = True
+                    attempt_ctx = load_ctx
+                    loaded = False
+                    while attempt_ctx > 2048:
+                        attempt_ctx = max(
+                            int(attempt_ctx * 0.85) // 1024 * 1024,
+                            2048,
                         )
-                        ps_resp.raise_for_status()
-                        for m_info in ps_resp.json().get("models", []):
-                            m_name = m_info.get("name", "")
-                            if (
-                                m_name == model
-                                or m_name.split(":")[0]
-                                == model.split(":")[0]
-                            ):
-                                size_vram = m_info.get("size_vram", 0)
-                                break
-                    except Exception:
-                        pass
+                        logger.warning(
+                            "[LLM] OOM at ctx=%d — trying %d (−15%%)",
+                            load_ctx, attempt_ctx,
+                        )
+                        try:
+                            warm_resp = await client.post(
+                                f"{base_url}/api/generate",
+                                json={
+                                    "model": model,
+                                    "prompt": "",
+                                    "keep_alive": keep_alive,
+                                    "stream": False,
+                                    "options": {
+                                        "num_ctx": attempt_ctx,
+                                        "num_gpu": 999,
+                                    },
+                                },
+                            )
+                            warm_resp.raise_for_status()
+                            load_ctx = attempt_ctx
+                            loaded = True
+                            logger.info(
+                                "[LLM] ✅ Loaded at ctx=%d",
+                                load_ctx,
+                            )
+                            break
+                        except httpx.HTTPStatusError:
+                            load_ctx = attempt_ctx
+                            continue
 
-                    # Cache the measurement
-                    if size_vram:
-                        _cfg.LLM_VRAM_MEASUREMENTS[model] = {
-                            "ctx": desired_ctx,
-                            "size_vram": size_vram,
-                            "kv_rate": kv_per_tok,
+                    if not loaded:
+                        return {
+                            "status": "oom_error",
+                            "model": model,
+                            "available_models": [
+                                m["name"] for m in tags_data
+                            ],
+                            "model_found": True,
+                            "pre_warmed": False,
+                            "model_max_ctx": model_max_ctx,
+                            "requested_ctx": desired_ctx,
+                            "suggested_ctx": 2048,
+                            "kv_rate_bytes_per_token": kv_per_tok,
+                            "estimated_vram_gb": round(est_gb, 1),
+                            "total_vram_gb": round(total_gb, 1),
+                            "message": (
+                                f"Cannot load {model} even at "
+                                f"ctx={attempt_ctx}."
+                            ),
                         }
 
-                    return {
-                        "status": "model_verified",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": True,
-                        "model_max_ctx": model_max_ctx,
-                        "recommended_ctx": recommended_ctx,
-                        "vram_bytes": size_vram,
-                        "kv_rate_bytes_per_token": kv_per_tok,
-                    }
+                recommended_ctx = load_ctx
 
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code != 500:
-                        raise
-                    # Unexpected OOM (estimate said it would fit)
-                    # Evict and return error — NO retry
-                    logger.warning(
-                        "[LLM] Unexpected OOM at ctx=%d for %s "
-                        "(estimate said it would fit)",
-                        desired_ctx, model,
+                # Measure actual VRAM via /api/ps
+                size_vram = 0
+                try:
+                    ps_resp = await client.get(
+                        f"{base_url}/api/ps",
                     )
-                    try:
-                        await client.post(
-                            f"{base_url}/api/generate",
-                            json={
-                                "model": model,
-                                "prompt": "",
-                                "keep_alive": "0",
-                                "stream": False,
-                            },
+                    ps_resp.raise_for_status()
+                    for m_info in ps_resp.json().get("models", []):
+                        m_name = m_info.get("name", "")
+                        if (
+                            m_name == model
+                            or m_name.split(":")[0]
+                            == model.split(":")[0]
+                        ):
+                            size_vram = m_info.get("size_vram", 0)
+                            break
+                except Exception:
+                    pass
+
+                if size_vram:
+                    # Derive REAL kv_rate from actual measurement
+                    graph_oh = int(1.5 * (1024**3))
+                    real_kv_bytes = max(
+                        size_vram - model_file_size - graph_oh, 0,
+                    )
+                    raw_kv_rate = (
+                        real_kv_bytes / load_ctx if load_ctx > 0 else 0
+                    )
+
+                    # ── Sanity check for Jetson unified memory ────
+                    # On Jetson, size_vram from /api/ps includes ALL
+                    # mapped system memory, hugely inflating the
+                    # derived KV rate.  If rate > 4× theoretical,
+                    # discard it and use theoretical × 1.5 instead.
+                    theoretical_rate = estimate["kv_bytes_per_token"]
+                    _MAX_RATE_RATIO = 4.0
+                    _FALLBACK_MULTIPLIER = 1.5
+
+                    if (
+                        theoretical_rate > 0
+                        and raw_kv_rate > theoretical_rate * _MAX_RATE_RATIO
+                    ):
+                        real_kv_rate = theoretical_rate * _FALLBACK_MULTIPLIER
+                        logger.warning(
+                            "[LLM] ⚠️  size_vram-derived kv_rate "
+                            "(%.0f B/tok) is %.1f× theoretical "
+                            "(%.0f B/tok) — likely unified-memory "
+                            "inflation.  Using %.0f B/tok (theo×%.1f) "
+                            "instead.",
+                            raw_kv_rate,
+                            raw_kv_rate / theoretical_rate,
+                            theoretical_rate,
+                            real_kv_rate,
+                            _FALLBACK_MULTIPLIER,
                         )
-                    except Exception:
-                        pass
+                    else:
+                        real_kv_rate = raw_kv_rate
 
-                    # Suggest 75% of what we tried, rounded
-                    suggested_ctx = (
-                        int(desired_ctx * 0.75) // 4096
-                    ) * 4096
-                    suggested_ctx = max(suggested_ctx, 2048)
-
-                    cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
-                    if cached:
-                        suggested_ctx = cached["ctx"]
-
-                    return {
-                        "status": "oom_error",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": False,
-                        "model_max_ctx": model_max_ctx,
-                        "requested_ctx": desired_ctx,
-                        "suggested_ctx": suggested_ctx,
-                        "kv_rate_bytes_per_token": kv_per_tok,
-                        "estimated_vram_gb": round(est_gb, 1),
-                        "total_vram_gb": round(total_gb, 1),
-                        "message": (
-                            f"OOM at {desired_ctx:,} tokens "
-                            f"(estimate: {est_gb:.1f} GiB, "
-                            f"total: {total_gb:.1f} GiB). "
-                            f"Suggested: {suggested_ctx:,}."
-                        ),
+                    measurement = {
+                        "ctx": load_ctx,
+                        "size_vram": size_vram,
+                        "kv_rate": theoretical_rate,
+                        "real_kv_rate": real_kv_rate,
+                        "weights_bytes": model_file_size,
                     }
+                    _cfg.LLM_VRAM_MEASUREMENTS[model] = measurement
+                    logger.info(
+                        "[LLM] Measured %s: %d ctx → %.1f GiB VRAM "
+                        "(real kv_rate=%.0f B/tok vs theoretical %.0f)",
+                        model, load_ctx,
+                        size_vram / (1024**3),
+                        real_kv_rate, theoretical_rate,
+                    )
+
+                    # Persist to disk so it survives restart
+                    try:
+                        _cfg.update_llm_config({
+                            "vram_measurements":
+                                _cfg.LLM_VRAM_MEASUREMENTS,
+                        })
+                        logger.info(
+                            "[LLM] VRAM cache saved to disk",
+                        )
+                    except Exception as save_exc:
+                        logger.warning(
+                            "[LLM] Could not persist VRAM cache: %s",
+                            save_exc,
+                        )
+
+                result: dict = {
+                    "status": "model_verified",
+                    "model": model,
+                    "available_models": [m["name"] for m in tags_data],
+                    "model_found": True,
+                    "pre_warmed": True,
+                    "model_max_ctx": model_max_ctx,
+                    "recommended_ctx": recommended_ctx,
+                    "vram_bytes": size_vram,
+                    "kv_rate_bytes_per_token": kv_per_tok,
+                }
+                if clamped:
+                    result["clamped_from"] = desired_ctx
+                    result["message"] = (
+                        f"Loaded at {load_ctx:,} tokens "
+                        f"(clamped from {desired_ctx:,} to fit "
+                        f"in {safe_gb:.0f} GiB safe ceiling)."
+                    )
+                return result
 
         except Exception as exc:
             logger.warning(

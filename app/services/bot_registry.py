@@ -97,6 +97,56 @@ class BotRegistry:
         cols = [d[0] for d in conn.execute("SELECT * FROM bots LIMIT 0").description]
         return [dict(zip(cols, r)) for r in rows]
 
+    # ── Delete ──────────────────────────────────────────────────
+
+    @staticmethod
+    def delete_bot(bot_id: str, *, hard: bool = False) -> bool:
+        """Delete a bot.
+
+        Soft delete: sets status='deleted' (excluded from list_bots).
+        Hard delete: removes the bot row AND all related data from
+        positions, orders, portfolio_snapshots, price_triggers,
+        watchlist, and pipeline_events.
+
+        Returns True if a bot was found and deleted.
+        """
+        conn = get_db()
+        existing = conn.execute(
+            "SELECT bot_id FROM bots WHERE bot_id = ?", [bot_id],
+        ).fetchone()
+        if not existing:
+            return False
+
+        if hard:
+            # Cascade: delete related data first
+            for table in (
+                "positions",
+                "orders",
+                "portfolio_snapshots",
+                "price_triggers",
+                "watchlist",
+                "pipeline_events",
+            ):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE bot_id = ?",  # noqa: S608
+                        [bot_id],
+                    )
+                except Exception:
+                    pass  # Table may not exist or lack bot_id column
+            conn.execute("DELETE FROM bots WHERE bot_id = ?", [bot_id])
+            logger.info(
+                "[BotRegistry] Hard-deleted bot %s and related data",
+                bot_id,
+            )
+        else:
+            conn.execute(
+                "UPDATE bots SET status = 'deleted' WHERE bot_id = ?",
+                [bot_id],
+            )
+            logger.info("[BotRegistry] Soft-deleted bot %s", bot_id)
+        return True
+
     # ── Update ─────────────────────────────────────────────────
 
     @staticmethod
@@ -244,31 +294,6 @@ class BotRegistry:
             [bot_id],
         )
         logger.info("[BotRegistry] Deactivated bot %s", bot_id)
-        return True
-
-    @staticmethod
-    def delete_bot(bot_id: str) -> bool:
-        """Hard-delete: remove bot and ALL its associated data."""
-        conn = get_db()
-        tables_with_bot_id = [
-            "watchlist",
-            "positions",
-            "orders",
-            "portfolio_snapshots",
-            "pipeline_events",
-            "price_triggers",
-        ]
-        for table in tables_with_bot_id:
-            try:
-                conn.execute(
-                    f"DELETE FROM {table} WHERE bot_id = ?",  # noqa: S608
-                    [bot_id],
-                )
-            except Exception:
-                pass  # Table may not have bot_id column yet
-        # Remove the bot itself
-        conn.execute("DELETE FROM bots WHERE bot_id = ?", [bot_id])
-        logger.info("[BotRegistry] Hard-deleted bot %s and all data", bot_id)
         return True
 
     # ── Leaderboard ────────────────────────────────────────────
