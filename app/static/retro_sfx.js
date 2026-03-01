@@ -1,24 +1,24 @@
 // ***************************************************************
-// RETRO SFX ENGINE — Procedural 8-bit sounds via Web Audio API
+// SYNTHWAVE SFX ENGINE — Warm 80s synth sounds via Web Audio API
 // ***************************************************************
 //
 // All sounds are synthesized in real-time. No MP3s needed.
-// A global "telephone line" bandpass filter gives everything
-// that crunchy, lo-fi retro feel.
+// Warm analog-style tones with reverb and chorus for that
+// smooth retrowave / outrun aesthetic.
 //
 // Usage:
-//   RetroSFX.click()           — typewriter key (buttons, tabs)
-//   RetroSFX.computeStart()    — start rapid data blips (returns stop fn)
-//   RetroSFX.modemHandshake()  — 56k dial-up sequence (~5s)
-//   RetroSFX.successChime()    — rising arpeggio
-//   RetroSFX.alertBuzz()       — warning buzz
-//   RetroSFX.powerUp()         — page load sweep
+//   RetroSFX.click()           — soft synth tap (buttons, tabs)
+//   RetroSFX.computeStart()    — gentle pulsing pad (returns stop fn)
+//   RetroSFX.modemHandshake()  — synthwave boot sequence (~3s)
+//   RetroSFX.successChime()    — dreamy rising arpeggio
+//   RetroSFX.alertBuzz()       — warm low warning tone
+//   RetroSFX.powerUp()         — analog pad sweep on load
 // ***************************************************************
 
 const RetroSFX = (() => {
     let ctx = null;
-    let masterFilter = null;
     let masterGain = null;
+    let reverbNode = null;
     let initialized = false;
     let muted = false;
 
@@ -28,27 +28,43 @@ const RetroSFX = (() => {
         try {
             ctx = new (window.AudioContext || window.webkitAudioContext)();
 
-            // "Telephone line" bandpass — makes everything sound retro
-            masterFilter = ctx.createBiquadFilter();
-            masterFilter.type = "bandpass";
-            masterFilter.frequency.value = 2000;
-            masterFilter.Q.value = 0.7;
+            // Warm low-pass filter — removes harshness, keeps warmth
+            const warmFilter = ctx.createBiquadFilter();
+            warmFilter.type = "lowpass";
+            warmFilter.frequency.value = 3500;
+            warmFilter.Q.value = 0.5;
 
-            // Compressor to tame peaks
+            // Gentle compressor
             const compressor = ctx.createDynamicsCompressor();
-            compressor.threshold.value = -20;
-            compressor.ratio.value = 4;
+            compressor.threshold.value = -18;
+            compressor.ratio.value = 3;
+            compressor.attack.value = 0.01;
+            compressor.release.value = 0.2;
 
-            // Master volume
+            // Master volume — keep it gentle
             masterGain = ctx.createGain();
-            masterGain.gain.value = 0.3;
+            masterGain.gain.value = 0.25;
 
-            masterFilter.connect(compressor);
+            // Build reverb (convolution impulse)
+            reverbNode = createReverb(1.2, 2.0);
+
+            // Dry path: filter → compressor → master → out
+            warmFilter.connect(compressor);
             compressor.connect(masterGain);
             masterGain.connect(ctx.destination);
 
+            // Wet path: filter → reverb → master → out
+            const reverbGain = ctx.createGain();
+            reverbGain.gain.value = 0.3; // reverb mix
+            warmFilter.connect(reverbGain);
+            reverbGain.connect(reverbNode);
+            reverbNode.connect(masterGain);
+
+            // Store the entry point for all sounds
+            ctx._masterInput = warmFilter;
+
             initialized = true;
-            console.log("[RetroSFX] Initialized — Web Audio API ready");
+            console.log("[RetroSFX] Initialized — Synthwave Audio Engine ready");
             return true;
         } catch (e) {
             console.warn("[RetroSFX] Web Audio API not available:", e);
@@ -56,223 +72,312 @@ const RetroSFX = (() => {
         }
     };
 
+    // ── Helper: create simple reverb impulse ──────────────────
+    const createReverb = (decay, duration) => {
+        const rate = 44100;
+        const len = rate * duration;
+        const impulse = ctx.createBuffer(2, len, rate);
+        for (let ch = 0; ch < 2; ch++) {
+            const data = impulse.getChannelData(ch);
+            for (let i = 0; i < len; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+            }
+        }
+        const conv = ctx.createConvolver();
+        conv.buffer = impulse;
+        return conv;
+    };
+
     // ── Helper: connect node → master chain ───────────────────
     const toMaster = (node) => {
-        node.connect(masterFilter);
+        node.connect(ctx._masterInput);
         return node;
     };
 
-    // ── Helper: create white noise buffer ─────────────────────
-    const noiseBuffer = (duration) => {
-        const len = ctx.sampleRate * duration;
-        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < len; i++) {
-            data[i] = Math.random() * 2 - 1;
-        }
-        return buf;
+    // ── Helper: detuned pair for chorus-like thickness ─────────
+    const createDetunedPair = (freq, type, detuneCents = 8) => {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        osc1.type = type;
+        osc2.type = type;
+        osc1.frequency.value = freq;
+        osc2.frequency.value = freq;
+        osc1.detune.value = -detuneCents;
+        osc2.detune.value = detuneCents;
+        return [osc1, osc2];
     };
 
     // ═══════════════════════════════════════════════════════════
-    // 1. TYPEWRITER CLICK — Sharp metallic clack + paper thud
+    // 1. SOFT SYNTH TAP — Gentle sine blip with harmonic
     // ═══════════════════════════════════════════════════════════
     const click = () => {
         if (!init() || muted) return;
         const t = ctx.currentTime;
 
-        // The "Clack" — square wave pitch drop
+        // Warm sine tap
         const osc = ctx.createOscillator();
-        const oscGain = ctx.createGain();
-        osc.type = "square";
-        osc.frequency.setValueAtTime(1200, t);
-        osc.frequency.exponentialRampToValueAtTime(150, t + 0.04);
-        oscGain.gain.setValueAtTime(0.4, t);
-        oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-        osc.connect(oscGain);
-        toMaster(oscGain);
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, t);
+        osc.frequency.exponentialRampToValueAtTime(440, t + 0.06);
+        gain.gain.setValueAtTime(0.15, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+        osc.connect(gain);
+        toMaster(gain);
         osc.start(t);
-        osc.stop(t + 0.05);
+        osc.stop(t + 0.1);
 
-        // The "Thud" — white noise burst
-        const noise = ctx.createBufferSource();
-        const noiseGain = ctx.createGain();
-        noise.buffer = noiseBuffer(0.06);
-        noiseGain.gain.setValueAtTime(0.5, t);
-        noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-        noise.connect(noiseGain);
-        toMaster(noiseGain);
-        noise.start(t);
+        // Soft harmonic overtone
+        const h = ctx.createOscillator();
+        const hg = ctx.createGain();
+        h.type = "triangle";
+        h.frequency.setValueAtTime(1320, t);
+        h.frequency.exponentialRampToValueAtTime(660, t + 0.05);
+        hg.gain.setValueAtTime(0.06, t);
+        hg.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+        h.connect(hg);
+        toMaster(hg);
+        h.start(t);
+        h.stop(t + 0.08);
     };
 
     // ═══════════════════════════════════════════════════════════
-    // 2. DATA COMPUTE BLIPS — Random sawtooth arpeggios
-    //    Returns a stop() function to cancel the loop
+    // 2. GENTLE PULSE PAD — Slow LFO-modulated sine pad
+    //    Returns a stop() function to fade out and cancel
     // ═══════════════════════════════════════════════════════════
     const computeStart = () => {
         if (!init() || muted) return () => { };
         let running = true;
+        const t = ctx.currentTime;
 
-        const blip = () => {
+        // Base pad — detuned sine pair for warmth
+        const [osc1, osc2] = createDetunedPair(220, "sine", 6);
+        const padGain = ctx.createGain();
+        padGain.gain.setValueAtTime(0, t);
+        padGain.gain.linearRampToValueAtTime(0.06, t + 0.5);
+
+        osc1.connect(padGain);
+        osc2.connect(padGain);
+        toMaster(padGain);
+
+        // LFO for gentle pulse
+        const lfo = ctx.createOscillator();
+        const lfoGain = ctx.createGain();
+        lfo.type = "sine";
+        lfo.frequency.value = 2.5; // gentle pulse rate
+        lfoGain.gain.value = 0.03;
+        lfo.connect(lfoGain);
+        lfoGain.connect(padGain.gain);
+
+        osc1.start(t);
+        osc2.start(t);
+        lfo.start(t);
+
+        // Occasional soft blip on top
+        let blipTimer = null;
+        const scheduleBlip = () => {
             if (!running) return;
-            const t = ctx.currentTime;
-            const freq = 600 + Math.random() * 1800;
+            const now = ctx.currentTime;
+            const note = [330, 440, 523.25, 659.25][Math.floor(Math.random() * 4)];
+            const blipOsc = ctx.createOscillator();
+            const blipGain = ctx.createGain();
+            blipOsc.type = "triangle";
+            blipOsc.frequency.value = note;
+            blipGain.gain.setValueAtTime(0.04, now);
+            blipGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+            blipOsc.connect(blipGain);
+            toMaster(blipGain);
+            blipOsc.start(now);
+            blipOsc.stop(now + 0.2);
 
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sawtooth";
-            osc.frequency.setValueAtTime(freq, t);
-            osc.frequency.exponentialRampToValueAtTime(freq * 0.3, t + 0.06);
-            gain.gain.setValueAtTime(0.12, t);
-            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-            osc.connect(gain);
-            toMaster(gain);
-            osc.start(t);
-            osc.stop(t + 0.07);
-
-            if (running) {
-                setTimeout(blip, 60 + Math.random() * 80);
-            }
+            blipTimer = setTimeout(scheduleBlip, 300 + Math.random() * 500);
         };
+        blipTimer = setTimeout(scheduleBlip, 200);
 
-        blip();
-        return () => { running = false; };
+        // Return stop function with smooth fade-out
+        return () => {
+            running = false;
+            if (blipTimer) clearTimeout(blipTimer);
+            const now = ctx.currentTime;
+            padGain.gain.cancelScheduledValues(now);
+            padGain.gain.setValueAtTime(padGain.gain.value, now);
+            padGain.gain.linearRampToValueAtTime(0, now + 0.5);
+            osc1.stop(now + 0.6);
+            osc2.stop(now + 0.6);
+            lfo.stop(now + 0.6);
+        };
     };
 
     // ═══════════════════════════════════════════════════════════
-    // 3. MODEM HANDSHAKE — Full 56k dial-up sequence (~5s)
-    //    Dial tone → Answer tone → FSK static
+    // 3. SYNTHWAVE BOOT — Warm pad swell + arpeggio (~3s)
+    //    Replaces the harsh modem handshake
     // ═══════════════════════════════════════════════════════════
     const modemHandshake = () => {
         if (!init() || muted) return;
         const t = ctx.currentTime;
 
-        // Phase 1: Dial tone (US standard 350Hz + 440Hz) — 1.2s
-        const dt1 = ctx.createOscillator();
-        const dt2 = ctx.createOscillator();
-        dt1.frequency.value = 350;
-        dt2.frequency.value = 440;
-        const dialGain = ctx.createGain();
-        dialGain.gain.setValueAtTime(0.15, t);
-        dialGain.gain.setValueAtTime(0, t + 1.2);
-        dt1.connect(dialGain);
-        dt2.connect(dialGain);
-        toMaster(dialGain);
-        dt1.start(t);
-        dt2.start(t);
-        dt1.stop(t + 1.3);
-        dt2.stop(t + 1.3);
+        // Phase 1: Sub bass swell (0 → 1.5s)
+        const sub = ctx.createOscillator();
+        const subGain = ctx.createGain();
+        sub.type = "sine";
+        sub.frequency.setValueAtTime(55, t);
+        sub.frequency.linearRampToValueAtTime(110, t + 1.5);
+        subGain.gain.setValueAtTime(0, t);
+        subGain.gain.linearRampToValueAtTime(0.12, t + 0.8);
+        subGain.gain.linearRampToValueAtTime(0.08, t + 1.5);
+        subGain.gain.linearRampToValueAtTime(0, t + 2.0);
+        sub.connect(subGain);
+        toMaster(subGain);
+        sub.start(t);
+        sub.stop(t + 2.1);
 
-        // Phase 2: Answer tone (2100Hz V.25 handshake) — 1.2s
-        const ans = ctx.createOscillator();
-        ans.frequency.value = 2100;
-        const ansGain = ctx.createGain();
-        ansGain.gain.setValueAtTime(0, t + 1.3);
-        ansGain.gain.linearRampToValueAtTime(0.25, t + 1.5);
-        ansGain.gain.setValueAtTime(0.25, t + 2.3);
-        ansGain.gain.linearRampToValueAtTime(0, t + 2.5);
-        ans.connect(ansGain);
-        toMaster(ansGain);
-        ans.start(t + 1.3);
-        ans.stop(t + 2.6);
+        // Phase 2: Warm pad chord (0.5 → 2.5s) — Cmaj7 voicing
+        const padNotes = [261.63, 329.63, 392, 493.88]; // C4, E4, G4, B4
+        padNotes.forEach((freq) => {
+            const [o1, o2] = createDetunedPair(freq, "triangle", 10);
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0, t + 0.5);
+            g.gain.linearRampToValueAtTime(0.04, t + 1.2);
+            g.gain.linearRampToValueAtTime(0.03, t + 2.0);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 2.8);
+            o1.connect(g);
+            o2.connect(g);
+            toMaster(g);
+            o1.start(t + 0.5);
+            o2.start(t + 0.5);
+            o1.stop(t + 3.0);
+            o2.stop(t + 3.0);
+        });
 
-        // Phase 3: FSK data static — amplitude-modulated noise — 2s
-        const noiseLen = 2.0;
-        const buf = ctx.createBuffer(1, ctx.sampleRate * noiseLen, ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < buf.length; i++) {
-            // AM modulation to sound like bitstreams
-            const mod = Math.sin(i * 0.008) > 0 ? 1 : 0.15;
-            data[i] = (Math.random() * 2 - 1) * mod;
-        }
-        const staticNode = ctx.createBufferSource();
-        staticNode.buffer = buf;
-        const staticGain = ctx.createGain();
-        staticGain.gain.setValueAtTime(0, t + 2.6);
-        staticGain.gain.linearRampToValueAtTime(0.3, t + 2.8);
-        staticGain.gain.linearRampToValueAtTime(0.15, t + 4.0);
-        staticGain.gain.linearRampToValueAtTime(0, t + 4.6);
-        staticNode.connect(staticGain);
-        toMaster(staticGain);
-        staticNode.start(t + 2.6);
-    };
-
-    // ═══════════════════════════════════════════════════════════
-    // 4. SUCCESS CHIME — Rising arpeggio G4→C5→E5
-    // ═══════════════════════════════════════════════════════════
-    const successChime = () => {
-        if (!init() || muted) return;
-        const t = ctx.currentTime;
-        const notes = [392, 523.25, 659.25]; // G4, C5, E5
-
-        notes.forEach((freq, i) => {
+        // Phase 3: Descending arpeggio sparkle (1.5 → 3.0s)
+        const arpNotes = [987.77, 783.99, 659.25, 523.25, 392]; // B5→G4
+        arpNotes.forEach((freq, i) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
-            osc.type = "triangle";
+            osc.type = "sine";
             osc.frequency.value = freq;
-            const start = t + i * 0.12;
-            gain.gain.setValueAtTime(0.3, start);
-            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.25);
+            const start = t + 1.5 + i * 0.2;
+            gain.gain.setValueAtTime(0.08, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
             osc.connect(gain);
             toMaster(gain);
             osc.start(start);
-            osc.stop(start + 0.3);
+            osc.stop(start + 0.5);
         });
     };
 
     // ═══════════════════════════════════════════════════════════
-    // 5. ALERT BUZZ — Low warning buzz (destructive actions)
+    // 4. SUCCESS CHIME — Dreamy pentatonic arpeggio with shimmer
+    // ═══════════════════════════════════════════════════════════
+    const successChime = () => {
+        if (!init() || muted) return;
+        const t = ctx.currentTime;
+        // Pentatonic rise: C5 → D5 → E5 → G5 → shimmer on C6
+        const notes = [523.25, 587.33, 659.25, 783.99, 1046.50];
+
+        notes.forEach((freq, i) => {
+            const [o1, o2] = createDetunedPair(freq, "sine", 6);
+            const gain = ctx.createGain();
+            const start = t + i * 0.1;
+            const isLast = i === notes.length - 1;
+            const dur = isLast ? 0.6 : 0.25;
+
+            gain.gain.setValueAtTime(isLast ? 0.12 : 0.1, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+            o1.connect(gain);
+            o2.connect(gain);
+            toMaster(gain);
+            o1.start(start);
+            o2.start(start);
+            o1.stop(start + dur + 0.05);
+            o2.stop(start + dur + 0.05);
+        });
+
+        // Shimmer: high sine harmonic on the last note
+        const shimmer = ctx.createOscillator();
+        const sGain = ctx.createGain();
+        shimmer.type = "sine";
+        shimmer.frequency.value = 2093; // C7
+        const sStart = t + 0.4;
+        sGain.gain.setValueAtTime(0.03, sStart);
+        sGain.gain.exponentialRampToValueAtTime(0.001, sStart + 0.8);
+        shimmer.connect(sGain);
+        toMaster(sGain);
+        shimmer.start(sStart);
+        shimmer.stop(sStart + 0.9);
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // 5. WARM ALERT — Gentle low tone (not harsh buzz)
     // ═══════════════════════════════════════════════════════════
     const alertBuzz = () => {
         if (!init() || muted) return;
         const t = ctx.currentTime;
 
-        // Two-tone descending buzz
-        const osc = ctx.createOscillator();
+        // Two falling sine tones — warm, not aggressive
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.type = "square";
-        osc.frequency.setValueAtTime(220, t);
-        osc.frequency.setValueAtTime(165, t + 0.12);
-        gain.gain.setValueAtTime(0.25, t);
-        gain.gain.setValueAtTime(0.25, t + 0.2);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-        osc.connect(gain);
+        osc1.type = "sine";
+        osc2.type = "triangle";
+        osc1.frequency.setValueAtTime(440, t);
+        osc1.frequency.exponentialRampToValueAtTime(220, t + 0.2);
+        osc2.frequency.setValueAtTime(330, t);
+        osc2.frequency.exponentialRampToValueAtTime(165, t + 0.25);
+
+        gain.gain.setValueAtTime(0.15, t);
+        gain.gain.setValueAtTime(0.12, t + 0.15);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
         toMaster(gain);
-        osc.start(t);
-        osc.stop(t + 0.35);
+        osc1.start(t);
+        osc2.start(t);
+        osc1.stop(t + 0.4);
+        osc2.stop(t + 0.4);
     };
 
     // ═══════════════════════════════════════════════════════════
-    // 6. POWER UP — Rising frequency sweep on page load
+    // 6. POWER UP — Analog synth pad sweep with shimmer
     // ═══════════════════════════════════════════════════════════
     const powerUp = () => {
         if (!init() || muted) return;
         const t = ctx.currentTime;
 
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sawtooth";
-        osc.frequency.setValueAtTime(60, t);
-        osc.frequency.exponentialRampToValueAtTime(800, t + 0.6);
-        gain.gain.setValueAtTime(0.2, t);
-        gain.gain.setValueAtTime(0.2, t + 0.4);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
-        osc.connect(gain);
-        toMaster(gain);
-        osc.start(t);
-        osc.stop(t + 0.8);
+        // Rising pad swell
+        const [o1, o2] = createDetunedPair(110, "triangle", 12);
+        const padGain = ctx.createGain();
+        o1.frequency.exponentialRampToValueAtTime(440, t + 0.8);
+        o2.frequency.exponentialRampToValueAtTime(440, t + 0.8);
+        padGain.gain.setValueAtTime(0, t);
+        padGain.gain.linearRampToValueAtTime(0.1, t + 0.3);
+        padGain.gain.setValueAtTime(0.1, t + 0.6);
+        padGain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+        o1.connect(padGain);
+        o2.connect(padGain);
+        toMaster(padGain);
+        o1.start(t);
+        o2.start(t);
+        o1.stop(t + 1.3);
+        o2.stop(t + 1.3);
 
-        // Little "ding" at the end
-        const ding = ctx.createOscillator();
-        const dingGain = ctx.createGain();
-        ding.type = "triangle";
-        ding.frequency.value = 880;
-        dingGain.gain.setValueAtTime(0, t + 0.55);
-        dingGain.gain.linearRampToValueAtTime(0.25, t + 0.6);
-        dingGain.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
-        ding.connect(dingGain);
-        toMaster(dingGain);
-        ding.start(t + 0.55);
-        ding.stop(t + 1.1);
+        // Arrival chime — two gentle notes
+        const chimeNotes = [659.25, 880]; // E5, A5
+        chimeNotes.forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "sine";
+            osc.frequency.value = freq;
+            const start = t + 0.7 + i * 0.12;
+            gain.gain.setValueAtTime(0.1, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
+            osc.connect(gain);
+            toMaster(gain);
+            osc.start(start);
+            osc.stop(start + 0.5);
+        });
     };
 
     // ── Volume / Mute controls ────────────────────────────────

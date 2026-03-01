@@ -1315,7 +1315,8 @@ const ConfirmButton = ({ onConfirm, label, confirmLabel, icon, confirmIcon, clas
 
     useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
-    const handleClick = () => {
+    const handleClick = (e) => {
+        if (e) { e.stopPropagation(); e.preventDefault(); }
         if (disabled) return;
         if (confirming) {
             clearTimeout(timerRef.current);

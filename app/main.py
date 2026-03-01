@@ -1742,20 +1742,6 @@ async def update_bot_settings(bot_id: str, req: BotSettingsUpdate) -> dict:
     return {"status": "updated", "bot": bot}
 
 
-@app.delete("/api/bots/{bot_id}")
-async def deactivate_bot(
-    bot_id: str, hard: bool = Query(default=False),
-) -> dict:
-    """Deactivate (soft-delete) or hard-delete a bot.
-
-    Pass ?hard=true to permanently remove the bot and ALL its data.
-    """
-    if hard:
-        await asyncio.to_thread(BotRegistry.delete_bot, bot_id)
-        return {"status": "deleted", "bot_id": bot_id}
-    await asyncio.to_thread(BotRegistry.deactivate_bot, bot_id)
-    return {"status": "deactivated", "bot_id": bot_id}
-
 
 class BotReorderRequest(BaseModel):
     """Request body for reordering bots."""
