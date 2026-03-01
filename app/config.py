@@ -45,6 +45,15 @@ class Settings:
     LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
     LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
 
+    # In-session VRAM measurement cache (populated by verify_and_warm).
+    # Key = model name, value = {"ctx": int, "size_vram": int, "kv_rate": float}
+    # Survives hot-reloads but resets on server restart.
+    LLM_VRAM_MEASUREMENTS: dict = {}
+
+    # Total system GPU memory in GB (0 = auto-detect via nvidia-smi).
+    # Override for unified-memory systems like Jetson if auto-detect fails.
+    SYSTEM_TOTAL_VRAM_GB: int = int(os.getenv("SYSTEM_TOTAL_VRAM_GB", "0"))
+
     # SEC EDGAR API — required User-Agent header
     SEC_USER_AGENT: str = os.getenv(
         "SEC_USER_AGENT",
@@ -139,7 +148,7 @@ class Settings:
 
     def get_llm_config(self) -> dict[str, Any]:
         """Return the current LLM configuration as a dict."""
-        return {
+        cfg: dict[str, Any] = {
             "ollama_url": self.OLLAMA_URL,
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
@@ -153,6 +162,13 @@ class Settings:
             "num_experts": self.LLM_NUM_EXPERTS,
             "gpu_offload": self.LLM_GPU_OFFLOAD,
         }
+        # Attach VRAM measurement data for the current model (if cached)
+        vram = self.LLM_VRAM_MEASUREMENTS.get(self.LLM_MODEL)
+        if vram:
+            cfg["last_measured_vram_bytes"] = vram.get("size_vram", 0)
+            cfg["last_measured_ctx"] = vram.get("ctx", 0)
+            cfg["kv_rate_bytes_per_token"] = vram.get("kv_rate", 0)
+        return cfg
 
 
 settings = Settings()

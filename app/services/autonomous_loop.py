@@ -97,7 +97,23 @@ class AutonomousLoop:
             settings.LLM_MODEL,
             keep_alive="2h",
         )
-        if warm_result.get("pre_warmed"):
+        if warm_result.get("status") == "oom_error":
+            # OOM — apply the suggested (lower) context size
+            sug_ctx = warm_result.get("suggested_ctx", 8192)
+            settings.LLM_CONTEXT_SIZE = sug_ctx
+            logger.warning(
+                "[AutoLoop] ⚠️ OOM at ctx=%d — using suggested ctx=%d",
+                warm_result.get("requested_ctx", 0), sug_ctx,
+            )
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=True,
+                detail=(
+                    f"{settings.LLM_MODEL} OOM → ctx={sug_ctx} "
+                    f"(suggested)"
+                ),
+            )
+        elif warm_result.get("pre_warmed"):
             rec_ctx = warm_result.get("recommended_ctx", 32768)
             model_max = warm_result.get("model_max_ctx", 0)
             vram_bytes = warm_result.get("vram_bytes", 0)

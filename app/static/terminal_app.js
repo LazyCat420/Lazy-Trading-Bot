@@ -2417,6 +2417,10 @@ const SettingsPage = () => {
     const [models, setModels] = useState([]);
     const [modelsFetching, setModelsFetching] = useState(false);
     const [llmConnected, setLlmConnected] = useState(null); // null = unknown, true/false
+    // VRAM estimation state (fetched from /api/llm/vram-estimate)
+    const [vramEstimate, setVramEstimate] = useState(null); // {total_vram_gb, model_weight_gb, kv_bytes_per_token, model_max_ctx}
+    // OOM error state
+    const [oomError, setOomError] = useState(null); // {requested_ctx, suggested_ctx, message}
 
     useEffect(() => {
         const load = async () => {
@@ -2432,6 +2436,8 @@ const SettingsPage = () => {
                 setRiskParams(prev => ({ ...prev, ...riskData }));
                 const llmData = await llmRes.json();
                 setLlmConfig(llmData);
+                // Fetch VRAM estimate data for this model
+                fetchVramEstimate(llmData.model);
                 // Auto-fetch models on load
                 fetchModels(llmData.ollama_url);
             } catch (e) {
@@ -2469,6 +2475,7 @@ const SettingsPage = () => {
     const saveLlmConfig = async () => {
         RetroSFX.click();
         setSaveStatus("saving");
+        setOomError(null);
         try {
             const res = await fetch("/api/llm-config", {
                 method: "PUT",
@@ -2476,14 +2483,81 @@ const SettingsPage = () => {
                 body: JSON.stringify(llmConfig),
             });
             const data = await res.json();
-            setSaveStatus("saved");
-            RetroSFX.successChime();
+
+            // Check for OOM error from the verify step
+            const verified = data.ollama_verified;
+            if (verified && verified.status === "oom_error") {
+                setOomError({
+                    requested_ctx: verified.requested_ctx,
+                    suggested_ctx: verified.suggested_ctx,
+                    message: verified.message,
+                    kv_rate: verified.kv_rate_bytes_per_token,
+                });
+                // Update local config to reflect what the backend kept
+                setLlmConfig(prev => ({ ...prev, context_size: data.config?.context_size || prev.context_size }));
+                setSaveStatus("error");
+            } else {
+                setSaveStatus("saved");
+                RetroSFX.successChime();
+                // Refresh VRAM estimate after successful save
+                fetchVramEstimate(data.config?.model || llmConfig.model);
+                // Update local config from server response
+                if (data.config) {
+                    setLlmConfig(prev => ({ ...prev, ...data.config }));
+                }
+            }
             // Notify other components (e.g. Autobot Monitor) to refresh bot label
             window.dispatchEvent(new CustomEvent("llm-config-saved"));
         } catch (e) {
             setSaveStatus("error");
         }
-        setTimeout(() => setSaveStatus(null), 3000);
+        setTimeout(() => setSaveStatus(null), 5000);
+    };
+
+    // Use the OOM-suggested context and re-save
+    const useOomSuggestion = () => {
+        if (!oomError) return;
+        setLlmConfig(prev => ({ ...prev, context_size: oomError.suggested_ctx }));
+        setOomError(null);
+        // Trigger save after state update
+        setTimeout(() => {
+            document.getElementById("save-llm-btn")?.click();
+        }, 100);
+    };
+
+    // Fetch VRAM estimation data from backend (no model load)
+    const fetchVramEstimate = async (modelName) => {
+        if (!modelName) return;
+        try {
+            const params = new URLSearchParams({ model: modelName });
+            const res = await fetch(`/api/llm/vram-estimate?${params}`);
+            const data = await res.json();
+            if (data.model_found) {
+                setVramEstimate(data);
+            }
+        } catch (e) {
+            console.warn("VRAM estimate fetch failed:", e);
+        }
+    };
+
+    // Compute estimated VRAM (GB) for a given context size
+    const computeEstVramGb = (ctx) => {
+        if (!vramEstimate || !vramEstimate.kv_bytes_per_token) return null;
+        const kvBytes = vramEstimate.kv_bytes_per_token * ctx;
+        const totalBytes = vramEstimate.model_weight_gb * (1024 ** 3) + kvBytes;
+        return totalBytes / (1024 ** 3);
+    };
+
+    // Get zone: green (<85%), yellow (85-95%), red (>95%)
+    const getVramZone = (ctx) => {
+        if (!vramEstimate || !vramEstimate.total_vram_gb) return { zone: "unknown", label: "" };
+        const estGb = computeEstVramGb(ctx);
+        if (estGb === null) return { zone: "unknown", label: "" };
+        const totalGb = vramEstimate.total_vram_gb;
+        const pct = estGb / totalGb;
+        if (pct < 0.85) return { zone: "safe", color: "text-green-400", bg: "bg-green-500/20", border: "border-green-500/30", label: `Safe ✅ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
+        if (pct < 0.95) return { zone: "risk", color: "text-amber-400", bg: "bg-amber-500/20", border: "border-amber-500/30", label: `High Risk ⚠️ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
+        return { zone: "danger", color: "text-red-400", bg: "bg-red-500/20", border: "border-red-500/30", label: `Will Fail ❌ — ${estGb.toFixed(1)} / ${totalGb} GB (${(pct * 100).toFixed(0)}%)` };
     };
 
     const saveStrategy = async () => {
@@ -2595,12 +2669,38 @@ const SettingsPage = () => {
                                     <span className="w-2 h-2 rounded-full bg-red-400"></span>Offline
                                 </span>
                             )}
-                            <button onClick={saveLlmConfig}
+                            <button id="save-llm-btn" onClick={saveLlmConfig}
                                 className="px-3 py-1 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition">
                                 Save Config
                             </button>
                         </div>
                     </div>
+
+                    {/* OOM Error Banner */}
+                    {oomError && (
+                        <div className="mb-4 p-4 rounded-lg bg-red-500/10 border border-red-500/30 animate-fadeIn">
+                            <div className="flex items-start gap-3">
+                                <span className="material-symbols-outlined text-red-400 text-xl mt-0.5">error</span>
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-bold text-red-400 mb-1">
+                                        Failed at {(oomError.requested_ctx || 0).toLocaleString()} tokens — not enough VRAM
+                                    </h4>
+                                    <p className="text-xs text-text-muted mb-3">{oomError.message}</p>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={useOomSuggestion}
+                                            className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[14px]">lightbulb</span>
+                                            Use {(oomError.suggested_ctx || 0).toLocaleString()} tokens
+                                        </button>
+                                        <button onClick={() => setOomError(null)}
+                                            className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-muted text-xs font-bold rounded transition">
+                                            Keep current
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-4 mb-4">
                         {/* Ollama URL */}
@@ -2638,7 +2738,7 @@ const SettingsPage = () => {
                             {models.length > 0 ? (
                                 <select
                                     value={llmConfig.model}
-                                    onChange={e => setLlmConfig(prev => ({ ...prev, model: e.target.value }))}
+                                    onChange={e => { setLlmConfig(prev => ({ ...prev, model: e.target.value })); fetchVramEstimate(e.target.value); }}
                                     className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
                                 >
                                     {models.map(m => <option key={m} value={m}>{m}</option>)}
@@ -2657,18 +2757,61 @@ const SettingsPage = () => {
                             )}
                         </div>
 
-                        {/* Context Size */}
-                        <div>
+                        {/* Context Size — Slider + Text Input */}
+                        <div className="col-span-3">
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">Context Size</label>
-                            <input
-                                type="number"
-                                value={llmConfig.context_size}
-                                onChange={e => setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 }))}
-                                min={1024}
-                                max={1048576}
-                                step={1024}
-                                className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
-                            />
+                            <div className="flex items-center gap-3 mb-2">
+                                <input
+                                    type="range"
+                                    value={llmConfig.context_size}
+                                    onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
+                                    min={2048}
+                                    max={vramEstimate?.model_max_ctx || 131072}
+                                    step={1024}
+                                    className="flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-primary"
+                                    style={{
+                                        background: vramEstimate ? (() => {
+                                            const maxCtx = vramEstimate.model_max_ctx || 131072;
+                                            // Calculate zone boundaries as percentages
+                                            const safeCtx85 = (() => {
+                                                if (!vramEstimate.kv_bytes_per_token || !vramEstimate.total_vram_gb) return maxCtx;
+                                                const safe85 = (vramEstimate.total_vram_gb * 0.85 * (1024 ** 3) - vramEstimate.model_weight_gb * (1024 ** 3)) / vramEstimate.kv_bytes_per_token;
+                                                return Math.max(2048, Math.min(safe85, maxCtx));
+                                            })();
+                                            const safeCtx95 = (() => {
+                                                if (!vramEstimate.kv_bytes_per_token || !vramEstimate.total_vram_gb) return maxCtx;
+                                                const safe95 = (vramEstimate.total_vram_gb * 0.95 * (1024 ** 3) - vramEstimate.model_weight_gb * (1024 ** 3)) / vramEstimate.kv_bytes_per_token;
+                                                return Math.max(2048, Math.min(safe95, maxCtx));
+                                            })();
+                                            const greenPct = Math.min(((safeCtx85 - 2048) / (maxCtx - 2048)) * 100, 100);
+                                            const yellowPct = Math.min(((safeCtx95 - 2048) / (maxCtx - 2048)) * 100, 100);
+                                            return `linear-gradient(to right, #22c55e 0%, #22c55e ${greenPct}%, #f59e0b ${greenPct}%, #f59e0b ${yellowPct}%, #ef4444 ${yellowPct}%, #ef4444 100%)`;
+                                        })() : '#334155',
+                                    }}
+                                />
+                                <input
+                                    type="number"
+                                    value={llmConfig.context_size}
+                                    onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
+                                    min={2048}
+                                    max={vramEstimate?.model_max_ctx || 131072}
+                                    step={1024}
+                                    className="w-24 bg-onyx-black border border-border-dark rounded px-2 py-1.5 text-xs text-white font-mono focus:border-primary focus:outline-none transition text-center"
+                                />
+                            </div>
+                            {/* VRAM Estimation Bar */}
+                            {(() => {
+                                const zone = getVramZone(llmConfig.context_size);
+                                if (zone.zone === "unknown") return null;
+                                return (
+                                    <div className={`mt-1 p-2 rounded-md ${zone.bg} border ${zone.border} flex items-center gap-2`}>
+                                        <span className="material-symbols-outlined text-[14px]" style={{ color: zone.zone === 'safe' ? '#22c55e' : zone.zone === 'risk' ? '#f59e0b' : '#ef4444' }}>memory</span>
+                                        <span className={`text-[11px] font-mono font-bold ${zone.color}`}>
+                                            {zone.label}
+                                        </span>
+                                    </div>
+                                );
+                            })()}
                         </div>
 
                         {/* Discovery Temperature */}

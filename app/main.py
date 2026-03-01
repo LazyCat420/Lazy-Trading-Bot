@@ -7,6 +7,8 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
+import httpx
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -395,6 +397,83 @@ async def get_llm_config() -> dict:
     return settings.get_llm_config()
 
 
+@app.get("/api/llm/vram-estimate")
+async def get_vram_estimate(model: str = "") -> dict:
+    """Return VRAM estimation data for the frontend slider.
+
+    Queries Ollama's /api/show + /api/tags for model architecture
+    and nvidia-smi for GPU memory.  Returns everything needed for
+    clientside VRAM prediction — NO model loading involved.
+    """
+    from app.config import settings as _cfg
+
+    target_model = model or _cfg.LLM_MODEL
+    base_url = _cfg.LLM_BASE_URL
+
+    # Total GPU memory
+    total_bytes = LLMService.get_total_gpu_memory_bytes()
+    if _cfg.SYSTEM_TOTAL_VRAM_GB > 0:
+        total_bytes = _cfg.SYSTEM_TOTAL_VRAM_GB * 1024**3
+
+    total_gb = round(total_bytes / (1024**3), 1) if total_bytes else 0
+
+    result: dict = {
+        "total_vram_gb": total_gb,
+        "model_weight_gb": 0,
+        "kv_bytes_per_token": 0,
+        "model_max_ctx": 0,
+        "model_found": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # Get model file size from /api/tags
+            tags_resp = await client.get(f"{base_url}/api/tags")
+            tags_resp.raise_for_status()
+            model_file_size = 0
+            for m in tags_resp.json().get("models", []):
+                if (
+                    m["name"] == target_model
+                    or m["name"].split(":")[0]
+                    == target_model.split(":")[0]
+                ):
+                    model_file_size = m.get("size", 0)
+                    break
+
+            if not model_file_size:
+                return result
+
+            result["model_found"] = True
+            result["model_weight_gb"] = round(
+                model_file_size / (1024**3), 2,
+            )
+
+            # Get architecture from /api/show
+            show_resp = await client.post(
+                f"{base_url}/api/show",
+                json={"name": target_model},
+            )
+            show_resp.raise_for_status()
+            model_info = show_resp.json().get("model_info", {})
+
+            # Max context
+            for key, val in model_info.items():
+                if "context_length" in key and isinstance(val, int):
+                    result["model_max_ctx"] = val
+                    break
+
+            # KV rate from architecture
+            est = LLMService.estimate_model_vram(
+                model_info, model_file_size, 1,
+            )
+            result["kv_bytes_per_token"] = est["kv_bytes_per_token"]
+
+    except Exception as exc:
+        logger.warning("[VRAM] Estimate endpoint error: %s", exc)
+
+    return result
+
+
 @app.put("/api/llm-config")
 async def update_llm_config(req: LLMConfigRequest) -> dict:
     """Save new LLM settings + hot-patch the running config.
@@ -480,15 +559,29 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
             )
             result["ollama_verified"] = warm_result
 
-            # Apply the recommended context size if probing found a cap
-            rec_ctx = warm_result.get("recommended_ctx")
-            if rec_ctx and rec_ctx != merged.get("context_size"):
-                settings.LLM_CONTEXT_SIZE = rec_ctx
-                result["config"]["context_size"] = rec_ctx
-                logger.info(
-                    "[Ollama] Context size adjusted to %d based on VRAM",
-                    rec_ctx,
+            if warm_result.get("status") == "oom_error":
+                # OOM — do NOT update context_size; keep last working value
+                # Revert the context_size we just saved to disk
+                old_ctx = warm_result.get("suggested_ctx", 8192)
+                settings.LLM_CONTEXT_SIZE = old_ctx
+                result["config"]["context_size"] = old_ctx
+                logger.warning(
+                    "[Ollama] OOM at ctx=%d — keeping ctx=%d. "
+                    "Suggested: %d",
+                    warm_result.get("requested_ctx", 0),
+                    old_ctx,
+                    warm_result.get("suggested_ctx", 0),
                 )
+            else:
+                # Apply the recommended context size if probing found a cap
+                rec_ctx = warm_result.get("recommended_ctx")
+                if rec_ctx and rec_ctx != merged.get("context_size"):
+                    settings.LLM_CONTEXT_SIZE = rec_ctx
+                    result["config"]["context_size"] = rec_ctx
+                    logger.info(
+                        "[Ollama] Context size adjusted to %d based on VRAM",
+                        rec_ctx,
+                    )
         except Exception as exc:
             result["ollama_verified"] = {
                 "status": "verification_failed",
@@ -1916,7 +2009,22 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         model_name,
                         keep_alive="2h",
                     )
-                    if warm.get("pre_warmed"):
+                    if warm.get("status") == "oom_error":
+                        sug = warm.get("suggested_ctx", 8192)
+                        settings.LLM_CONTEXT_SIZE = sug
+                        _run_all_log(
+                            f"⚠️ OOM at ctx={warm.get('requested_ctx')} "
+                            f"— using suggested ctx={sug}",
+                            level="warn",
+                            phase="model_load",
+                            bot_id=bot_id,
+                            bot_name=display_name,
+                        )
+                        logger.warning(
+                            "[RunAll] OOM for %s — using ctx=%d",
+                            model_name, sug,
+                        )
+                    elif warm.get("pre_warmed"):
                         rec_ctx = warm.get("recommended_ctx", "?")
                         _run_all_log(
                             f"✅ Ollama model warmed: {model_name} "

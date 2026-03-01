@@ -375,170 +375,443 @@ class LLMService:
         return unloaded
 
     @staticmethod
+    def get_free_gpu_memory_bytes() -> int:
+        """Query nvidia-smi for free GPU memory.  Returns bytes, or 0."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                free_mib = int(result.stdout.strip().split("\n")[0].strip())
+                return free_mib * 1024 * 1024
+        except Exception as exc:
+            logger.debug("[LLM] nvidia-smi failed: %s", exc)
+        return 0
+
+    @staticmethod
+    def get_total_gpu_memory_bytes() -> int:
+        """Query nvidia-smi for total GPU memory.  Returns bytes, or 0."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                total_mib = int(result.stdout.strip().split("\n")[0].strip())
+                return total_mib * 1024 * 1024
+        except Exception as exc:
+            logger.debug("[LLM] nvidia-smi total failed: %s", exc)
+        return 0
+
+    @staticmethod
+    def estimate_model_vram(
+        model_info: dict,
+        model_file_size: int,
+        num_ctx: int,
+    ) -> dict:
+        """Estimate total VRAM for a model at a given context length.
+
+        Uses the model architecture from /api/show's model_info to
+        calculate KV cache size.  Model weight VRAM ≈ GGUF file size.
+
+        Returns {"total_bytes", "weights_bytes", "kv_bytes",
+                 "kv_bytes_per_token", "fields_found"}.
+        """
+        # Extract architecture fields
+        block_count = 0
+        head_count_kv = 0
+        head_dim = 0
+        embed_len = 0
+        head_count = 0
+
+        for key, val in model_info.items():
+            if not isinstance(val, int):
+                continue
+            if "block_count" in key:
+                block_count = val
+            elif key.endswith(".attention.head_count_kv"):
+                head_count_kv = val
+            elif "key_length" in key:
+                head_dim = val
+            elif "embedding_length" in key:
+                embed_len = val
+            elif key.endswith(".attention.head_count"):
+                head_count = val
+
+        # Derive head_dim if not explicitly available
+        if head_dim == 0 and embed_len > 0 and head_count > 0:
+            head_dim = embed_len // head_count
+
+        fields_found = bool(block_count and head_count_kv and head_dim)
+
+        kv_bytes_per_token = 0
+        kv_bytes = 0
+        if fields_found:
+            # KV cache = 2 (K+V) × layers × kv_heads × head_dim × 2 (FP16)
+            kv_bytes_per_token = 2 * block_count * head_count_kv * head_dim * 2
+            kv_bytes = kv_bytes_per_token * num_ctx
+
+        return {
+            "total_bytes": model_file_size + kv_bytes,
+            "weights_bytes": model_file_size,
+            "kv_bytes": kv_bytes,
+            "kv_bytes_per_token": kv_bytes_per_token,
+            "fields_found": fields_found,
+        }
+
+    @staticmethod
     async def verify_and_warm_ollama_model(
         base_url: str,
         model: str,
         *,
         keep_alive: str = "10m",
     ) -> dict:
-        """Verify an Ollama model exists, query VRAM, and pre-warm it.
+        """Verify an Ollama model exists, estimate VRAM, and pre-warm it.
 
-        GET /api/tags to check availability, POST /api/show to get the
-        model's architecture max context, GET /api/ps for VRAM usage,
-        then POST /api/generate with keep_alive to load into VRAM.
+        Flow:
+          1. GET /api/tags  → verify model exists, get file size
+          2. POST /api/show → get architecture (layers, kv_heads, head_dim)
+          3. nvidia-smi      → get free GPU memory
+          4. MATH            → estimate total VRAM needed
+          5. If estimated > free → return oom_error + suggested_ctx (NO load)
+          6. If estimated ≤ free → load the model (single attempt)
 
-        Returns a dict with model info AND recommended_ctx based on VRAM.
+        Returns dict with model info.  On predicted/actual OOM, returns
+        status="oom_error" with suggested_ctx.
         """
         base_url = base_url.rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
-                # Step 1: Verify model exists (flexible name matching)
+                # ── Step 1: Verify model exists ──────────────────
                 tags_resp = await client.get(f"{base_url}/api/tags")
                 tags_resp.raise_for_status()
-                available = [m["name"] for m in tags_resp.json().get("models", [])]
+                tags_data = tags_resp.json().get("models", [])
+                available = [m["name"] for m in tags_data]
 
-                # Ollama tags always include :latest, so match flexibly
-                # e.g. "glm-ocr" should match "glm-ocr:latest" and vice-versa
                 model_found = model in available
+                model_file_size = 0
+
                 if not model_found:
-                    # Try adding/removing :latest suffix
-                    alt = f"{model}:latest" if ":" not in model else model.split(":")[0]
-                    for avail in available:
-                        if avail == alt or avail.split(":")[0] == model.split(":")[0]:
+                    alt = (
+                        f"{model}:latest"
+                        if ":" not in model
+                        else model.split(":")[0]
+                    )
+                    for avail_model in tags_data:
+                        avail_name = avail_model.get("name", "")
+                        if (
+                            avail_name == alt
+                            or avail_name.split(":")[0]
+                            == model.split(":")[0]
+                        ):
                             model_found = True
+                            model_file_size = avail_model.get("size", 0)
                             logger.info(
-                                "[LLM] Fuzzy match: '%s' → '%s'", model, avail,
+                                "[LLM] Fuzzy match: '%s' → '%s'",
+                                model, avail_name,
                             )
+                            break
+                else:
+                    for m_tag in tags_data:
+                        if m_tag["name"] == model:
+                            model_file_size = m_tag.get("size", 0)
                             break
 
                 model_max_ctx = 0
-                vram_total_bytes = 0
-                recommended_ctx = 8192  # safe fallback
+                recommended_ctx = 8192
+                model_info: dict = {}
 
-                if model_found:
-                    # Step 2: Query model architecture for max context
-                    try:
-                        show_resp = await client.post(
-                            f"{base_url}/api/show",
-                            json={"name": model},
-                        )
-                        show_resp.raise_for_status()
-                        show_data = show_resp.json()
+                if not model_found:
+                    return {
+                        "status": "model_not_found",
+                        "model": model,
+                        "available_models": [m["name"] for m in tags_data],
+                        "model_found": False,
+                        "pre_warmed": False,
+                        "model_max_ctx": 0,
+                        "recommended_ctx": 8192,
+                        "vram_bytes": 0,
+                    }
 
-                        # model_info contains architecture details
-                        model_info = show_data.get("model_info", {})
-                        for key, val in model_info.items():
-                            if "context_length" in key and isinstance(val, int):
-                                model_max_ctx = val
-                                break
+                # ── Step 2: Query architecture ───────────────────
+                try:
+                    show_resp = await client.post(
+                        f"{base_url}/api/show",
+                        json={"name": model},
+                    )
+                    show_resp.raise_for_status()
+                    show_data = show_resp.json()
+                    model_info = show_data.get("model_info", {})
 
-                        logger.info(
-                            "[LLM] Model %s architecture max context: %d",
-                            model, model_max_ctx,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[LLM] Could not query model info: %s", exc,
-                        )
-
-                    # Step 3: Query VRAM usage from running models
-                    try:
-                        ps_resp = await client.get(f"{base_url}/api/ps")
-                        ps_resp.raise_for_status()
-                        ps_models = ps_resp.json().get("models", [])
-                        for m in ps_models:
-                            vram = m.get("size_vram", 0)
-                            if vram > vram_total_bytes:
-                                vram_total_bytes = vram
-                    except Exception:
-                        pass  # ps may be empty if nothing loaded yet
-
-                    # Step 4+5: Probe-and-warm — find the maximum num_ctx
-                    # that Ollama can actually allocate, starting from the
-                    # user's desired context_size and halving on OOM.
-                    from app.config import settings as _cfg
-
-                    desired_ctx = _cfg.LLM_CONTEXT_SIZE
-                    if model_max_ctx > 0:
-                        desired_ctx = min(desired_ctx, model_max_ctx)
-                    # Floor at 2048
-                    desired_ctx = max(desired_ctx, 2048)
-
-                    _MIN_CTX = 2048
-                    attempt_ctx = desired_ctx
-                    warmed = False
-
-                    while attempt_ctx >= _MIN_CTX:
-                        logger.info(
-                            "[LLM] Warming %s with num_ctx=%d …",
-                            model, attempt_ctx,
-                        )
-                        try:
-                            warm_resp = await client.post(
-                                f"{base_url}/api/generate",
-                                json={
-                                    "model": model,
-                                    "prompt": "",
-                                    "keep_alive": keep_alive,
-                                    "stream": False,
-                                    "options": {
-                                        "num_ctx": attempt_ctx,
-                                    },
-                                },
-                            )
-                            warm_resp.raise_for_status()
-                            recommended_ctx = attempt_ctx
-                            warmed = True
-                            logger.info(
-                                "[LLM] ✅ Model %s warmed at num_ctx=%d",
-                                model, attempt_ctx,
-                            )
+                    for key, val in model_info.items():
+                        if "context_length" in key and isinstance(
+                            val, int,
+                        ):
+                            model_max_ctx = val
                             break
-                        except httpx.HTTPStatusError as exc:
-                            if exc.response.status_code == 500:
-                                logger.warning(
-                                    "[LLM] num_ctx=%d too large (OOM), "
-                                    "halving → %d",
-                                    attempt_ctx, attempt_ctx // 2,
-                                )
-                                attempt_ctx //= 2
-                            else:
-                                raise
 
-                    if not warmed:
-                        # Last resort: try minimum
-                        recommended_ctx = _MIN_CTX
-                        warm_resp = await client.post(
+                    logger.info(
+                        "[LLM] Model %s: max_ctx=%d file_size=%.1f GiB",
+                        model,
+                        model_max_ctx,
+                        model_file_size / (1024**3) if model_file_size else 0,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[LLM] Could not query model info: %s", exc,
+                    )
+
+                # ── Step 3: Determine desired context ────────────
+                from app.config import settings as _cfg
+
+                desired_ctx = _cfg.LLM_CONTEXT_SIZE
+                if model_max_ctx > 0:
+                    desired_ctx = min(desired_ctx, model_max_ctx)
+                desired_ctx = max(desired_ctx, 2048)
+
+                # ── Step 4: Estimate VRAM ────────────────────────
+                estimate = LLMService.estimate_model_vram(
+                    model_info, model_file_size, desired_ctx,
+                )
+                total_gpu = LLMService.get_total_gpu_memory_bytes()
+                kv_per_tok = estimate["kv_bytes_per_token"]
+
+                est_gb = estimate["total_bytes"] / (1024**3)
+                total_gb = total_gpu / (1024**3) if total_gpu else 0
+
+                logger.info(
+                    "[LLM] VRAM estimate for %s @ ctx=%d: "
+                    "%.1f GiB needed (weights=%.1f + KV=%.1f), "
+                    "%.1f GiB total GPU",
+                    model,
+                    desired_ctx,
+                    est_gb,
+                    estimate["weights_bytes"] / (1024**3),
+                    estimate["kv_bytes"] / (1024**3),
+                    total_gb,
+                )
+
+                # ── Step 5: Check if it fits ─────────────────────
+                # Use 85% of total GPU as the safe ceiling
+                # (leaves room for OS/Ubuntu overhead on Jetson)
+                safe_ceiling = int(total_gpu * 0.85) if total_gpu else 0
+                if (
+                    safe_ceiling > 0
+                    and estimate["fields_found"]
+                    and estimate["total_bytes"] > safe_ceiling
+                ):
+                    # Will NOT fit — calculate max ctx that DOES fit
+                    available_for_kv = max(
+                        safe_ceiling - estimate["weights_bytes"], 0,
+                    )
+
+                    if kv_per_tok > 0:
+                        suggested_ctx = (
+                            available_for_kv // kv_per_tok // 4096
+                        ) * 4096
+                    else:
+                        suggested_ctx = 8192
+                    suggested_ctx = max(suggested_ctx, 2048)
+
+                    sug_est = LLMService.estimate_model_vram(
+                        model_info, model_file_size, suggested_ctx,
+                    )
+
+                    message = (
+                        f"Estimated VRAM for ctx={desired_ctx:,}: "
+                        f"{est_gb:.1f} GiB, but safe ceiling is "
+                        f"{safe_ceiling / (1024**3):.1f} GiB "
+                        f"(85% of {total_gb:.0f} GiB). "
+                        f"Max safe context: {suggested_ctx:,} "
+                        f"tokens (~{sug_est['total_bytes'] / (1024**3):.1f}"
+                        f" GiB)."
+                    )
+                    logger.warning("[LLM] %s", message)
+
+                    return {
+                        "status": "oom_error",
+                        "model": model,
+                        "available_models": [m["name"] for m in tags_data],
+                        "model_found": True,
+                        "pre_warmed": False,
+                        "model_max_ctx": model_max_ctx,
+                        "requested_ctx": desired_ctx,
+                        "suggested_ctx": suggested_ctx,
+                        "kv_rate_bytes_per_token": kv_per_tok,
+                        "estimated_vram_gb": round(est_gb, 1),
+                        "total_vram_gb": round(total_gb, 1),
+                        "message": message,
+                    }
+
+                # ── Step 5b: Flush VRAM before loading ──────────
+                # Evict ALL models so this model gets 100% VRAM
+                import asyncio
+                try:
+                    freed = await LLMService.unload_all_ollama_models(
+                        base_url,
+                    )
+                    if freed > 0:
+                        logger.info(
+                            "[LLM] Flushed %d model(s) before load",
+                            freed,
+                        )
+                        await asyncio.sleep(2)
+                        # Verify VRAM is clear
+                        ps_check = await client.get(
+                            f"{base_url}/api/ps",
+                        )
+                        still_loaded = len(
+                            ps_check.json().get("models", []),
+                        )
+                        if still_loaded:
+                            logger.warning(
+                                "[LLM] %d model(s) still in VRAM "
+                                "after flush",
+                                still_loaded,
+                            )
+                except Exception as flush_exc:
+                    logger.warning(
+                        "[LLM] VRAM flush failed: %s", flush_exc,
+                    )
+
+                # ── Step 6: Load the model ───────────────────────
+                logger.info(
+                    "[LLM] Estimate OK — warming %s at num_ctx=%d …",
+                    model, desired_ctx,
+                )
+                try:
+                    warm_resp = await client.post(
+                        f"{base_url}/api/generate",
+                        json={
+                            "model": model,
+                            "prompt": "",
+                            "keep_alive": keep_alive,
+                            "stream": False,
+                            "options": {
+                                "num_ctx": desired_ctx,
+                            },
+                        },
+                    )
+                    warm_resp.raise_for_status()
+                    recommended_ctx = desired_ctx
+                    logger.info(
+                        "[LLM] ✅ Model %s warmed at num_ctx=%d",
+                        model, desired_ctx,
+                    )
+
+                    # Measure actual VRAM via /api/ps
+                    size_vram = 0
+                    try:
+                        ps_resp = await client.get(
+                            f"{base_url}/api/ps",
+                        )
+                        ps_resp.raise_for_status()
+                        for m_info in ps_resp.json().get("models", []):
+                            m_name = m_info.get("name", "")
+                            if (
+                                m_name == model
+                                or m_name.split(":")[0]
+                                == model.split(":")[0]
+                            ):
+                                size_vram = m_info.get("size_vram", 0)
+                                break
+                    except Exception:
+                        pass
+
+                    # Cache the measurement
+                    if size_vram:
+                        _cfg.LLM_VRAM_MEASUREMENTS[model] = {
+                            "ctx": desired_ctx,
+                            "size_vram": size_vram,
+                            "kv_rate": kv_per_tok,
+                        }
+
+                    return {
+                        "status": "model_verified",
+                        "model": model,
+                        "available_models": [m["name"] for m in tags_data],
+                        "model_found": True,
+                        "pre_warmed": True,
+                        "model_max_ctx": model_max_ctx,
+                        "recommended_ctx": recommended_ctx,
+                        "vram_bytes": size_vram,
+                        "kv_rate_bytes_per_token": kv_per_tok,
+                    }
+
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 500:
+                        raise
+                    # Unexpected OOM (estimate said it would fit)
+                    # Evict and return error — NO retry
+                    logger.warning(
+                        "[LLM] Unexpected OOM at ctx=%d for %s "
+                        "(estimate said it would fit)",
+                        desired_ctx, model,
+                    )
+                    try:
+                        await client.post(
                             f"{base_url}/api/generate",
                             json={
                                 "model": model,
                                 "prompt": "",
-                                "keep_alive": keep_alive,
+                                "keep_alive": "0",
                                 "stream": False,
-                                "options": {"num_ctx": _MIN_CTX},
                             },
                         )
-                        warm_resp.raise_for_status()
-                        logger.warning(
-                            "[LLM] Fell back to minimum num_ctx=%d",
-                            _MIN_CTX,
-                        )
+                    except Exception:
+                        pass
 
-                return {
-                    "status": (
-                        "model_verified" if model_found
-                        else "model_not_found"
-                    ),
-                    "model": model,
-                    "available_models": available,
-                    "model_found": model_found,
-                    "pre_warmed": model_found,
-                    "model_max_ctx": model_max_ctx,
-                    "recommended_ctx": recommended_ctx,
-                    "vram_bytes": vram_total_bytes,
-                }
+                    # Suggest 75% of what we tried, rounded
+                    suggested_ctx = (
+                        int(desired_ctx * 0.75) // 4096
+                    ) * 4096
+                    suggested_ctx = max(suggested_ctx, 2048)
+
+                    cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
+                    if cached:
+                        suggested_ctx = cached["ctx"]
+
+                    return {
+                        "status": "oom_error",
+                        "model": model,
+                        "available_models": [m["name"] for m in tags_data],
+                        "model_found": True,
+                        "pre_warmed": False,
+                        "model_max_ctx": model_max_ctx,
+                        "requested_ctx": desired_ctx,
+                        "suggested_ctx": suggested_ctx,
+                        "kv_rate_bytes_per_token": kv_per_tok,
+                        "estimated_vram_gb": round(est_gb, 1),
+                        "total_vram_gb": round(total_gb, 1),
+                        "message": (
+                            f"OOM at {desired_ctx:,} tokens "
+                            f"(estimate: {est_gb:.1f} GiB, "
+                            f"total: {total_gb:.1f} GiB). "
+                            f"Suggested: {suggested_ctx:,}."
+                        ),
+                    }
+
         except Exception as exc:
-            logger.warning("[LLM] Ollama model verification failed: %s", exc)
+            logger.warning(
+                "[LLM] Ollama model verification failed: %s", exc,
+            )
             return {
                 "status": "verification_failed",
                 "error": str(exc),
