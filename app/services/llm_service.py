@@ -76,19 +76,26 @@ class LLMService:
 
     async def chat(
         self,
-        system: str,
-        user: str,
+        system: str = "",
+        user: str = "",
         *,
+        messages: list[dict] | None = None,
         response_format: str = "json",
+        schema: dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> str:
         """Send a chat completion request and return the raw text response.
 
         Args:
-            system: The system prompt.
-            user: The user message (data context).
+            system: The system prompt (legacy mode).
+            user: The user message (legacy mode).
+            messages: Native messages array (multi-turn). When provided,
+                      system/user params are ignored and messages is passed
+                      directly to Ollama. This preserves tool-call context.
             response_format: "json" to hint at JSON output, "text" for free-form.
+            schema: Optional JSON Schema dict. When provided, passed as the
+                    Ollama `format` field to enforce structured output.
             max_tokens: Optional max token limit for the response.
             temperature: Optional per-request temperature override.
                          If None, uses the global setting from config.
@@ -96,16 +103,22 @@ class LLMService:
         Returns:
             The raw string response from the LLM.
         """
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
+        if messages is not None:
+            # Native multi-turn mode — pass messages directly
+            effective_msgs = messages
+        else:
+            # Legacy mode — build messages from system + user
+            effective_msgs = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
 
         # Resolve effective temperature (per-request override > global config)
         effective_temp = temperature if temperature is not None else self.temperature
 
         return await self._call_ollama(
-            messages, response_format, max_tokens, effective_temp
+            effective_msgs, response_format, max_tokens, effective_temp,
+            schema=schema,
         )
 
     async def _call_ollama(
@@ -114,6 +127,8 @@ class LLMService:
         response_format: str,
         max_tokens: int | None,
         temperature: float,
+        *,
+        schema: dict | None = None,
     ) -> str:
         """Call the Ollama /api/chat endpoint using shared connection pool.
 
@@ -127,6 +142,7 @@ class LLMService:
             response_format,
             max_tokens,
             temperature,
+            schema=schema,
         )
 
         # ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Dual-mode retry for empty JSON responses ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
@@ -175,6 +191,8 @@ class LLMService:
         response_format: str,
         max_tokens: int | None,
         temperature: float,
+        *,
+        schema: dict | None = None,
     ) -> str:
         """Send a single request to the Ollama /api/chat endpoint."""
         url = f"{self.base_url}/api/chat"
@@ -204,7 +222,10 @@ class LLMService:
                 "num_gpu": 999,
             },
         }
-        if response_format == "json":
+        if schema is not None:
+            # Structured output: pass JSON Schema directly to Ollama
+            payload["format"] = schema
+        elif response_format == "json":
             payload["format"] = "json"
 
         if max_tokens:
@@ -370,8 +391,11 @@ class LLMService:
         multiple JSON objects in one response.  We use brace-depth counting
         to extract only the first complete {...} object.
         """
+        # Strip <think>...</think> blocks from reasoning models
+        cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+
         # Strip markdown code blocks
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw)
+        cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"```\s*$", "", cleaned)
         cleaned = cleaned.strip()
 

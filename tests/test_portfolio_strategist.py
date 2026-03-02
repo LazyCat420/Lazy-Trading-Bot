@@ -179,12 +179,15 @@ class TestPortfolioStrategist:
 
     @pytest.mark.asyncio
     async def test_tool_place_buy_insufficient_cash(self, mock_paper_trader):
-        """Test buy rejection when not enough cash."""
+        """Test buy with very low cash auto-clamps to max affordable."""
         mock_paper_trader.get_portfolio.return_value = {
             "cash_balance": 100.0,
             "total_portfolio_value": 100.0,
             "positions": [],
         }
+        mock_paper_trader.get_positions.return_value = []
+        # Auto-clamp will reduce to 0 shares ($100 cash / $150 price = 0)
+        # so this should return an error
         strategist = PortfolioStrategist(
             paper_trader=mock_paper_trader,
             tickers=["AAPL"],
@@ -198,16 +201,19 @@ class TestPortfolioStrategist:
             "reason": "test buy",
         })
         assert "error" in result
-        assert "Insufficient cash" in result["error"]
+        assert "max safe qty is 0" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_tool_place_buy_too_large(self, mock_paper_trader):
-        """Test buy rejection when order exceeds 40% of portfolio."""
+    async def test_tool_place_buy_too_large_auto_clamped(self, mock_paper_trader):
+        """Test that oversized order is auto-clamped, not rejected."""
         mock_paper_trader.get_portfolio.return_value = {
             "cash_balance": 10000.0,
             "total_portfolio_value": 10000.0,
             "positions": [],
         }
+        mock_paper_trader.get_positions.return_value = []
+        # Auto-clamp will reduce from 10 to 8 shares (40% of $10k = $4k / $500 = 8)
+        mock_paper_trader.buy.return_value = MagicMock(qty=8, price=500.0, side="buy")
         strategist = PortfolioStrategist(
             paper_trader=mock_paper_trader,
             tickers=["AAPL"],
@@ -220,8 +226,9 @@ class TestPortfolioStrategist:
             "qty": 10,  # $5000 = 50% of portfolio
             "reason": "test big buy",
         })
-        assert "error" in result
-        assert "too large" in result["error"].lower()
+        # Should be auto-clamped and filled, not rejected
+        assert result.get("status") == "filled"
+        assert result.get("clamped") is True
 
     @pytest.mark.asyncio
     async def test_tool_place_buy_rejects_existing_position(self, mock_paper_trader):
@@ -424,3 +431,166 @@ class TestCleanJsonMultiObject:
         with pytest.raises(json.JSONDecodeError):
             json.loads(result)
 
+
+class TestThinkBlockStripping:
+    """Tests for <think> block stripping in clean_json_response.
+
+    Reasoning models (e.g. QwQ, Qwen3) output <think>...</think> blocks
+    before their JSON. This broke the pipeline when the parser tried
+    to extract JSON from the thinking text.
+    """
+
+    def test_strips_think_block_before_json(self):
+        """Think block followed by clean JSON should extract the JSON."""
+        raw = (
+            "<think>Let me analyze the portfolio... KO has strong momentum "
+            "and I should buy it. The conviction is 0.75 so I'll allocate "
+            "15% of the portfolio.</think>\n"
+            '{"action": "place_buy", "params": {"ticker": "KO", "qty": 56, '
+            '"reason": "Strong momentum"}}'
+        )
+        result = LLMService.clean_json_response(raw)
+        parsed = json.loads(result)
+        assert parsed["action"] == "place_buy"
+        assert parsed["params"]["ticker"] == "KO"
+
+    def test_strips_think_block_with_markdown_fences(self):
+        """Think block + markdown-fenced JSON should work."""
+        raw = (
+            "<think>Analyzing market data...</think>\n"
+            "```json\n"
+            '{"action": "get_dossier", "params": {"ticker": "NVDA"}}\n'
+            "```"
+        )
+        result = LLMService.clean_json_response(raw)
+        parsed = json.loads(result)
+        assert parsed["action"] == "get_dossier"
+        assert parsed["params"]["ticker"] == "NVDA"
+
+    def test_no_think_block_unchanged(self):
+        """JSON without think blocks should pass through normally."""
+        raw = '{"action": "finish", "params": {"summary": "All done"}}'
+        result = LLMService.clean_json_response(raw)
+        parsed = json.loads(result)
+        assert parsed["action"] == "finish"
+
+
+class TestAutoClampOversizedBuy:
+    """Tests for the auto-clamp feature in _tool_place_buy.
+
+    Instead of rejecting oversized orders with an error (which wastes
+    LLM turns), auto-clamp calculates the max safe qty and places the
+    order at that reduced size.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_clamp_oversized_order(self):
+        """An order exceeding 40% should be auto-clamped, not rejected."""
+        trader = MagicMock()
+        trader.get_portfolio.return_value = {
+            "cash_balance": 10000.0,
+            "total_portfolio_value": 10000.0,
+            "positions": [],
+        }
+        trader.get_positions.return_value = []
+        trader.buy.return_value = MagicMock(qty=26, price=150.0, side="buy")
+
+        strategist = PortfolioStrategist(
+            paper_trader=trader,
+            tickers=["AAPL"],
+        )
+
+        # Mock the price fetcher to return $150
+        _mock_main._fetch_one_quote = MagicMock(return_value={"price": 150.0})
+
+        # Request 100 shares ($15k = 150% of $10k portfolio) → should clamp
+        result = await strategist._tool_place_buy({
+            "ticker": "AAPL",
+            "qty": 100,  # Way too many — $15k > 40% of $10k
+            "reason": "test auto-clamp",
+        })
+
+        # Should be filled, NOT rejected
+        assert result.get("status") == "filled"
+        assert result.get("clamped") is True
+        assert result.get("original_qty") == 100
+        assert "auto-clamped" in result.get("note", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_zero_safe_qty_returns_error(self):
+        """When max safe qty is 0 (no cash), should return error."""
+        trader = MagicMock()
+        trader.get_portfolio.return_value = {
+            "cash_balance": 0.0,
+            "total_portfolio_value": 10000.0,
+            "positions": [],
+        }
+        trader.get_positions.return_value = []
+
+        strategist = PortfolioStrategist(
+            paper_trader=trader,
+            tickers=["AAPL"],
+        )
+
+        _mock_main._fetch_one_quote = MagicMock(return_value={"price": 150.0})
+
+        result = await strategist._tool_place_buy({
+            "ticker": "AAPL",
+            "qty": 10,
+            "reason": "test zero cash",
+        })
+
+        assert "error" in result
+        assert "max safe qty is 0" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_correctly_sized_order_not_clamped(self):
+        """A properly sized order should NOT be clamped."""
+        trader = MagicMock()
+        trader.get_portfolio.return_value = {
+            "cash_balance": 10000.0,
+            "total_portfolio_value": 10000.0,
+            "positions": [],
+        }
+        trader.get_positions.return_value = []
+        trader.buy.return_value = MagicMock(qty=10, price=150.0, side="buy")
+
+        strategist = PortfolioStrategist(
+            paper_trader=trader,
+            tickers=["AAPL"],
+        )
+
+        _mock_main._fetch_one_quote = MagicMock(return_value={"price": 150.0})
+
+        # 10 shares @ $150 = $1500 = 15% of portfolio — well within limits
+        result = await strategist._tool_place_buy({
+            "ticker": "AAPL",
+            "qty": 10,
+            "reason": "test normal buy",
+        })
+
+        assert result.get("status") == "filled"
+        assert "clamped" not in result
+
+
+class TestActionSchema:
+    """Test that ACTION_SCHEMA is properly defined."""
+
+    def test_schema_has_required_fields(self):
+        """Schema should enforce action and params."""
+        from app.engine.portfolio_strategist import ACTION_SCHEMA
+        assert ACTION_SCHEMA["required"] == ["action", "params"]
+        assert "action" in ACTION_SCHEMA["properties"]
+        assert "params" in ACTION_SCHEMA["properties"]
+
+    def test_schema_action_enum(self):
+        """Schema action should include all tool names."""
+        from app.engine.portfolio_strategist import ACTION_SCHEMA
+        enum = ACTION_SCHEMA["properties"]["action"]["enum"]
+        expected = [
+            "get_portfolio", "get_market_overview", "get_dossier",
+            "get_sector_peers", "place_buy", "place_sell", "set_triggers",
+            "get_market_status", "remove_from_watchlist", "schedule_wakeup",
+            "finish",
+        ]
+        assert set(enum) == set(expected)

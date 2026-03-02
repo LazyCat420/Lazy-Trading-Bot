@@ -27,6 +27,7 @@ from app.collectors.yfinance_collector import YFinanceCollector
 from app.utils.logger import logger
 
 _MAX_TURNS = 10  # Safety cap on LLM action loops
+_AUTO_CLAMP_ENABLED = True  # Auto-reduce oversized orders instead of rejecting
 _SYSTEM_PROMPT_TOKENS = 2500  # Approx tokens used by system prompt + tools
 _TOKENS_PER_TURN = 1000  # Approx tokens per assistant+user pair (tool results)
 
@@ -66,6 +67,13 @@ Buy shares of a stock.
 Params: ticker (str), qty (int), reason (str)
 Example: {"action": "place_buy", "params": {"ticker": "AAPL", "qty": 10, "reason": "Strong momentum + AI catalyst"}}
 
+⚠️ BUDGET RULES (orders violating these are auto-clamped to safe qty):
+- Max single order: 40% of portfolio value
+- Max position per ticker: 25% of portfolio
+- HOW TO CALCULATE QTY: qty = floor(cash_available * target_pct / price)
+  Example: $100k cash, 15% position, $264/share → qty = floor(100000 * 0.15 / 264) = 56 shares
+- Suggested allocation per position: 10-20% of portfolio (NOT 50-100%)
+
 ### place_sell
 Sell shares of a stock you own.
 Params: ticker (str), qty (int), reason (str)
@@ -98,16 +106,45 @@ Params: summary (str) — brief reasoning for your decisions
 Example: {"action": "finish", "params": {"summary": "Bought AAPL and NVDA, sold META..."}}
 
 IMPORTANT RULES:
-- Respond with ONLY ONE JSON action per message (no extra text).
+- Respond with ONLY ONE JSON action per message.
+- You may wrap your response in ```json markdown fences if needed.
 - After each action, you'll receive the result. Then decide your next action.
 - You MUST call "finish" when done. Do NOT keep calling tools forever.
 - Think about total portfolio allocation before placing trades.
 - Do NOT call place_buy for tickers you already own — the system handles
   DCA automatically. Focus on NEW tickers not in your portfolio.
-- WORKFLOW: Start with get_portfolio, then get_market_overview to scan all
-  tickers. Call get_dossier ONLY for tickers you're considering trading.
+- Portfolio + market data is already provided — jump straight to analysis.
+  Call get_dossier ONLY for tickers you're considering trading.
   Do NOT call get_dossier for every ticker — be selective.
 """
+
+# JSON Schema for structured output — enforces the LLM can ONLY produce
+# valid {"action": "...", "params": {...}} objects, not free-form text.
+ACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "get_portfolio",
+                "get_market_overview",
+                "get_dossier",
+                "get_sector_peers",
+                "place_buy",
+                "place_sell",
+                "set_triggers",
+                "get_market_status",
+                "remove_from_watchlist",
+                "schedule_wakeup",
+                "finish",
+            ],
+        },
+        "params": {
+            "type": "object",
+        },
+    },
+    "required": ["action", "params"],
+}
 
 
 class PortfolioStrategist:
@@ -192,24 +229,19 @@ class PortfolioStrategist:
             },
         ]
 
-        # Mark these tools as already used for the guardrail
+        # Mark these tools as already used
         orders_placed: list[dict] = []
         triggers_set: list[dict] = []
         finish_summary = ""
-
-        # Track which key tools the LLM has called — used for guardrails
-        tools_used: set[str] = {"get_portfolio", "get_market_overview"}
-        _MAX_PREMATURE_FINISH_REJECTS = 2
-        premature_finish_count = 0
 
         for turn in range(_MAX_TURNS):
             logger.info("[Strategist] Turn %d/%d", turn + 1, _MAX_TURNS)
 
             try:
                 raw = await self._llm.chat(
-                    system=conversation[0]["content"],
-                    user=self._format_conversation(conversation[1:]),
+                    messages=conversation,
                     response_format="json",
+                    schema=ACTION_SCHEMA,
                     max_tokens=2000,
                 )
             except Exception as exc:
@@ -256,39 +288,10 @@ class PortfolioStrategist:
                 action_name, json.dumps(params)[:200],
             )
 
-            # ── Guardrail: reject premature finish ──
-            # If the LLM tries to finish without scanning market data,
-            # reject and re-prompt. This prevents the "30 min of collection,
-            # 0 seconds of analysis" bug where the LLM lazily bails out.
+            # ── Handle finish action ──
+            # Data is pre-injected (portfolio + market overview) so the LLM
+            # already has everything it needs. No premature-finish guardrail.
             if action_name == "finish":
-                must_call_first = {"get_market_overview"}
-                missing = must_call_first - tools_used
-                if missing and premature_finish_count < _MAX_PREMATURE_FINISH_REJECTS:
-                    premature_finish_count += 1
-                    logger.warning(
-                        "[Strategist] REJECTED premature finish (attempt %d) "
-                        "— LLM hasn't called: %s",
-                        premature_finish_count, missing,
-                    )
-                    self._audit.log_turn(
-                        turn + 1, raw, "finish_REJECTED", params,
-                        {"reason": f"Must call {missing} first"},
-                    )
-                    conversation.append({"role": "assistant", "content": raw})
-                    conversation.append({
-                        "role": "user",
-                        "content": (
-                            "REJECTED: You cannot finish yet. You have NOT "
-                            "scanned the market. You MUST call "
-                            "get_market_overview first to see all available "
-                            "tickers, then call get_dossier on your top picks, "
-                            "then make trading decisions. You have $10,000 in "
-                            "cash — DEPLOY IT. Call get_market_overview NOW."
-                        ),
-                    })
-                    continue
-
-                # Legitimate finish — LLM has done the work
                 finish_summary = params.get("summary", "No summary provided")
                 self._actions_log.append({
                     "action": "finish",
@@ -299,8 +302,7 @@ class PortfolioStrategist:
                 )
                 break
 
-            # Track tool usage for guardrail
-            tools_used.add(action_name)
+
 
             result = await self._execute_action(action_name, params)
 
@@ -766,44 +768,51 @@ class PortfolioStrategist:
         cash = portfolio["cash_balance"]
         total_value = portfolio["total_portfolio_value"]
 
-        if order_cost > cash:
-            max_affordable = int(cash / price)
-            return {
-                "error": (
-                    f"Insufficient cash. "
-                    f"Order=${order_cost:.2f}, Cash=${cash:.2f}. "
-                    f"Max affordable: {max_affordable} shares"
-                ),
-            }
-
-        # Safety: single order can't exceed 40% of portfolio
-        if order_cost > total_value * 0.40:
-            return {
-                "error": (
-                    f"Order too large: ${order_cost:.2f} is "
-                    f"{order_cost / total_value * 100:.0f}% of portfolio. "
-                    f"Max 40% per single order."
-                ),
-            }
-
-        # Safety: total position (including this order) can't exceed 25% of portfolio
+        # ── Auto-clamp: calculate the maximum safe qty ──
+        max_by_cash = int(cash / price) if price > 0 else 0
+        max_by_pct = int(total_value * 0.40 / price) if price > 0 else 0
+        max_safe_qty = min(max_by_cash, max_by_pct)
+        # Also respect the 25% concentration limit
         positions = self._trader.get_positions()
         existing_value = 0.0
         for p in positions:
             if p["ticker"] == ticker:
                 existing_value = p["qty"] * price
                 break
-        projected_position = existing_value + order_cost
-        if projected_position > total_value * 0.25:
+        max_by_conc = int((total_value * 0.25 - existing_value) / price) if price > 0 else 0
+        max_safe_qty = min(max_safe_qty, max(max_by_conc, 0))
+
+        clamped = False
+        if qty > max_safe_qty and _AUTO_CLAMP_ENABLED and max_safe_qty > 0:
+            logger.warning(
+                "[Strategist] Auto-clamping %s buy: %d -> %d shares "
+                "(cash=$%.0f, portfolio=$%.0f, price=$%.2f)",
+                ticker, qty, max_safe_qty, cash, total_value, price,
+            )
+            qty = max_safe_qty
+            order_cost = price * qty
+            clamped = True
+        elif max_safe_qty <= 0:
+            self._failed_buy_tickers.add(ticker)
             return {
                 "error": (
-                    f"Position concentration limit: {ticker} would be "
-                    f"${projected_position:.0f} "
-                    f"({projected_position / total_value * 100:.0f}% of portfolio). "
-                    f"Max 25% per ticker. Current position: ${existing_value:.0f}, "
-                    f"this order: ${order_cost:.0f}."
+                    f"Cannot buy {ticker}: max safe qty is 0. "
+                    f"Cash=${cash:.2f}, portfolio=${total_value:.2f}, "
+                    f"price=${price:.2f}, existing=${existing_value:.0f}. "
+                    f"Move on to a different ticker."
                 ),
             }
+        elif order_cost > cash:
+            self._failed_buy_tickers.add(ticker)
+            return {
+                "error": (
+                    f"Insufficient cash. "
+                    f"Order=${order_cost:.2f}, Cash=${cash:.2f}. "
+                    f"Max affordable: {max_by_cash} shares"
+                ),
+            }
+
+        # The 25% concentration limit is already handled by auto-clamp above
 
         try:
             order = self._trader.buy(
@@ -842,7 +851,7 @@ class PortfolioStrategist:
                     "source": "portfolio_strategist",
                 },
             )
-            return {
+            result = {
                 "status": "filled",
                 "ticker": ticker,
                 "side": "buy",
@@ -851,6 +860,14 @@ class PortfolioStrategist:
                 "total_cost": order.qty * order.price,
                 "reason": reason,
             }
+            if clamped:
+                result["clamped"] = True
+                result["original_qty"] = params.get("qty", 0)
+                result["note"] = (
+                    f"Order was auto-clamped from {params.get('qty', 0)} to "
+                    f"{order.qty} shares to stay within risk limits."
+                )
+            return result
         self._failed_buy_tickers.add(ticker)
         return {"error": f"Order rejected by paper trader for {ticker}"}
 
@@ -1000,16 +1017,6 @@ class PortfolioStrategist:
 
         return f"{strategy}{user_strategy}\n\n{TOOL_DESCRIPTIONS}"
 
-    @staticmethod
-    def _format_conversation(messages: list[dict]) -> str:
-        """Flatten a multi-turn conversation into a single user string.
-
-        Since LLMService.chat() only accepts system+user, we flatten
-        the assistant/user turns into a single string.
-        """
-        parts = []
-        for msg in messages:
-            role = msg["role"].upper()
-            content = msg["content"]
-            parts.append(f"[{role}]: {content}")
-        return "\n\n".join(parts)
+    # NOTE: _format_conversation was removed. LLMService.chat() now accepts
+    # a native messages array, so multi-turn conversations are passed
+    # directly to Ollama without flattening.
