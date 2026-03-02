@@ -86,7 +86,7 @@ Additional rules:
 - Be specific with numbers, dates, and percentages
 - Keep total output under 2000 characters
 - Factor in the portfolio context when assigning conviction
-- Respond ONLY with the JSON object, no markdown fences
+- Respond with the JSON object. You may wrap it in a ```json markdown block.
 """
 
 
@@ -226,7 +226,7 @@ class DossierSynthesizer:
             raw = await self._llm.chat(
                 system=prompt,
                 user=f"Synthesize the dossier for {ticker}.",
-                response_format="json",
+                response_format="text",
                 max_tokens=1500,
             )
             cleaned = LLMService.clean_json_response(raw)

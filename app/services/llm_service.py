@@ -279,15 +279,10 @@ class LLMService:
             # Try to find a JSON object or array in the thinking
             import json as _json
 
-            # Look for the last JSON block in thinking text
-            # (the answer usually comes after the reasoning)
-            json_match = re.search(
-                r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})",
-                thinking,
-                re.DOTALL,
-            )
-            if json_match:
-                candidate = json_match.group(1)
+            # Reuse our robust brace-depth-counting extractor
+            # instead of a regex that breaks on nested JSON
+            candidate = LLMService.clean_json_response(thinking)
+            if candidate.strip().startswith("{"):
                 try:
                     _json.loads(candidate)  # Validate it's real JSON
                     content = candidate
