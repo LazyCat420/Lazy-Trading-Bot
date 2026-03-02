@@ -2422,6 +2422,8 @@ const SettingsPage = () => {
     const [vramEstimate, setVramEstimate] = useState(null); // {total_vram_gb, model_weight_gb, kv_bytes_per_token, model_max_ctx}
     // OOM error state
     const [oomError, setOomError] = useState(null); // {requested_ctx, suggested_ctx, message}
+    // Audit result state
+    const [auditResult, setAuditResult] = useState(null); // { message, proven_max_ctx }
 
     useEffect(() => {
         const load = async () => {
@@ -2477,6 +2479,7 @@ const SettingsPage = () => {
         RetroSFX.click();
         setSaveStatus("saving");
         setOomError(null);
+        setAuditResult(null);
         try {
             const res = await fetch("/api/llm-config", {
                 method: "PUT",
@@ -2500,6 +2503,19 @@ const SettingsPage = () => {
             } else {
                 setSaveStatus("saved");
                 RetroSFX.successChime();
+
+                if (verified && verified.audit_performed) {
+                    setAuditResult({
+                        message: verified.message,
+                        proven_max_ctx: verified.proven_max_ctx
+                    });
+                }
+
+                // Smoothly slide down context slider to match the backend's safe limit
+                if (verified && verified.recommended_ctx && verified.recommended_ctx !== llmConfig.context_size) {
+                    setLlmConfig(prev => ({ ...prev, context_size: verified.recommended_ctx }));
+                }
+
                 // Refresh VRAM estimate after successful save
                 fetchVramEstimate(data.config?.model || llmConfig.model);
                 // Update local config from server response
@@ -2701,6 +2717,27 @@ const SettingsPage = () => {
                                             className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-muted text-xs font-bold rounded transition">
                                             Keep current
                                         </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Audit Success Banner */}
+                    {auditResult && (
+                        <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/30 animate-fadeIn relative">
+                            <button onClick={() => setAuditResult(null)} className="absolute top-2 right-2 px-2 py-1 text-text-muted hover:text-white">
+                                <span className="material-symbols-outlined text-sm">close</span>
+                            </button>
+                            <div className="flex items-start gap-3">
+                                <span className="material-symbols-outlined text-green-400 text-xl mt-0.5">verified</span>
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-bold text-green-400 mb-1">
+                                        Memory Audit Complete
+                                    </h4>
+                                    <p className="text-xs text-text-muted mb-2">{auditResult.message}</p>
+                                    <div className="text-[11px] font-mono text-green-400/80">
+                                        Proven Hardware Limit: {(auditResult.proven_max_ctx || 0).toLocaleString()} limit
                                     </div>
                                 </div>
                             </div>

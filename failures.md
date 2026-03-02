@@ -12,15 +12,15 @@ tests\test_discovery.py:45: in test_exclusion_list_rejects_jargon
 E   AssertionError: AI should be rejected by exclusion list
 E   assert not True
 ---------------------------- Captured stdout call -----------------------------
-[2026-02-21 22:46:36] INFO     lazy_trader — [Validator] AI VALIDATED — price=$10.38
+[2026-02-21 22:46:36] INFO     lazy_trader ï¿½ [Validator] AI VALIDATED ï¿½ price=$10.38
 ------------------------------ Captured log call ------------------------------
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] YOLO REJECTED — exclusion list
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] DD REJECTED — exclusion list
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] ATH REJECTED — exclusion list
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] IMO REJECTED — exclusion list
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] CEO REJECTED — exclusion list
-DEBUG    lazy_trader:ticker_validator.py:240 [Validator] SEC REJECTED — exclusion list
-INFO     lazy_trader:ticker_validator.py:265 [Validator] AI VALIDATED — price=$10.38
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] YOLO REJECTED ï¿½ exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] DD REJECTED ï¿½ exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] ATH REJECTED ï¿½ exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] IMO REJECTED ï¿½ exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] CEO REJECTED ï¿½ exclusion list
+DEBUG    lazy_trader:ticker_validator.py:240 [Validator] SEC REJECTED ï¿½ exclusion list
+INFO     lazy_trader:ticker_validator.py:265 [Validator] AI VALIDATED ï¿½ price=$10.38
 ___________________ TestTickerScanner.test_extract_tickers ____________________
 tests\test_discovery.py:274: in test_extract_tickers
     result = self.scanner._extract_tickers(text)
@@ -65,7 +65,7 @@ tests/test_watchlist.py::TestWatchlistManagerCRUD::test_add_ticker
   D:\Github\Lazy-Trading-Bot\venv\Lib\site-packages\pandas_ta\__init__.py:37: Pandas4Warning: The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be disabled (it is always enabled with pandas >= 3.0), and setting the option has no impact. This option will be removed in pandas 4.0.
     from pandas_ta.core import AnalysisIndicators
 
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+-- Docs: <https://docs.pytest.org/en/stable/how-to/capture-warnings.html>
 =========================== short test summary info ===========================
 FAILED tests/test_discovery.py::TestTickerValidator::test_exclusion_list_rejects_jargon
 FAILED tests/test_discovery.py::TestTickerScanner::test_extract_tickers - Att...
