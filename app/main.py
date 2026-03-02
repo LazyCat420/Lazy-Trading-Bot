@@ -2527,3 +2527,68 @@ async def get_loaded_model_info(
 
     models = await LLMService.get_loaded_model_info(base_url)
     return {"count": len(models), "models": models}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TRADE DECISION HISTORY (Phase 4 — Decision Audit Trail)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/decisions/{bot_id}")
+async def get_trade_decisions(
+    bot_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Return recent trade decisions for a bot."""
+    from app.services.decision_logger import DecisionLogger
+
+    decisions = DecisionLogger.get_decisions(bot_id, limit=limit)
+    return {"bot_id": bot_id, "decisions": decisions, "count": len(decisions)}
+
+
+@app.get("/api/decisions/detail/{decision_id}")
+async def get_decision_detail(decision_id: str) -> dict:
+    """Return a single decision + its execution details."""
+    from app.services.decision_logger import DecisionLogger
+
+    result = DecisionLogger.get_decision_with_execution(decision_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
+# LLM AUDIT LOG (Thought Ledger)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/audit/{ticker}")
+async def get_audit_logs_for_ticker(
+    ticker: str,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    """Return LLM audit logs for a specific ticker."""
+    from app.services.llm_audit_logger import LLMAuditLogger
+
+    logs = LLMAuditLogger.get_logs_for_ticker(ticker.upper(), limit=limit)
+    return {"ticker": ticker.upper(), "logs": logs, "count": len(logs)}
+
+
+@app.get("/api/audit/recent")
+async def get_recent_audit_logs(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Return most recent LLM audit logs across all tickers."""
+    from app.services.llm_audit_logger import LLMAuditLogger
+
+    logs = LLMAuditLogger.get_recent_logs(limit=limit)
+    return {"logs": logs, "count": len(logs)}
+
+
+@app.get("/api/audit/cycle/{cycle_id}")
+async def get_audit_logs_for_cycle(cycle_id: str) -> dict:
+    """Return all LLM audit logs for a specific trading cycle."""
+    from app.services.llm_audit_logger import LLMAuditLogger
+
+    logs = LLMAuditLogger.get_logs_for_cycle(cycle_id)
+    return {"cycle_id": cycle_id, "logs": logs, "count": len(logs)}

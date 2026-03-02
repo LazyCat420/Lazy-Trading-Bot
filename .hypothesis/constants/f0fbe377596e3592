@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\llm_audit_logger.py
+# hypothesis_version: 6.151.9
+
+[10000, 50000, 'agent_step', 'created_at', 'cycle_id', 'execution_time_ms', 'global', 'id', 'model', 'parsed_json', 'raw_response', 'system_prompt', 'ticker', 'tokens_used', 'user_context']

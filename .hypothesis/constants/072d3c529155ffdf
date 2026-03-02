@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\risk_rules.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.01, 0.1, 0.15, 0.5, 0.95, 1.0, 1.1, 1.5, 2.0, 3.0, 'HIGH', 'LOW', 'MED', 'ok', 'qty must be positive']

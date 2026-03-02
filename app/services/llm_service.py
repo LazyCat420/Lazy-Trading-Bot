@@ -12,6 +12,7 @@ creating and destroying their own connection.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
 
@@ -28,7 +29,7 @@ _shared_client: httpx.AsyncClient | None = None
 
 async def _get_shared_client() -> httpx.AsyncClient:
     """Get or create the shared httpx.AsyncClient."""
-    global _shared_client  # noqa: PLW0603
+    global _shared_client
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -84,6 +85,10 @@ class LLMService:
         schema: dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        # ── Audit metadata (optional, passed by callers for traceability) ──
+        audit_ticker: str = "",
+        audit_step: str = "",
+        audit_cycle_id: str = "",
     ) -> str:
         """Send a chat completion request and return the raw text response.
 
@@ -99,6 +104,9 @@ class LLMService:
             max_tokens: Optional max token limit for the response.
             temperature: Optional per-request temperature override.
                          If None, uses the global setting from config.
+            audit_ticker: Ticker being analyzed (for audit trail).
+            audit_step: Pipeline step name (for audit trail).
+            audit_cycle_id: Trading cycle ID (for audit trail).
 
         Returns:
             The raw string response from the LLM.
@@ -116,10 +124,55 @@ class LLMService:
         # Resolve effective temperature (per-request override > global config)
         effective_temp = temperature if temperature is not None else self.temperature
 
-        return await self._call_ollama(
+        # ── Timed call with audit logging ─────────────────────────
+        import time as _time
+
+        t0 = _time.monotonic()
+        content = await self._call_ollama(
             effective_msgs, response_format, max_tokens, effective_temp,
             schema=schema,
         )
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
+
+        # Non-blocking audit log (never crashes the pipeline)
+        try:
+            from app.services.llm_audit_logger import LLMAuditLogger
+
+            # Extract system/user from effective messages
+            sys_text = ""
+            usr_text = ""
+            for m in effective_msgs:
+                if m.get("role") == "system":
+                    sys_text = m.get("content", "")
+                elif m.get("role") == "user":
+                    usr_text = m.get("content", "")
+
+            # Try to parse response as JSON for the parsed_json column
+            parsed = None
+            try:
+                import json as _json
+
+                cleaned = self.clean_json_response(content)
+                parsed = _json.loads(cleaned)
+            except Exception:
+                pass
+
+            LLMAuditLogger.log(
+                cycle_id=audit_cycle_id,
+                ticker=audit_ticker,
+                agent_step=audit_step,
+                system_prompt=sys_text,
+                user_context=usr_text,
+                raw_response=content,
+                parsed_json=parsed,
+                tokens_used=self.estimate_tokens(content),
+                execution_time_ms=elapsed_ms,
+                model=self.model,
+            )
+        except Exception:
+            pass  # Audit logging must never block trading
+
+        return content
 
     async def _call_ollama(
         self,
@@ -253,7 +306,7 @@ class LLMService:
                 timeout=_timeout,
             )
             resp.raise_for_status()
-        except (httpx.ReadTimeout, asyncio.TimeoutError):
+        except (TimeoutError, httpx.ReadTimeout):
             elapsed = time.perf_counter() - t0
             logger.error(
                 "Ollama request TIMEOUT after %.1fs (limit=%ds)",
@@ -889,12 +942,10 @@ class LLMService:
                             f"failed for {model}. Re-audit.",
                             100,
                         )
-                        try:
+                        with contextlib.suppress(Exception):
                             _cfg.update_llm_config(
                                 {"vram_measurements": _cfg.LLM_VRAM_MEASUREMENTS},
                             )
-                        except Exception:
-                            pass
                         return {
                             "status": "model_verified",
                             "model": model,
@@ -1046,12 +1097,12 @@ class LLMService:
 
                     # Save to persistent cache
                     import json
-                    import time
                     import os
+                    import time
                     CONFIG_FILE = str(_cfg.LLM_CONFIG_PATH)
-                    
+
                     vram_usage_gb = (model_file_size + (proven_max_ctx * kv_per_tok)) / (1024**3)
-                    
+
                     _cfg.LLM_VRAM_MEASUREMENTS[model] = {
                         "proven_max_ctx": proven_max_ctx,
                         "vram_usage_gb": vram_usage_gb,
@@ -1063,18 +1114,18 @@ class LLMService:
                     try:
                         # 1. Read existing file so we don't overwrite other settings
                         if os.path.exists(CONFIG_FILE):
-                            with open(CONFIG_FILE, "r") as f:
+                            with open(CONFIG_FILE) as f:
                                 disk_config = json.load(f)
                         else:
                             disk_config = {}
-                            
+
                         # 2. Update the measurements section
                         disk_config["vram_measurements"] = _cfg.LLM_VRAM_MEASUREMENTS
-                        
+
                         # 3. Write back to disk atomically
                         with open(CONFIG_FILE, "w") as f:
                             json.dump(disk_config, f, indent=4)
-                            
+
                         logger.info("[LLM] ✅ Saved audit results to permanent disk cache.")
                     except Exception as save_exc:
                         logger.error("❌ Failed to save audit cache to disk: %s", save_exc)

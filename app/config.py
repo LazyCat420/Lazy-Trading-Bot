@@ -74,6 +74,8 @@ class Settings:
 
     # Feature flags
     MOCK_DATA: bool = os.getenv("MOCK_DATA", "false").lower() == "true"
+    USE_NEW_PIPELINE: bool = os.getenv("USE_NEW_PIPELINE", "true").lower() == "true"
+    DRY_RUN_TRADES: bool = os.getenv("DRY_RUN_TRADES", "true").lower() == "true"
 
     # ── LLM Config JSON path ──────────────────────────────────────
     LLM_CONFIG_PATH: Path = (

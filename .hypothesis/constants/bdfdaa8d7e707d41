@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\models\trade_action.py
+# hypothesis_version: 6.151.9
+
+['BUY', 'HIGH', 'HOLD', 'INTRADAY', 'LOW', 'MED', 'POSITION', 'SELL', 'SWING', 'action', 'confidence', 'enum', 'number', 'object', 'properties', 'rationale', 'required', 'risk_level', 'risk_notes', 'string', 'symbol', 'time_horizon', 'type']

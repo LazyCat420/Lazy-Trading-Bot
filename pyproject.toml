@@ -1,0 +1,48 @@
+[project]
+name = "lazy-trading-bot"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+# ── Ruff ────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function calls in defaults (FastAPI Depends/Query)
+    "SIM108", # ternary instead of if-else
+    "RUF012", # mutable class attrs (Settings class)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ── Mypy ────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+
+# ── Pytest ──────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests that hit external APIs (deselect with -m 'not slow')",
+    "integration: marks tests requiring live services",
+]

@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\utils\logger.py
+# hypothesis_version: 6.151.9
+
+['%Y-%m-%d %H:%M:%S', '%Y-%m-%d_%H-%M-%S', 'Log started: %s', 'health_*.md', 'lazy_trader', 'reports', 'trading_bot.log', 'trading_bot_*.log', 'utf-8', 'w']

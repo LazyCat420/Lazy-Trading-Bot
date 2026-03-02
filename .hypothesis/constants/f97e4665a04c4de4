@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\decision_logger.py
+# hypothesis_version: 6.151.9
+
+[0.0, 5000, 'action', 'avg_price', 'bot_id', 'broker_error', 'confidence', 'decision', 'execution', 'filled_qty', 'id', 'order_id', 'pending', 'rationale', 'raw_llm_response', 'rejection_reason', 'risk_level', 'status', 'symbol', 'ts']

@@ -1,8 +1,8 @@
-"""Dossier models — 4-Layer Analysis Funnel data structures.
+"""Dossier models — quant scoring + distilled analysis data structures.
 
-Layer 1 → QuantScorecard  (pure math output)
-Layer 3 → QAPair          (question + answer from RAG)
-Layer 4 → TickerDossier   (final synthesized analysis)
+QuantScorecard  → pure math signals per ticker (quant engine output)
+TickerDossier   → analysis package: scorecard + distilled context
+QAPair          → legacy Q&A structure (retained for DB compatibility)
 """
 
 from __future__ import annotations

@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\trade_action_parser.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.1, '$', 'HIGH', 'HOLD', 'action', 'bot_id', 'json', 'parse_failure', 'rationale', 'risk_notes', 'source', 'symbol', 'trade_decision']

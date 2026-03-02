@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\pipeline_health.py
+# hypothesis_version: 6.151.9
+
+[0.0, 120, 300, 1800, '## Errors & Warnings', '## Phase Timing', '## Scorecard', '### Slowest Calls', '%(message)s', '%H:%M:%S', '?', '\\|', 'analysis', 'collection', 'context', 'detail', 'discovery', 'duration', 'end', 'error', 'health_*.md', 'import', 'level', 'message', 'model', 'passed', 'reports', 'running', 'start', 'status', 'success', 'timed_out', 'timestamp', 'tokens', 'trading', 'unknown', 'utf-8', '|', '| Check | Result |', '| Metric | Value |', '|--------|-------|', '|-------|--------|', '—', '⚠️ slow', '✅', '❌', '❌ TIMEOUT', '🔄']

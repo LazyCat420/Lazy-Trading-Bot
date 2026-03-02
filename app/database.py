@@ -627,6 +627,54 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Phase 3+4: Trade Decision Audit Trail ───────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trade_decisions (
+            id               VARCHAR PRIMARY KEY,
+            bot_id           VARCHAR NOT NULL,
+            symbol           VARCHAR NOT NULL,
+            ts               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action           VARCHAR NOT NULL,
+            confidence       DOUBLE,
+            rationale        TEXT,
+            risk_level       VARCHAR DEFAULT 'MED',
+            risk_notes       TEXT DEFAULT '',
+            time_horizon     VARCHAR DEFAULT 'SWING',
+            raw_llm_response TEXT,
+            status           VARCHAR DEFAULT 'pending',
+            rejection_reason TEXT DEFAULT ''
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trade_executions (
+            id               VARCHAR PRIMARY KEY,
+            decision_id      VARCHAR NOT NULL,
+            order_id         VARCHAR DEFAULT '',
+            ts               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            filled_qty       INTEGER DEFAULT 0,
+            avg_price        DOUBLE DEFAULT 0,
+            status           VARCHAR DEFAULT 'pending',
+            broker_error     TEXT DEFAULT ''
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_audit_logs (
+            id               VARCHAR PRIMARY KEY,
+            cycle_id         VARCHAR DEFAULT '',
+            ticker           VARCHAR DEFAULT '',
+            agent_step       VARCHAR DEFAULT '',
+            system_prompt    TEXT DEFAULT '',
+            user_context     TEXT DEFAULT '',
+            raw_response     TEXT DEFAULT '',
+            parsed_json      TEXT,
+            tokens_used      INTEGER DEFAULT 0,
+            execution_time_ms INTEGER DEFAULT 0,
+            model            VARCHAR DEFAULT '',
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

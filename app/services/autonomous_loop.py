@@ -518,13 +518,15 @@ class AutonomousLoop:
         }
 
     async def _do_trading(self) -> dict:
-        """Step 4: LLM Portfolio Strategist makes all trading decisions.
+        """Step 4: Make trading decisions — new pipeline or legacy strategist.
 
-        Instead of processing each ticker through hardcoded SignalRouter
-        thresholds, we feed ALL dossiers to the Portfolio Strategist LLM.
-        The LLM compares stocks, decides allocation, and executes trades
-        via tool-calling.
+        When USE_NEW_PIPELINE is True:
+          One LLM call per ticker → TradeAction → ExecutionService
+        When False (legacy):
+          Multi-turn PortfolioStrategist loop with tool-calling
         """
+        from app.config import settings
+
         tickers = self.watchlist.get_active_tickers()
         if not tickers:
             self._log("No active tickers for trading")
@@ -550,9 +552,82 @@ class AutonomousLoop:
                     metadata=trig,
                 )
 
-        # ---- Run Portfolio Strategist (LLM tool-calling) ----
+        # ========================================================
+        # New Pipeline (Phase 3+4)
+        # ========================================================
+        if settings.USE_NEW_PIPELINE:
+            self._log(
+                f"New Pipeline: analyzing {len(tickers)} tickers "
+                f"(dry_run={settings.DRY_RUN_TRADES})…"
+            )
+
+            from app.services.trading_pipeline_service import TradingPipelineService
+
+            pipeline = TradingPipelineService(
+                paper_trader=self.paper_trader,
+                dry_run=settings.DRY_RUN_TRADES,
+                bot_id=self.bot_id,
+            )
+
+            try:
+                result = await pipeline.run_once(tickers)
+            except Exception as exc:
+                logger.exception("[AutoLoop] TradingPipeline failed")
+                self._log(f"Pipeline error: {exc}")
+                log_event(
+                    "trading",
+                    "pipeline_error",
+                    f"TradingPipeline failed: {exc}",
+                    status="error",
+                )
+                return {"orders": 0, "error": str(exc)}
+
+            orders_count = result.get("orders", 0)
+            decisions_count = result.get("decisions", 0)
+
+            self._log(
+                f"Pipeline: {decisions_count} decisions, "
+                f"{orders_count} orders placed"
+            )
+
+            log_event(
+                "trading",
+                "pipeline_complete",
+                f"TradingPipeline: {decisions_count} decisions, "
+                f"{orders_count} orders",
+                metadata={
+                    "decisions": decisions_count,
+                    "orders": orders_count,
+                    "duration_seconds": result.get("duration_seconds", 0),
+                },
+            )
+
+            # Log individual ticker results for activity feed
+            for ticker_result in result.get("tickers", []):
+                action = ticker_result.get("action", "?")
+                confidence = ticker_result.get("confidence", 0)
+                exec_status = ticker_result.get("exec_status", "?")
+                log_event(
+                    "trading",
+                    f"decision_{action.lower()}" if action != "?" else "decision_unknown",
+                    f"${ticker_result.get('ticker', '?')}: "
+                    f"{action} ({confidence:.0%}) → {exec_status}",
+                    ticker=ticker_result.get("ticker"),
+                    metadata=ticker_result,
+                )
+
+            return {
+                "orders": orders_count,
+                "decisions": decisions_count,
+                "tickers": tickers,
+                "duration_seconds": result.get("duration_seconds", 0),
+            }
+
+        # ========================================================
+        # Legacy: PortfolioStrategist (multi-turn LLM loop)
+        # ========================================================
         self._log(
-            f"Portfolio Strategist analyzing {len(tickers)} tickers "
+            f"Legacy Strategist: analyzing {len(tickers)} tickers "
             f"for trading decisions…"
         )
 
