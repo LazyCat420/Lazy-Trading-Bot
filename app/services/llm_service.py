@@ -180,17 +180,18 @@ class LLMService:
         url = f"{self.base_url}/api/chat"
 
         # Context size: Use the PROVEN loaded context for this model
-        # from vram_measurements. The config context_size is a desired
-        # maximum, but the actual ctx must match what the model was
-        # loaded with ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â sending a larger num_ctx causes 500 errors.
+        # from the Empirical Memory Audit. The actual ctx must match
+        # what the model was loaded with to prevent Ollama from eviction.
         desired_ctx = self.context_size if self.context_size > 0 else 8192
         measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
-        proven_ctx = measurement.get("ctx", 0)
+        proven_ctx = measurement.get("proven_max_ctx", 0)
+
         if proven_ctx > 0:
             effective_ctx = min(desired_ctx, proven_ctx)
         else:
-            # No measurement yet ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â use a safe default
-            effective_ctx = min(desired_ctx, 8192)
+            # If not audited yet, trust the user's slider (desired_ctx)
+            # The warmup should have caught OOMs, so don't arbitrarily limit to 8192 here.
+            effective_ctx = desired_ctx
 
         payload: dict = {
             "model": self.model,
@@ -200,6 +201,7 @@ class LLMService:
             "options": {
                 "temperature": temperature,
                 "num_ctx": effective_ctx,
+                "num_gpu": 999,
             },
         }
         if response_format == "json":
