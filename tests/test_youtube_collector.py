@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from app.collectors.youtube_collector import YouTubeCollector
+from app.services.youtube_service import YouTubeCollector
 
 
 class TestVTTParsing:

@@ -39,30 +39,17 @@ class TestImports:
         assert row.ticker == "NVDA"
         assert row.close == 105
 
-    def test_agent_report_models(self) -> None:
-        from app.models.agent_reports import (
-            TechnicalReport,
-        )
-        report = TechnicalReport(
-            ticker="NVDA",
-            trend="UPTREND",
-            momentum="BULLISH",
-            signal="BUY",
-            confidence=0.8,
-            reasoning="Test",
-        )
-        assert report.signal == "BUY"
-        assert 0 <= report.confidence <= 1
+    def test_dossier_models(self) -> None:
+        from app.models.dossier import QuantScorecard
+        scorecard = QuantScorecard(ticker="NVDA")
+        assert scorecard.ticker == "NVDA"
+        assert scorecard.sharpe_ratio == 0.0
 
-    def test_decision_model(self) -> None:
-        from app.models.decision import RuleEvaluation
-        rule = RuleEvaluation(
-            rule_text="RSI between 40-65",
-            is_met=True,
-            evidence="RSI is 55",
-            data_source="TechnicalAgent",
-        )
-        assert rule.is_met is True
+    def test_trading_models(self) -> None:
+        from app.models.trading import Position
+        pos = Position(ticker="NVDA", qty=10, avg_entry_price=100.0)
+        assert pos.ticker == "NVDA"
+        assert pos.qty == 10
 
     def test_llm_service(self) -> None:
         from app.services.llm_service import LLMService
@@ -74,29 +61,13 @@ class TestImports:
         cleaned = LLMService.clean_json_response(raw)
         assert cleaned == '{"signal": "BUY"}'
 
-    def test_agents(self) -> None:
-        from app.agents.technical_agent import TechnicalAgent
-        from app.agents.fundamental_agent import FundamentalAgent
-        from app.agents.sentiment_agent import SentimentAgent
-        from app.agents.risk_agent import RiskAgent
-
-        # Verify agents can be instantiated and their prompts exist
-        ta = TechnicalAgent()
-        fa = FundamentalAgent()
-        sa = SentimentAgent()
-        ra = RiskAgent()
-
-        assert ta.prompt_path.exists()
-        assert fa.prompt_path.exists()
-        assert sa.prompt_path.exists()
-        assert ra.prompt_path.exists()
-
-    def test_engine(self) -> None:
-        from app.engine.aggregator import Aggregator
-
-        agg = Aggregator()
-        pooled = agg.pool("NVDA")
-        assert pooled.ticker == "NVDA"
+    def test_services(self) -> None:
+        from app.services.quant_engine import QuantSignalEngine
+        from app.services.data_distiller import DataDistiller
+        qe = QuantSignalEngine()
+        dd = DataDistiller()
+        assert qe is not None
+        assert dd is not None
 
     def test_user_config_exists(self) -> None:
         from app.config import settings

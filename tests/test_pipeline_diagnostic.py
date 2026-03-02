@@ -141,53 +141,9 @@ async def test_json_response(llm: LLMService) -> bool:
 # ── Test 3: QuestionGenerator (Layer 2) ──────────────────────────────
 
 async def test_question_generator() -> bool:
-    """Test Layer 2 with a mock scorecard."""
-    banner("Test 3: QuestionGenerator (Layer 2)")
-
-    from app.engine.question_generator import QuestionGenerator
-    from app.models.dossier import QuantScorecard
-
-    # Build a minimal scorecard
-    scorecard = QuantScorecard(
-        ticker=TICKER,
-        trend_template_score=8,
-        vcp_setup_score=45,
-        relative_strength_rating=72,
-        market_cap_tier="mega",
-        z_score=1.2,
-        momentum_score=0.15,
-        hurst_exponent=0.6,
-        altman_z=5.5,
-        piotroski_f=7,
-        sortino_ratio=1.5,
-        max_drawdown=-0.12,
-        volume_spike_percentile=60,
-        flags=["strong_trend_regime"],
-    )
-
-    qg = QuestionGenerator()
-    t0 = time.time()
-    try:
-        questions = await qg.generate(scorecard)
-        dur = time.time() - t0
-
-        ok = len(questions) >= 3
-        detail_lines = []
-        for i, q in enumerate(questions[:5], 1):
-            detail_lines.append(
-                f"Q{i}: {q.get('question', '???')[:80]}"
-            )
-        detail = "\n".join(detail_lines)
-
-        if not ok:
-            detail += (
-                f"\nOnly got {len(questions)} questions (expected >= 3)"
-            )
-
-        return result(ok, f"Generated {len(questions)} questions", detail, dur)
-    except Exception as e:
-        dur = time.time() - t0
-        return result(False, "QuestionGenerator", f"Exception: {e}", dur)
+    """Test 3: QuestionGenerator was deleted in engine refactor — SKIPPED."""
+    banner("Test 3: QuestionGenerator (REMOVED)")
+    return result(True, "QuestionGenerator removed in refactor", "Layer 2-4 funnel deleted, PortfolioStrategist handles analysis now")
 
 
 # ── Test 4: RAG Answer Extraction (Layer 3) ──────────────────────────

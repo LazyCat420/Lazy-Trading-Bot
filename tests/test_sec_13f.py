@@ -10,7 +10,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 
-from app.collectors.sec_13f_collector import SEC13FCollector
+from app.services.sec_13f_service import SEC13FCollector
 
 # ── Logging setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -175,7 +175,7 @@ class TestSEC13FFilingDiscovery:
 class TestSEC13FDBIntegration:
     """Tests for DB persistence and scored ticker generation."""
 
-    @patch("app.collectors.sec_13f_collector.get_db")
+    @patch("app.services.sec_13f_service.get_db")
     def test_tickers_from_db(self, mock_get_db: MagicMock) -> None:
         """Should generate ScoredTicker from DB holdings."""
         mock_db = MagicMock()
@@ -198,7 +198,7 @@ class TestSEC13FDBIntegration:
         assert tickers[0].discovery_score == 10.0  # 5 institutions × 2.0
         assert tickers[0].sentiment_hint == "bullish"
 
-    @patch("app.collectors.sec_13f_collector.get_db")
+    @patch("app.services.sec_13f_service.get_db")
     def test_daily_guard(self, mock_get_db: MagicMock) -> None:
         """Should skip scraping if already collected today."""
         mock_db = MagicMock()
@@ -219,7 +219,7 @@ class TestSEC13FDBIntegration:
         # Should have returned cached data without scraping
         assert len(result) >= 0  # May be 0 if query doesn't match
 
-    @patch("app.collectors.sec_13f_collector.get_db")
+    @patch("app.services.sec_13f_service.get_db")
     def test_get_holdings_for_ticker(self, mock_get_db: MagicMock) -> None:
         """Should return institutional holders for a specific ticker."""
         mock_db = MagicMock()

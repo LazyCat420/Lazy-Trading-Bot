@@ -103,7 +103,7 @@ class TestYouTube24hFilter:
     """Test the 24-hour recency filter on YouTube collection."""
 
     def test_curated_channels_exist(self) -> None:
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         collector = YouTubeCollector()
         assert len(collector.CURATED_CHANNELS) >= 10
         assert "CNBC" in collector.CURATED_CHANNELS
@@ -111,14 +111,14 @@ class TestYouTube24hFilter:
 
     def test_no_truncation_constant(self) -> None:
         """MAX_TRANSCRIPT_CHARS should no longer exist — full transcripts."""
-        from app.collectors import youtube_collector
-        assert not hasattr(youtube_collector, "MAX_TRANSCRIPT_CHARS"), (
+        from app.services import youtube_service
+        assert not hasattr(youtube_service, "MAX_TRANSCRIPT_CHARS"), (
             "MAX_TRANSCRIPT_CHARS should be removed — no truncation"
         )
 
     def test_full_transcript_stored(self) -> None:
         """Verify transcripts are NOT truncated."""
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         collector = YouTubeCollector()
 
         long_text = "X" * 50_000  # 50K chars — would have been truncated before
@@ -132,7 +132,7 @@ class TestYouTube24hFilter:
     @pytest.mark.asyncio()
     async def test_24h_filter_skips_old_videos(self) -> None:
         """Videos older than 24h should be skipped."""
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         collector = YouTubeCollector()
 
         old_date = datetime.now(tz=timezone.utc) - timedelta(hours=48)
@@ -146,7 +146,7 @@ class TestYouTube24hFilter:
         with (
             patch.object(collector, "_search_videos", return_value=mock_videos),
             patch.object(collector, "_get_transcript", return_value="Full transcript text for testing"),
-            patch("app.collectors.youtube_collector.get_db") as mock_db,
+            patch("app.services.youtube_service.get_db") as mock_db,
         ):
             # Mock DB to say no videos exist yet
             mock_conn = MagicMock()
@@ -170,7 +170,7 @@ class TestYouTubeHistoricalRetrieval:
     @pytest.mark.usefixtures("_clean_test_data")
     def test_insert_and_retrieve_transcripts(self, db) -> None:
         """Insert transcripts directly and verify get_all_historical finds them."""
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         collector = YouTubeCollector()
 
         # Insert 3 test transcripts manually
@@ -208,7 +208,7 @@ class TestYouTubeHistoricalRetrieval:
     @pytest.mark.usefixtures("_clean_test_data")
     def test_accumulation_across_runs(self, db) -> None:
         """Verify data accumulates — multiple inserts create a growing dataset."""
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         collector = YouTubeCollector()
 
         # Simulate "run 1" — insert 2 transcripts
@@ -273,7 +273,7 @@ class TestNewsHistoricalRetrieval:
     @pytest.mark.usefixtures("_clean_test_data")
     def test_insert_and_retrieve_news(self, db) -> None:
         """Insert news articles and verify get_all_historical finds them."""
-        from app.collectors.news_collector import NewsCollector
+        from app.services.news_service import NewsCollector
         collector = NewsCollector()
 
         # Insert test articles from different sources
@@ -313,7 +313,7 @@ class TestNewsHistoricalRetrieval:
     @pytest.mark.usefixtures("_clean_test_data")
     def test_news_accumulation(self, db) -> None:
         """Verify news accumulates across multiple collection runs."""
-        from app.collectors.news_collector import NewsCollector
+        from app.services.news_service import NewsCollector
         collector = NewsCollector()
 
         # Day 1: 2 articles
@@ -376,58 +376,15 @@ class TestNewsHistoricalRetrieval:
 # ──────────────────────────────────────────────────────────────
 
 class TestAgentContextHistoricalData:
-    """Verify agents format historical data correctly."""
+    """Agents were deleted in refactor — these tests are skipped."""
 
+    @pytest.mark.skip(reason="Agents deleted in refactor — data formatting moved to DataDistiller")
     def test_sentiment_agent_formats_multi_source_news(self) -> None:
-        """Sentiment agent should group news by source."""
-        from app.agents.sentiment_agent import SentimentAgent
-        agent = SentimentAgent()
+        pass
 
-        news = [
-            NewsArticle(
-                ticker="NVDA", article_hash="h1",
-                title="yf article", source="yfinance",
-                publisher="Yahoo",
-            ),
-            NewsArticle(
-                ticker="NVDA", article_hash="h2",
-                title="google article", source="google_news",
-                publisher="Bloomberg",
-            ),
-            NewsArticle(
-                ticker="NVDA", article_hash="h3",
-                title="sec filing", source="sec_edgar",
-                publisher="SEC",
-            ),
-        ]
-
-        transcripts = [
-            YouTubeTranscript(
-                ticker="NVDA", video_id="v1",
-                title="NVDA Analysis", channel="TestChannel",
-                raw_transcript="Full analysis transcript text here " * 50,
-            ),
-        ]
-
-        context = agent.format_context("NVDA", {
-            "news": news,
-            "transcripts": transcripts,
-        })
-
-        # Check source grouping
-        assert "Financial Wire News (yfinance)" in context
-        assert "General News (Google News)" in context
-        assert "SEC Filings" in context
-        # Check transcript is included
-        assert "TRANSCRIPT" in context
-        assert "Full analysis transcript text here" in context
-
+    @pytest.mark.skip(reason="Agents deleted in refactor")
     def test_sentiment_agent_handles_empty_data(self) -> None:
-        """Agent should handle missing data gracefully."""
-        from app.agents.sentiment_agent import SentimentAgent
-        agent = SentimentAgent()
-        context = agent.format_context("NVDA", {"news": [], "transcripts": []})
-        assert "No news or transcript data available" in context
+        pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -438,7 +395,7 @@ class TestRiskComputer:
     """Test the RiskComputer can be instantiated and has correct constants."""
 
     def test_instantiation(self) -> None:
-        from app.collectors.risk_computer import RiskComputer
+        from app.services.risk_service import RiskComputer
         rc = RiskComputer()
         assert rc.RISK_FREE_RATE > 0
         assert rc.TRADING_DAYS_PER_YEAR == 252
@@ -446,7 +403,7 @@ class TestRiskComputer:
     def test_risk_metrics_dataclass(self) -> None:
         from dataclasses import asdict
 
-        from app.collectors.risk_computer import RiskMetrics
+        from app.services.risk_service import RiskMetrics
         metrics = RiskMetrics(ticker="NVDA", computed_date=date.today())
         d = asdict(metrics)
         assert d["ticker"] == "NVDA"
@@ -461,44 +418,15 @@ class TestRiskComputer:
 # ──────────────────────────────────────────────────────────────
 
 class TestFundamentalAgentNewData:
-    """Test the fundamental agent formats new data types."""
+    """Agents were deleted in refactor — these tests are skipped."""
 
+    @pytest.mark.skip(reason="FundamentalAgent deleted in refactor")
     def test_formats_balance_sheet_data(self) -> None:
-        from app.agents.fundamental_agent import FundamentalAgent
-        from app.models.market_data import BalanceSheetRow
-        agent = FundamentalAgent()
+        pass
 
-        bs = [
-            BalanceSheetRow(
-                ticker="NVDA", year=2024,
-                total_assets=65e9, total_liabilities=25e9,
-                stockholders_equity=40e9, total_debt=10e9,
-                cash_and_equivalents=15e9, current_ratio=4.5,
-            )
-        ]
-
-        context = agent.format_context("NVDA", {"balance_sheet": bs})
-        assert "BALANCE SHEET TREND" in context
-        assert "2024" in context
-
+    @pytest.mark.skip(reason="FundamentalAgent deleted in refactor")
     def test_formats_analyst_data(self) -> None:
-        from app.agents.fundamental_agent import FundamentalAgent
-        from app.models.market_data import AnalystData
-        agent = FundamentalAgent()
-
-        analyst = AnalystData(
-            ticker="NVDA",
-            snapshot_date=date.today(),
-            target_mean=150.0, target_median=148.0,
-            target_low=100.0, target_high=200.0,
-            num_analysts=30,
-            strong_buy=15, buy=10, hold=4, sell=1, strong_sell=0,
-        )
-
-        context = agent.format_context("NVDA", {"analyst_data": analyst})
-        assert "ANALYST CONSENSUS" in context
-        assert "$150.00" in context
-        assert "15SB" in context
+        pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -509,7 +437,7 @@ class TestVTTParsing:
     """Tests for the VTT subtitle parser."""
 
     def test_basic_vtt(self) -> None:
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         vtt = """WEBVTT
 Kind: captions
 Language: en
@@ -525,7 +453,7 @@ Today we are talking about NVDA
         assert "Today we are talking about NVDA" in result
 
     def test_dedup_overlapping_segments(self) -> None:
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         vtt = """WEBVTT
 
 00:00:00.000 --> 00:00:03.000
@@ -542,6 +470,6 @@ This is a test
         assert "This is a test" in result
 
     def test_empty_vtt(self) -> None:
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         result = YouTubeCollector._parse_vtt("WEBVTT\n\n")
         assert result == ""

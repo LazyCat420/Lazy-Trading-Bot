@@ -101,7 +101,7 @@ async def diagnose(ticker: str, *, skip_youtube: bool = False) -> None:
     results: list[tuple[str, str, str]] = []
 
     # ── 1. YFinance Collector ──────────────────────────────────
-    from app.collectors.yfinance_collector import YFinanceCollector
+    from app.services.yfinance_service import YFinanceCollector
     yf = YFinanceCollector()
 
     section("YFinance Data (Steps 1-9)")
@@ -135,7 +135,7 @@ async def diagnose(ticker: str, *, skip_youtube: bool = False) -> None:
     section("Technical Indicators (Step 4)")
 
     if price_history:
-        from app.collectors.technical_computer import TechnicalComputer
+        from app.services.technical_service import TechnicalComputer
         tc = TechnicalComputer()
         technicals = await run_step(
             "4. Technical Indicators (pandas-ta)", tc.compute(ticker), results
@@ -154,7 +154,7 @@ async def diagnose(ticker: str, *, skip_youtube: bool = False) -> None:
     section("Risk Metrics (Step 10)")
 
     if price_history:
-        from app.collectors.risk_computer import RiskComputer
+        from app.services.risk_service import RiskComputer
         rc = RiskComputer()
         risk = await run_step(
             "10. Risk Metrics (25+ quant)", rc.compute(ticker), results
@@ -171,7 +171,7 @@ async def diagnose(ticker: str, *, skip_youtube: bool = False) -> None:
     # ── 4. News Collector ──────────────────────────────────────
     section("News Collection (Step 11)")
 
-    from app.collectors.news_collector import NewsCollector
+    from app.services.news_service import NewsCollector
     nc = NewsCollector()
 
     await run_step(
@@ -199,7 +199,7 @@ async def diagnose(ticker: str, *, skip_youtube: bool = False) -> None:
     if not skip_youtube:
         section("YouTube Collection (Step 12)")
 
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
         yt = YouTubeCollector()
 
         await run_step(

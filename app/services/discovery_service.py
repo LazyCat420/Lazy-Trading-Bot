@@ -11,12 +11,12 @@ import time
 from datetime import datetime
 from typing import Any
 
-from app.collectors.congress_collector import CongressCollector
-from app.collectors.reddit_collector import RedditCollector
-from app.collectors.rss_news_collector import RSSNewsCollector
-from app.collectors.sec_13f_collector import SEC13FCollector
-from app.collectors.ticker_scanner import TickerScanner
-from app.collectors.youtube_collector import YouTubeCollector
+from app.services.congress_service import CongressCollector
+from app.services.reddit_service import RedditCollector
+from app.services.rss_news_service import RSSNewsCollector
+from app.services.sec_13f_service import SEC13FCollector
+from app.services.ticker_scanner import TickerScanner
+from app.services.youtube_service import YouTubeCollector
 from app.database import get_db
 from app.models.discovery import DiscoveryResult, ScoredTicker
 from app.utils.logger import logger

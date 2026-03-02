@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.engine.strategist_audit import StrategistAudit
+from app.services.strategist_audit import StrategistAudit
 
 
 class TestStrategistAudit:

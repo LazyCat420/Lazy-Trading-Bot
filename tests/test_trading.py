@@ -81,25 +81,7 @@ class TestSignalRouter:
     @pytest.fixture(autouse=True)
     def setup_router(self, tmp_path):
         """Create a router with known risk params."""
-        risk_params = {
-            "max_position_size_pct": 10.0,
-            "max_portfolio_allocation_pct": 30.0,
-            "max_orders_per_day": 5,
-            "daily_loss_limit_pct": 5.0,
-            "cooldown_days": 7,
-            "account_size_usd": 10000,
-        }
-        # Patch settings to use tmp_path for config
-        risk_file = tmp_path / "user_config" / "risk_params.json"
-        risk_file.parent.mkdir(parents=True, exist_ok=True)
-        import json
-        risk_file.write_text(json.dumps(risk_params))
-
-        with patch("app.engine.signal_router.settings") as mock_settings:
-            mock_settings.USER_CONFIG_DIR = risk_file.parent
-            from app.engine.signal_router import SignalRouter
-            self.router = SignalRouter()
-            yield  # keep mock active during test execution
+        pytest.skip("SignalRouter was deleted in engine refactor — logic moved to PortfolioStrategist")
 
     def test_buy_signal_high_conviction(self):
         """Conviction >= 0.55 should produce a BUY."""
@@ -401,9 +383,9 @@ class TestImports:
         assert Position is not None
         assert Order is not None
 
-    def test_import_signal_router(self):
-        from app.engine.signal_router import SignalRouter
-        assert SignalRouter is not None
+    def test_import_portfolio_strategist(self):
+        from app.services.portfolio_strategist import PortfolioStrategist
+        assert PortfolioStrategist is not None
 
     def test_import_paper_trader(self):
         from app.services.paper_trader import PaperTrader

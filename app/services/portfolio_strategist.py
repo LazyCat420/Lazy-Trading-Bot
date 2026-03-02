@@ -18,12 +18,12 @@ from __future__ import annotations
 import json
 
 from app.config import settings
-from app.engine.strategist_audit import StrategistAudit
+from app.services.strategist_audit import StrategistAudit
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.llm_service import LLMService
 from app.services.paper_trader import PaperTrader
 from app.services.peer_fetcher import PeerFetcher
-from app.collectors.yfinance_collector import YFinanceCollector
+from app.services.yfinance_service import YFinanceCollector
 from app.utils.logger import logger
 
 _MAX_TURNS = 10  # Safety cap on LLM action loops

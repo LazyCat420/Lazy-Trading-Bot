@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
-from app.collectors.ticker_validator import TickerValidator
-from app.collectors.reddit_collector import RedditCollector
-from app.collectors.ticker_scanner import TickerScanner
+from app.services.ticker_validator import TickerValidator
+from app.services.reddit_service import RedditCollector
+from app.services.ticker_scanner import TickerScanner
 from app.models.discovery import DiscoveryResult, ScoredTicker
 from app.services.discovery_service import DiscoveryService
 
@@ -61,7 +61,7 @@ class TestTickerValidator:
         log.info("  Empty and 'ABCDEF' correctly rejected")
         # Note: 'A' is a valid 1-char ticker (Agilent Technologies)
 
-    @patch("app.collectors.ticker_validator.yf.Ticker")
+    @patch("app.services.ticker_validator.yf.Ticker")
     def test_yfinance_valid_ticker(self, mock_ticker_cls: MagicMock) -> None:
         """A real ticker with price data should pass."""
         mock_fi = MagicMock()
@@ -72,7 +72,7 @@ class TestTickerValidator:
         log.info("NVDA validation with mocked price $125.50: %s", result)
         assert result is True
 
-    @patch("app.collectors.ticker_validator.yf.Ticker")
+    @patch("app.services.ticker_validator.yf.Ticker")
     def test_yfinance_no_price(self, mock_ticker_cls: MagicMock) -> None:
         """A ticker with no price data should fail."""
         mock_fi = MagicMock()
@@ -83,7 +83,7 @@ class TestTickerValidator:
         log.info("FAKE validation with no price: %s", result)
         assert result is False
 
-    @patch("app.collectors.ticker_validator.yf.Ticker")
+    @patch("app.services.ticker_validator.yf.Ticker")
     def test_caching(self, mock_ticker_cls: MagicMock) -> None:
         """Validated results should be cached."""
         mock_fi = MagicMock()
@@ -100,7 +100,7 @@ class TestTickerValidator:
         assert mock_ticker_cls.call_count == 1, "Should use cache on second call"
         assert result is True
 
-    @patch("app.collectors.ticker_validator.yf.Ticker")
+    @patch("app.services.ticker_validator.yf.Ticker")
     def test_batch_validate(self, mock_ticker_cls: MagicMock) -> None:
         """Batch validation should filter correct results."""
         mock_fi = MagicMock()
@@ -163,7 +163,7 @@ class TestRedditCollector:
         log.info("Input with 3x NVDA → %s", result)
         assert result.count("NVDA") == 1
 
-    @patch("app.collectors.reddit_collector.requests.get")
+    @patch("app.services.reddit_service.requests.get")
     def test_fetch_subreddit_success(self, mock_get: MagicMock) -> None:
         """Successful subreddit fetch returns parsed posts."""
         mock_response = MagicMock()
@@ -193,7 +193,7 @@ class TestRedditCollector:
         assert len(posts) == 1
         assert posts[0]["title"] == "NVDA earnings blowout!"
 
-    @patch("app.collectors.reddit_collector.requests.get")
+    @patch("app.services.reddit_service.requests.get")
     def test_fetch_subreddit_rate_limit(self, mock_get: MagicMock) -> None:
         """Rate limited (429) should retry once."""
         first_response = MagicMock()
@@ -210,7 +210,7 @@ class TestRedditCollector:
                  len(posts), mock_get.call_count)
         assert mock_get.call_count == 2
 
-    @patch("app.collectors.reddit_collector.requests.get")
+    @patch("app.services.reddit_service.requests.get")
     def test_get_thread_data(self, mock_get: MagicMock) -> None:
         """Thread scraping should extract title, body, and comments."""
         mock_response = MagicMock()
@@ -270,7 +270,7 @@ class TestTickerScanner:
         self.scanner = TickerScanner()
         log.info("=== TestTickerScanner setup ===")
 
-    @patch("app.collectors.ticker_scanner.get_db")
+    @patch("app.services.ticker_scanner.get_db")
     @pytest.mark.asyncio
     async def test_scan_no_transcripts(self, mock_get_db: MagicMock) -> None:
         """No transcripts in DB should return empty list."""
@@ -282,9 +282,9 @@ class TestTickerScanner:
         log.info("No transcripts → %d results", len(result))
         assert result == []
 
-    @patch("app.collectors.ticker_scanner.TickerScanner._llm_extract_tickers")
-    @patch("app.collectors.ticker_scanner.TickerValidator.validate_batch")
-    @patch("app.collectors.ticker_scanner.get_db")
+    @patch("app.services.ticker_scanner.TickerScanner._llm_extract_tickers")
+    @patch("app.services.ticker_scanner.TickerValidator.validate_batch")
+    @patch("app.services.ticker_scanner.get_db")
     @pytest.mark.asyncio
     async def test_scan_with_transcript(
         self, mock_get_db: MagicMock, mock_validate: MagicMock, mock_llm_extract: MagicMock
@@ -494,13 +494,13 @@ class TestTranscriptCollection:
 class TestYouTubeCollectorDiscoveryMode:
     """Tests for YouTubeCollector discovery_mode parameter."""
 
-    @patch("app.collectors.youtube_collector.get_db")
+    @patch("app.services.youtube_service.get_db")
     def test_discovery_mode_skips_daily_guard(
         self, mock_get_db: MagicMock
     ) -> None:
         """discovery_mode=True should NOT check daily guard."""
         import asyncio
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -524,13 +524,13 @@ class TestYouTubeCollectorDiscoveryMode:
         log.info("Daily guard queries: %d", len(daily_guard_calls))
         assert len(daily_guard_calls) == 0, "Discovery mode should skip daily guard"
 
-    @patch("app.collectors.youtube_collector.get_db")
+    @patch("app.services.youtube_service.get_db")
     def test_normal_mode_uses_daily_guard(
         self, mock_get_db: MagicMock
     ) -> None:
         """Normal mode (discovery_mode=False) should check daily guard."""
         import asyncio
-        from app.collectors.youtube_collector import YouTubeCollector
+        from app.services.youtube_service import YouTubeCollector
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db

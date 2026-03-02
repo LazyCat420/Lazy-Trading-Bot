@@ -10,7 +10,7 @@ import logging
 import time
 from unittest.mock import MagicMock, patch
 
-from app.collectors.sec_13f_collector import (
+from app.services.sec_13f_service import (
     MAX_HOLDINGS_PER_FILER,
     PER_FILER_TIMEOUT_SECS,
     SEC13FCollector,
@@ -44,7 +44,7 @@ class TestHoldingsCap:
         log.info("PER_FILER_TIMEOUT_SECS = %d", PER_FILER_TIMEOUT_SECS)
         assert PER_FILER_TIMEOUT_SECS > 0
 
-    @patch("app.collectors.sec_13f_collector.get_db")
+    @patch("app.services.sec_13f_service.get_db")
     def test_scrape_filer_caps_holdings(self, mock_get_db: MagicMock) -> None:
         """When a filer has > MAX_HOLDINGS_PER_FILER, only top by value are saved."""
         mock_db = MagicMock()
@@ -136,7 +136,7 @@ class TestNoYfinanceFallback:
         )
         log.info("Name fallback still works")
 
-    @patch("app.collectors.sec_13f_collector.SEC13FCollector._name_to_ticker_yf")
+    @patch("app.services.sec_13f_service.SEC13FCollector._name_to_ticker_yf")
     def test_yfinance_never_called(self, mock_yf: MagicMock) -> None:
         """_name_to_ticker_yf should NEVER be called (removed from flow)."""
         # Call with a completely unknown issuer

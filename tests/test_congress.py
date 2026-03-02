@@ -10,7 +10,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 
-from app.collectors.congress_collector import CongressCollector
+from app.services.congress_service import CongressCollector
 from app.models.discovery import ScoredTicker
 
 # ── Logging setup ─────────────────────────────────────────────────
@@ -94,7 +94,7 @@ MOCK_REPORTS_DATA = {
 class TestCongressCSRF:
     """Tests for CSRF token handling."""
 
-    @patch("app.collectors.congress_collector.time.sleep")
+    @patch("app.services.congress_service.time.sleep")
     def test_csrf_extraction(self, mock_sleep: MagicMock) -> None:
         """Should extract CSRF token from landing page."""
         collector = CongressCollector()
@@ -128,7 +128,7 @@ class TestCongressReportParsing:
         self.collector = CongressCollector()
         log.info("=== TestCongressReportParsing setup ===")
 
-    @patch("app.collectors.congress_collector.time.sleep")
+    @patch("app.services.congress_service.time.sleep")
     def test_parse_report_with_trades(self, mock_sleep: MagicMock) -> None:
         """Should extract stock trades from report detail page."""
         from datetime import datetime
@@ -188,7 +188,7 @@ class TestCongressReportParsing:
 class TestCongressDBIntegration:
     """Tests for DB persistence and scored ticker generation."""
 
-    @patch("app.collectors.congress_collector.get_db")
+    @patch("app.services.congress_service.get_db")
     def test_tickers_from_db(self, mock_get_db: MagicMock) -> None:
         """Should generate ScoredTicker from DB trades."""
         mock_db = MagicMock()
@@ -219,7 +219,7 @@ class TestCongressDBIntegration:
         assert msft is not None
         assert msft.sentiment_hint == "bearish"  # 0 buys vs 2 sells = 0% buy ratio
 
-    @patch("app.collectors.congress_collector.get_db")
+    @patch("app.services.congress_service.get_db")
     def test_daily_guard(self, mock_get_db: MagicMock) -> None:
         """Should skip scraping if already collected today."""
         mock_db = MagicMock()
@@ -235,7 +235,7 @@ class TestCongressDBIntegration:
         log.info("Daily guard result: %d tickers (should use cache)", len(result))
         assert isinstance(result, list)
 
-    @patch("app.collectors.congress_collector.get_db")
+    @patch("app.services.congress_service.get_db")
     def test_get_trades_for_ticker(self, mock_get_db: MagicMock) -> None:
         """Should return congressional trades for a specific ticker."""
         mock_db = MagicMock()
@@ -254,7 +254,7 @@ class TestCongressDBIntegration:
         assert result[0]["member_name"] == "John Doe"
         assert result[0]["tx_type"] == "Purchase"
 
-    @patch("app.collectors.congress_collector.get_db")
+    @patch("app.services.congress_service.get_db")
     def test_save_trades(self, mock_get_db: MagicMock) -> None:
         """Should persist trades to DuckDB."""
         mock_db = MagicMock()

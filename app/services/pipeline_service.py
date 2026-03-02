@@ -4,65 +4,39 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime
 from typing import Any
 
-from app.agents.fundamental_agent import FundamentalAgent
-from app.agents.risk_agent import RiskAgent
-from app.agents.sentiment_agent import SentimentAgent
-from app.agents.technical_agent import TechnicalAgent
-from app.collectors.congress_collector import CongressCollector
-from app.collectors.news_collector import NewsCollector
-from app.collectors.risk_computer import RiskComputer
-from app.collectors.rss_news_collector import RSSNewsCollector
-from app.collectors.sec_13f_collector import SEC13FCollector
-from app.collectors.technical_computer import TechnicalComputer
-from app.collectors.yfinance_collector import YFinanceCollector
-from app.collectors.youtube_collector import YouTubeCollector
+from app.services.congress_service import CongressCollector
+from app.services.news_service import NewsCollector
+from app.services.risk_service import RiskComputer
+from app.services.rss_news_service import RSSNewsCollector
+from app.services.sec_13f_service import SEC13FCollector
+from app.services.technical_service import TechnicalComputer
+from app.services.yfinance_service import YFinanceCollector
+from app.services.youtube_service import YouTubeCollector
 from app.config import settings
-from app.engine.aggregator import Aggregator, PooledAnalysis
-from app.engine.data_distiller import DataDistiller
-from app.engine.quant_signals import QuantSignalEngine
-from app.engine.rules_engine import RulesEngine
+from app.services.quant_engine import QuantSignalEngine
 from app.services.llm_service import LLMService
 from app.services.peer_fetcher import PeerFetcher
-from app.models.agent_reports import (
-    FundamentalReport,
-    RiskReport,
-    SentimentReport,
-    TechnicalReport,
-)
-from app.models.decision import FinalDecision
 from app.utils.logger import logger
 
 
 class PipelineResult:
-    """Full result of a pipeline run."""
+    """Result of a data collection pipeline run."""
 
     def __init__(self, ticker: str) -> None:
         self.ticker = ticker
         self.status: dict[str, dict[str, Any]] = {}
-        self.pooled: PooledAnalysis | None = None
-        self.decision: FinalDecision | None = None
         self.errors: list[str] = []
 
     def to_dict(self) -> dict:
         """Serialize the pipeline result for API responses."""
-        result: dict[str, Any] = {
+        return {
             "ticker": self.ticker,
             "pipeline_status": self.status,
             "errors": self.errors,
         }
-
-
-
-        if self.pooled:
-            result["analysis_summary"] = self.pooled.to_summary()
-            result["agent_reports"] = self.pooled.full_reports()
-        if self.decision:
-            result["decision"] = json.loads(self.decision.model_dump_json())
-        return result
 
 
 class PipelineService:
@@ -84,7 +58,7 @@ class PipelineService:
     """
 
     def __init__(self) -> None:
-        # Collectors
+        # Data collection services
         self.yf_collector = YFinanceCollector()
         self.tech_computer = TechnicalComputer()
         self.risk_computer = RiskComputer()
@@ -94,19 +68,9 @@ class PipelineService:
         self.congress = CongressCollector()
         self.rss_news = RSSNewsCollector()
 
-        # Agents
-        self.technical_agent = TechnicalAgent()
-        self.fundamental_agent = FundamentalAgent()
-        self.sentiment_agent = SentimentAgent()
-        self.risk_agent = RiskAgent()
-
         # Services
         self.llm_service = LLMService()
         self.peer_fetcher = PeerFetcher(self.llm_service)
-
-        # Engine
-        self.aggregator = Aggregator()
-        self.rules_engine = RulesEngine()
 
     async def run(
         self,
@@ -136,10 +100,10 @@ class PipelineService:
         technicals: list = []
         balance_sheet: list = []
         cashflow: list = []
-        analyst_data = None
-        insider_activity = None
-        earnings_calendar = None
-        risk_metrics = None
+        analyst_data = None  # noqa: F841
+        insider_activity = None  # noqa: F841
+        earnings_calendar = None  # noqa: F841
+        risk_metrics = None  # noqa: F841
         news: list = []
         yt_transcripts: list = []
         industry_peers: list[str] = []
@@ -203,13 +167,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        analyst_data = data
+                        _analyst_data = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        insider_activity = data
+                        _insider_activity = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        earnings_calendar = data
+                        _earnings_calendar = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":
@@ -257,9 +221,9 @@ class PipelineService:
                     elif name == "cashflow":
                         cashflow = data or []
                     elif name == "analyst_data":
-                        analyst_data = data
+                        analyst_data = data  # noqa: F841
                     elif name == "insider_activity":
-                        insider_activity = data
+                        insider_activity = data  # noqa: F841
                     result.status[f"cached_{name}"] = {"status": "ok"}
 
             # Load historical news and transcripts from DB (no scraping)
@@ -322,13 +286,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        analyst_data = data
+                        _analyst_data = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        insider_activity = data
+                        _insider_activity = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        earnings_calendar = data
+                        _earnings_calendar = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
 
         # --- news mode skips yfinance entirely ---
@@ -359,7 +323,7 @@ class PipelineService:
                 return await self.risk_computer.compute(ticker)
 
             try:
-                risk_metrics = await _step_risk()
+                _risk_metrics = await _step_risk()  # noqa: F841
                 result.status["risk_metrics"] = {"status": "ok"}
             except Exception as e:
                 result.status["risk_metrics"] = {
@@ -487,146 +451,12 @@ class PipelineService:
         YFinanceCollector.clear_cache(ticker)
 
         # ============================================================
-        # PHASE 2: Agent Analysis (Parallel)
-        # ============================================================
-        logger.info("Starting agent analysis for %s", ticker)
-
-        # Data Distillation — pre-compute structured summaries for LLM
-        distiller = DataDistiller()
-        distilled_price = distiller.distill_price_action(
-            price_history, technicals, quant_scorecard
-        )
-        distilled_fundamentals = distiller.distill_fundamentals(
-            fundamentals, fin_history, balance_sheet, cashflow, quant_scorecard
-        )
-        distilled_risk = distiller.distill_risk(risk_metrics, quant_scorecard)
-
-        logger.info(
-            "📋 Distilled summaries: price=%d chars, fundamentals=%d chars, risk=%d chars",
-            len(distilled_price), len(distilled_fundamentals), len(distilled_risk),
-        )
-
-        # Load risk params for risk agent
-        risk_params_path = settings.USER_CONFIG_DIR / "risk_params.json"
-        risk_params = {}
-        if risk_params_path.exists():
-            risk_params = json.loads(risk_params_path.read_text(encoding="utf-8"))
-
-        # Prepare agent contexts with DISTILLED + RAW data
-        ta_context = {
-            "price_history": price_history,
-            "technicals": technicals,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_price,
-        }
-        fa_context = {
-            "fundamentals": fundamentals,
-            "financial_history": fin_history,
-            "balance_sheet": balance_sheet,
-            "cashflow": cashflow,
-            "analyst_data": analyst_data,
-            "insider_activity": insider_activity,
-            "earnings_calendar": earnings_calendar,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_fundamentals,
-            "industry_peers": industry_peers,
-            "peer_fundamentals": peer_fundamentals,
-            "institutional_holders": institutional_holders,
-        }
-        sa_context = {
-            "news": news,
-            "transcripts": yt_transcripts,
-            "institutional_holders": institutional_holders,
-            "congress_trades": congress_trades,
-            "news_articles": news_articles,
-        }
-        ra_context = {
-            "price_history": price_history,
-            "technicals": technicals,
-            "fundamentals": fundamentals,
-            "risk_metrics": risk_metrics,
-            "risk_params": risk_params,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_risk,
-        }
-
-        # Run agents in parallel
-        ta_report: TechnicalReport | None = None
-        fa_report: FundamentalReport | None = None
-        sa_report: SentimentReport | None = None
-        ra_report: RiskReport | None = None
-
-        async def run_agent(name: str, agent: Any, ctx: dict) -> Any:
-            try:
-                t0 = time.perf_counter()
-                logger.info("🚀 Agent [%s] START for %s", name, ticker)
-                report = await agent.analyze(ticker, ctx)
-                elapsed = time.perf_counter() - t0
-                result.status[f"agent_{name}"] = {
-                    "status": "ok",
-                    "elapsed_s": round(elapsed, 2),
-                }
-                logger.info(
-                    "✅ Agent [%s] DONE  for %s in %.2fs",
-                    name, ticker, elapsed,
-                )
-                return report
-            except Exception as e:
-                result.status[f"agent_{name}"] = {
-                    "status": "error",
-                    "error": str(e),
-                }
-                result.errors.append(f"Agent {name}: {e}")
-                logger.error("Agent %s failed: %s", name, e)
-                return None
-
-        ta_task = run_agent("technical", self.technical_agent, ta_context)
-        fa_task = run_agent("fundamental", self.fundamental_agent, fa_context)
-        sa_task = run_agent("sentiment", self.sentiment_agent, sa_context)
-        ra_task = run_agent("risk", self.risk_agent, ra_context)
-
-        agents_t0 = time.perf_counter()
-        ta_report, fa_report, sa_report, ra_report = await asyncio.gather(
-            ta_task, fa_task, sa_task, ra_task
-        )
-        agents_elapsed = time.perf_counter() - agents_t0
-        logger.info(
-            "⏱️  All 4 agents completed for %s in %.2fs (parallel)",
-            ticker, agents_elapsed,
-        )
-
-        # ============================================================
-        # PHASE 3: Decision Engine
-        # ============================================================
-        pooled = self.aggregator.pool(
-            ticker,
-            technical=ta_report,
-            fundamental=fa_report,
-            sentiment=sa_report,
-            risk=ra_report,
-        )
-        result.pooled = pooled
-
-        try:
-            decision = await self.rules_engine.evaluate(ticker, pooled)
-            result.decision = decision
-            result.status["decision"] = {"status": "ok"}
-        except Exception as e:
-            result.status["decision"] = {"status": "error", "error": str(e)}
-            result.errors.append(f"Decision: {e}")
-            logger.error("Decision engine failed: %s", e)
-
-        # ============================================================
-        # Save reports to disk
+        # PHASE 2: Data collection complete — save reports
         # ============================================================
         self._save_reports(ticker, result)
 
         logger.info("=" * 60)
-        logger.info(
-            "PIPELINE COMPLETE: %s — %s",
-            ticker,
-            result.decision.signal if result.decision else "NO DECISION",
-        )
+        logger.info("PIPELINE COMPLETE: %s — data collection done", ticker)
         logger.info("=" * 60)
 
         return result
@@ -680,18 +510,12 @@ class PipelineService:
         elif mode == "news":
             all_steps = ["news_scrape", "news", "youtube_scrape", "youtube"]
 
-        agent_names = []
-        if mode not in ("data", "news"):
-            agent_names = ["technical", "fundamental", "sentiment", "risk"]
-        elif mode == "news":
-            agent_names = ["sentiment"]
-
         # Emit the initial plan so the frontend can set up the tracker
         await _emit({
             "type": "plan",
             "steps": all_steps,
-            "agents": agent_names,
-            "has_decision": mode not in ("data",),
+            "agents": [],
+            "has_decision": False,
         })
 
         # ── Phase 1: Data Collection ──
@@ -701,10 +525,10 @@ class PipelineService:
         technicals: list = []
         balance_sheet: list = []
         cashflow: list = []
-        analyst_data = None
-        insider_activity = None
-        earnings_calendar = None
-        risk_metrics = None
+        analyst_data = None  # noqa: F841
+        insider_activity = None  # noqa: F841
+        earnings_calendar = None  # noqa: F841
+        risk_metrics = None  # noqa: F841
         news: list = []
         yt_transcripts: list = []
         industry_peers: list[str] = []
@@ -768,13 +592,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        analyst_data = data
+                        _analyst_data = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        insider_activity = data
+                        _insider_activity = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        earnings_calendar = data
+                        _earnings_calendar = data  # noqa: F841
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":
@@ -809,7 +633,7 @@ class PipelineService:
                 result.status["risk_metrics"] = {"status": "error", "error": str(risk_exc)}
                 result.errors.append(f"Risk metrics: {risk_exc}")
             else:
-                risk_metrics = risk_data
+                risk_metrics = risk_data  # noqa: F841
                 result.status["risk_metrics"] = {"status": "ok"}
 
         # Step 11: News
@@ -903,136 +727,7 @@ class PipelineService:
 
         YFinanceCollector.clear_cache(ticker)
 
-        # ── Data Distillation (same as non-streaming run) ──
-        quant_scorecard = None
-        if price_history:
-            try:
-                quant_scorecard = QuantSignalEngine().compute(ticker)
-            except Exception as e:
-                logger.error("Quant scorecard (streaming) failed: %s", e)
-
-        distiller = DataDistiller()
-        distilled_price = distiller.distill_price_action(
-            price_history, technicals, quant_scorecard
-        )
-        distilled_fundamentals = distiller.distill_fundamentals(
-            fundamentals, fin_history, balance_sheet, cashflow, quant_scorecard
-        )
-        distilled_risk = distiller.distill_risk(risk_metrics, quant_scorecard)
-
-        # ── Phase 2: Agent Analysis ──
-        risk_params_path = settings.USER_CONFIG_DIR / "risk_params.json"
-        risk_params = {}
-        if risk_params_path.exists():
-            risk_params = json.loads(risk_params_path.read_text(encoding="utf-8"))
-
-        ta_context = {
-            "price_history": price_history,
-            "technicals": technicals,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_price,
-        }
-        fa_context = {
-            "fundamentals": fundamentals, "financial_history": fin_history,
-            "balance_sheet": balance_sheet, "cashflow": cashflow,
-            "analyst_data": analyst_data, "insider_activity": insider_activity,
-            "earnings_calendar": earnings_calendar,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_fundamentals,
-            "industry_peers": industry_peers,
-            "peer_fundamentals": peer_fundamentals,
-            "institutional_holders": institutional_holders,
-        }
-        sa_context = {
-            "news": news,
-            "transcripts": yt_transcripts,
-            "institutional_holders": institutional_holders,
-            "congress_trades": congress_trades,
-            "news_articles": news_articles,
-        }
-        ra_context = {
-            "price_history": price_history, "technicals": technicals,
-            "fundamentals": fundamentals, "risk_metrics": risk_metrics,
-            "risk_params": risk_params,
-            "quant_scorecard": quant_scorecard,
-            "distilled_analysis": distilled_risk,
-        }
-
-        def _dump_report(report: Any) -> dict | None:
-            if report is None:
-                return None
-            return json.loads(report.model_dump_json())
-
-        async def _run_agent_streaming(name: str, agent: Any, ctx: dict) -> Any:
-            await _emit({"type": "agent_start", "name": name})
-            try:
-                t0 = time.perf_counter()
-                logger.info("🚀 Agent [%s] START for %s", name, ticker)
-                report = await agent.analyze(ticker, ctx)
-                elapsed = time.perf_counter() - t0
-                result.status[f"agent_{name}"] = {
-                    "status": "ok",
-                    "elapsed_s": round(elapsed, 2),
-                }
-                logger.info(
-                    "✅ Agent [%s] DONE  for %s in %.2fs",
-                    name, ticker, elapsed,
-                )
-                await _emit({
-                    "type": "agent_complete",
-                    "name": name,
-                    "report": _dump_report(report),
-                    "elapsed_s": round(elapsed, 2),
-                })
-                return report
-            except Exception as e:
-                result.status[f"agent_{name}"] = {"status": "error", "error": str(e)}
-                result.errors.append(f"Agent {name}: {e}")
-                logger.error("Agent %s failed: %s", name, e)
-                await _emit({
-                    "type": "agent_error",
-                    "name": name,
-                    "error": str(e),
-                })
-                return None
-
-        if mode == "news":
-            sa_report = await _run_agent_streaming("sentiment", self.sentiment_agent, sa_context)
-            ta_report = fa_report = ra_report = None
-        else:
-            # Run agents truly in parallel BUT emit events individually
-            ta_task = _run_agent_streaming("technical", self.technical_agent, ta_context)
-            fa_task = _run_agent_streaming("fundamental", self.fundamental_agent, fa_context)
-            sa_task = _run_agent_streaming("sentiment", self.sentiment_agent, sa_context)
-            ra_task = _run_agent_streaming("risk", self.risk_agent, ra_context)
-            ta_report, fa_report, sa_report, ra_report = await asyncio.gather(
-                ta_task, fa_task, sa_task, ra_task,
-            )
-
-        # ── Phase 3: Decision Engine ──
-        pooled = self.aggregator.pool(
-            ticker,
-            technical=ta_report,
-            fundamental=fa_report,
-            sentiment=sa_report,
-            risk=ra_report,
-        )
-        result.pooled = pooled
-
-        try:
-            decision = await self.rules_engine.evaluate(ticker, pooled)
-            result.decision = decision
-            result.status["decision"] = {"status": "ok"}
-            await _emit({
-                "type": "decision_complete",
-                "decision": json.loads(decision.model_dump_json()),
-            })
-        except Exception as e:
-            result.status["decision"] = {"status": "error", "error": str(e)}
-            result.errors.append(f"Decision: {e}")
-            logger.error("Decision engine failed: %s", e)
-            await _emit({"type": "decision_error", "error": str(e)})
-
+        # ── Data collection complete ──
         self._save_reports(ticker, result)
 
         await _emit({
@@ -1042,53 +737,20 @@ class PipelineService:
         })
 
         logger.info("=" * 60)
-        logger.info(
-            "PIPELINE STREAM COMPLETE: %s — %s",
-            ticker,
-            result.decision.signal if result.decision else "NO DECISION",
-        )
+        logger.info("PIPELINE STREAM COMPLETE: %s — data collection done", ticker)
         logger.info("=" * 60)
 
         return result
 
     def _save_reports(self, ticker: str, result: PipelineResult) -> None:
-        """Save agent reports and decision to disk for debugging/backtesting."""
+        """Save pipeline status to disk for debugging."""
         today = datetime.now().strftime("%Y-%m-%d")
         report_dir = settings.REPORTS_DIR / ticker / today
         report_dir.mkdir(parents=True, exist_ok=True)
 
-        if result.pooled:
-            if result.pooled.technical:
-                (report_dir / "technical_report.json").write_text(
-                    result.pooled.technical.model_dump_json(indent=2),
-                    encoding="utf-8",
-                )
-            if result.pooled.fundamental:
-                (report_dir / "fundamental_report.json").write_text(
-                    result.pooled.fundamental.model_dump_json(indent=2),
-                    encoding="utf-8",
-                )
-            if result.pooled.sentiment:
-                (report_dir / "sentiment_report.json").write_text(
-                    result.pooled.sentiment.model_dump_json(indent=2),
-                    encoding="utf-8",
-                )
-            if result.pooled.risk:
-                (report_dir / "risk_report.json").write_text(
-                    result.pooled.risk.model_dump_json(indent=2),
-                    encoding="utf-8",
-                )
+        (report_dir / "pipeline_status.json").write_text(
+            json.dumps(result.to_dict(), indent=2, default=str),
+            encoding="utf-8",
+        )
 
-            # Pooled summary
-            (report_dir / "pooled_analysis.json").write_text(
-                json.dumps(result.pooled.to_summary(), indent=2),
-                encoding="utf-8",
-            )
-
-        if result.decision:
-            (report_dir / "final_decision.json").write_text(
-                result.decision.model_dump_json(indent=2),
-                encoding="utf-8",
-            )
-
-        logger.info("Reports saved to %s", report_dir)
+        logger.info("Pipeline status saved to %s", report_dir)

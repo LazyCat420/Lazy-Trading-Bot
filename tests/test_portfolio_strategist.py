@@ -15,7 +15,7 @@ _mock_main = ModuleType("app.main")
 _mock_main._fetch_one_quote = MagicMock(return_value={"price": 150.0})  # type: ignore[attr-defined]
 sys.modules.setdefault("app.main", _mock_main)
 
-from app.engine.portfolio_strategist import PortfolioStrategist  # noqa: E402
+from app.services.portfolio_strategist import PortfolioStrategist  # noqa: E402
 from app.services.llm_service import LLMService  # noqa: E402
 
 
@@ -578,14 +578,14 @@ class TestActionSchema:
 
     def test_schema_has_required_fields(self):
         """Schema should enforce action and params."""
-        from app.engine.portfolio_strategist import ACTION_SCHEMA
+        from app.services.portfolio_strategist import ACTION_SCHEMA
         assert ACTION_SCHEMA["required"] == ["action", "params"]
         assert "action" in ACTION_SCHEMA["properties"]
         assert "params" in ACTION_SCHEMA["properties"]
 
     def test_schema_action_enum(self):
         """Schema action should include all tool names."""
-        from app.engine.portfolio_strategist import ACTION_SCHEMA
+        from app.services.portfolio_strategist import ACTION_SCHEMA
         enum = ACTION_SCHEMA["properties"]["action"]["enum"]
         expected = [
             "get_portfolio", "get_market_overview", "get_dossier",

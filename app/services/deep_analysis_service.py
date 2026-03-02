@@ -1,9 +1,12 @@
-"""Deep Analysis Service — orchestrates the 4-Layer Analysis Funnel.
+"""Deep Analysis Service — quant scoring + data distillation for each ticker.
 
 Entry points:
-  • analyze_ticker(ticker)  → full pipeline for one ticker
+  • analyze_ticker(ticker)  → QuantScorecard + distilled context → TickerDossier
   • analyze_batch(tickers)  → parallel analysis for multiple tickers
   • get_latest_dossier(ticker) → retrieve stored dossier from DuckDB
+
+Replaces the old 4-layer funnel (QuestionGen → RAG → DossierSynth).
+Now uses zero LLM calls — pure math + pure Python pre-analysis.
 """
 
 from __future__ import annotations
@@ -15,23 +18,23 @@ from datetime import datetime
 from typing import Any
 
 from app.database import get_db
-from app.engine.dossier_synthesizer import DossierSynthesizer
-from app.engine.question_generator import QuestionGenerator
-from app.engine.quant_signals import QuantSignalEngine
-from app.engine.rag_engine import RAGEngine
+from app.services.quant_engine import QuantSignalEngine
+from app.services.data_distiller import DataDistiller
 from app.models.dossier import TickerDossier
 from app.utils.logger import logger
 from app.services.event_logger import log_event
 
 
 class DeepAnalysisService:
-    """Orchestrate Layer 1 → 2 → 3 → 4 for ticker analysis."""
+    """Run quant scoring + data distillation for ticker analysis.
+
+    Zero LLM calls — all analysis is pure math or pure Python.
+    The PortfolioStrategist handles interpretation and trading decisions.
+    """
 
     def __init__(self) -> None:
         self._quant = QuantSignalEngine()
-        self._questions = QuestionGenerator()
-        self._rag = RAGEngine()
-        self._synth = DossierSynthesizer()
+        self._distiller = DataDistiller()
 
     # ------------------------------------------------------------------
     # Public API
@@ -41,16 +44,14 @@ class DeepAnalysisService:
         self, ticker: str, portfolio_context: dict | None = None,
         bot_id: str | None = None,
     ) -> TickerDossier:
-        """Run the full 4-layer funnel for a single ticker.
+        """Run quant analysis + data distillation for a single ticker.
 
         Layer 1: QuantSignalEngine  → QuantScorecard   (pure math)
-        Layer 2: QuestionGenerator  → 5 follow-up Qs   (1 LLM call)
-        Layer 3: RAGEngine          → 5 QAPairs         (5 LLM calls)
-        Layer 4: DossierSynthesizer → TickerDossier     (1 LLM call)
+        Layer 2: DataDistiller      → distilled text     (pure Python)
         """
         t0 = datetime.now()
         logger.info("=" * 60)
-        logger.info("[DeepAnalysis] Starting full analysis for %s", ticker)
+        logger.info("[DeepAnalysis] Starting analysis for %s", ticker)
         logger.info("=" * 60)
 
         # Layer 1 — synchronous, pure math
@@ -62,7 +63,6 @@ class DeepAnalysisService:
         )
 
         # ── Junk Quality Gate ─────────────────────────────────
-        # If the stock is clearly junk, skip Layers 2-4 and remove it
         _JUNK_FLAGS = {"penny_stock", "micro_junk", "pump_dump", "illiquid"}
         junk_hits = _JUNK_FLAGS & set(scorecard.flags)
         if junk_hits:
@@ -72,77 +72,156 @@ class DeepAnalysisService:
             )
             from app.services.watchlist_manager import WatchlistManager
             WatchlistManager(bot_id=bot_id or "default").remove_ticker(ticker)
-            # Return a minimal dossier with zero conviction
             return TickerDossier(
                 ticker=ticker,
                 quant_scorecard=scorecard,
-                qa_pairs=[],
                 executive_summary=f"Auto-removed: {', '.join(junk_hits)}",
-                bull_case="",
-                bear_case="Quality gate failed",
-                key_catalysts=[],
-                conviction_score=0.0,
                 signal_summary=f"JUNK: {', '.join(junk_hits)}",
+                conviction_score=0.0,
             )
 
-        # Layer 2 — async LLM call
-        logger.info("[DeepAnalysis] Layer 2: Generating follow-up questions …")
+        # Layer 2 — Data Distillation (pure Python, zero LLM calls)
+        logger.info("[DeepAnalysis] Layer 2: Distilling data for %s …", ticker)
         log_event(
             "analysis", "layer_start",
-            f"Layer 2: Generating deep-dive questions for {ticker}",
+            f"Distilling data for {ticker}",
             metadata={"ticker": ticker, "layer": 2},
         )
-        questions = await self._questions.generate(scorecard)
-        logger.info(
-            "[DeepAnalysis] Layer 2 done: %d questions generated",
-            len(questions),
+
+        # Fetch raw data from DuckDB for distillation
+        db = get_db()
+
+        # Price history
+        prices = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM price_history WHERE ticker = ? ORDER BY date",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                prices = [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            pass
+
+        # Technicals
+        technicals = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM technicals WHERE ticker = ? ORDER BY date",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                technicals = [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            pass
+
+        # Fundamentals
+        fundamentals = None
+        try:
+            row = db.execute(
+                "SELECT * FROM fundamentals WHERE ticker = ? "
+                "ORDER BY snapshot_date DESC LIMIT 1",
+                [ticker],
+            ).fetchone()
+            if row:
+                cols = [d[0] for d in db.description]
+                fundamentals = dict(zip(cols, row))
+        except Exception:
+            pass
+
+        # Risk metrics
+        risk_metrics = None
+        try:
+            row = db.execute(
+                "SELECT * FROM risk_metrics WHERE ticker = ? "
+                "ORDER BY computed_at DESC LIMIT 1",
+                [ticker],
+            ).fetchone()
+            if row:
+                cols = [d[0] for d in db.description]
+                risk_metrics = dict(zip(cols, row))
+        except Exception:
+            pass
+
+        # Distill all data (pure Python — no LLM)
+        price_analysis = self._distiller.distill_price_action(
+            prices, technicals, scorecard,
+        )
+        fund_analysis = self._distiller.distill_fundamentals(
+            fundamentals, [], [], [], scorecard,
+        )
+        risk_analysis = self._distiller.distill_risk(risk_metrics, scorecard)
+
+        # Build simplified TickerDossier
+        # conviction_score derived from quant signals (no LLM synthesis)
+        conviction = self._compute_conviction(scorecard)
+
+        dossier = TickerDossier(
+            ticker=ticker,
+            quant_scorecard=scorecard,
+            signal_summary=self._build_signal_summary(scorecard),
+            executive_summary=price_analysis[:500] if price_analysis else "",
+            bull_case=fund_analysis[:300] if fund_analysis else "",
+            bear_case=risk_analysis[:300] if risk_analysis else "",
+            conviction_score=conviction,
         )
 
-        # Layer 3 — async LLM calls (one per question)
-        logger.info("[DeepAnalysis] Layer 3: Searching data & extracting answers …")
-        log_event(
-            "analysis", "layer_start",
-            f"Layer 3: RAG search and answer extraction for {ticker}",
-            metadata={"ticker": ticker, "layer": 3},
-        )
-        qa_pairs = await self._rag.answer_all(questions, ticker)
-        logger.info(
-            "[DeepAnalysis] Layer 3 done: %d answers extracted",
-            len(qa_pairs),
-        )
-
-        # Layer 4 — async LLM call (synthesis)
-        logger.info("[DeepAnalysis] Layer 4: Synthesizing dossier …")
-        log_event(
-            "analysis", "layer_start",
-            f"Layer 4: Synthesizing final dossier for {ticker}",
-            metadata={"ticker": ticker, "layer": 4},
-        )
-        dossier = await self._synth.synthesize(
-            scorecard, qa_pairs, portfolio_context=portfolio_context,
-        )
-        logger.info(
-            "[DeepAnalysis] Layer 4 done: conviction=%.2f",
-            dossier.conviction_score,
-        )
-
-        # Persist the full dossier
+        # Persist the dossier
         self._store_dossier(dossier)
-
-        # Update the watchlist entry with conviction info (bot-scoped)
         self._update_watchlist(ticker, dossier, bot_id=bot_id)
 
         elapsed = (datetime.now() - t0).total_seconds()
         logger.info(
-            "[DeepAnalysis] %s complete in %.1fs — conviction=%.2f, "
-            "flags=%s",
-            ticker,
-            elapsed,
-            dossier.conviction_score,
-            scorecard.flags,
+            "[DeepAnalysis] %s complete in %.1fs — conviction=%.2f, flags=%s",
+            ticker, elapsed, dossier.conviction_score, scorecard.flags,
         )
 
         return dossier
+
+    @staticmethod
+    def _compute_conviction(scorecard) -> float:
+        """Derive a conviction score from quant signals (no LLM needed)."""
+        score = 0.5  # baseline
+
+        # Trend template contributes up to +/- 0.2
+        if scorecard.trend_template_score > 70:
+            score += 0.15
+        elif scorecard.trend_template_score < 30:
+            score -= 0.15
+
+        # RS rating contributes up to +/- 0.1
+        if scorecard.relative_strength_rating > 80:
+            score += 0.1
+        elif scorecard.relative_strength_rating < 30:
+            score -= 0.1
+
+        # Sharpe ratio
+        if scorecard.sharpe_ratio > 1.5:
+            score += 0.1
+        elif scorecard.sharpe_ratio < 0:
+            score -= 0.1
+
+        # Junk flags push conviction down
+        bad_flags = {"bankruptcy_risk", "extreme_volatility", "negative_sortino"}
+        if bad_flags & set(scorecard.flags):
+            score -= 0.15
+
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _build_signal_summary(scorecard) -> str:
+        """One-line summary of the quant signals."""
+        parts = [
+            f"Trend={scorecard.trend_template_score:.0f}/100",
+            f"RS={scorecard.relative_strength_rating:.0f}/100",
+            f"Sharpe={scorecard.sharpe_ratio:.2f}",
+            f"MaxDD={scorecard.max_drawdown:.1%}",
+        ]
+        if scorecard.flags:
+            parts.append(f"Flags=[{', '.join(scorecard.flags[:3])}]")
+        return " | ".join(parts)
 
     async def analyze_batch(
         self,
@@ -152,11 +231,7 @@ class DeepAnalysisService:
         bot_id: str | None = None,
         progress_callback: Any = None,
     ) -> list[TickerDossier]:
-        """Analyze multiple tickers with bounded concurrency.
-
-        Default concurrency=2 to avoid overwhelming the LLM backend.
-        Accepts optional progress_callback(ticker_str) for real-time reporting.
-        """
+        """Analyze multiple tickers with bounded concurrency."""
         sem = asyncio.Semaphore(concurrency)
         results: list[TickerDossier] = []
 
@@ -180,8 +255,7 @@ class DeepAnalysisService:
 
         logger.info(
             "[DeepAnalysis] Batch complete: %d/%d succeeded",
-            len(results),
-            len(tickers),
+            len(results), len(tickers),
         )
         return results
 
@@ -218,7 +292,6 @@ class DeepAnalysisService:
             "key_catalysts": json.loads(row[9]) if row[9] else [],
             "conviction_score": row[10] or 0.5,
             "total_tokens": row[11] or 0,
-            # Extract sector/cap from the stored scorecard JSON
             "sector": (
                 json.loads(row[4]).get("sector", "Unknown")
                 if row[4] else "Unknown"
@@ -296,7 +369,7 @@ class DeepAnalysisService:
                 dossier.generated_at,
                 dossier.version,
                 dossier.quant_scorecard.model_dump_json(),
-                json.dumps([p.model_dump() for p in dossier.qa_pairs]),
+                "[]",  # No more QA pairs
                 dossier.executive_summary,
                 dossier.bull_case,
                 dossier.bear_case,
@@ -314,15 +387,10 @@ class DeepAnalysisService:
     def _update_watchlist(
         ticker: str, dossier: TickerDossier, *, bot_id: str | None = None,
     ) -> None:
-        """Update the watchlist entry with analysis results.
-
-        When bot_id is provided, only updates the row for that specific bot,
-        preventing cross-bot cache poisoning of last_analyzed timestamps.
-        """
+        """Update the watchlist entry with analysis results."""
         db = get_db()
         now = datetime.now()
 
-        # Convert conviction to a signal label
         conv = dossier.conviction_score
         if conv >= 0.7:
             signal = "BUY"
@@ -361,9 +429,7 @@ class DeepAnalysisService:
             db.commit()
             logger.info(
                 "[DeepAnalysis] Updated watchlist %s → signal=%s, confidence=%.2f",
-                ticker,
-                signal,
-                conv,
+                ticker, signal, conv,
             )
         except Exception as exc:
             logger.warning(

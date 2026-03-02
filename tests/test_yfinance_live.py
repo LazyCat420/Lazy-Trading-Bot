@@ -5,8 +5,8 @@ Marked with @pytest.mark.integration to be skippable in CI if needed.
 """
 
 import pytest
-from app.collectors.yfinance_collector import YFinanceCollector
-from app.collectors.news_collector import NewsCollector
+from app.services.yfinance_service import YFinanceCollector
+from app.services.news_service import NewsCollector
 from app.database import get_db
 
 @pytest.mark.integration

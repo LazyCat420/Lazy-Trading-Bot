@@ -9,7 +9,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 
-from app.collectors.rss_news_collector import RSSNewsCollector
+from app.services.rss_news_service import RSSNewsCollector
 
 # ── Logging setup ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -113,7 +113,7 @@ class TestTickerExtraction:
 class TestFeedParsing:
     """Tests for RSS feed parsing and article extraction."""
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_scrape_feed_extracts_valid_entries(self, mock_get_db: MagicMock) -> None:
         """Should extract articles from valid feed entries."""
         mock_db = MagicMock()
@@ -124,7 +124,7 @@ class TestFeedParsing:
 
         # Mock feedparser and article extraction
         with (
-            patch("app.collectors.rss_news_collector.feedparser") as mock_fp,
+            patch("app.services.rss_news_service.feedparser") as mock_fp,
             patch.object(collector, "_extract_article_content") as mock_extract,
         ):
             mock_feed = MagicMock()
@@ -148,7 +148,7 @@ class TestFeedParsing:
             assert articles[0]["publisher"] == "Reuters"
             assert articles[0]["content_length"] > 200
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_skips_short_content(self, mock_get_db: MagicMock) -> None:
         """Articles with < 200 chars should be skipped."""
         mock_db = MagicMock()
@@ -158,7 +158,7 @@ class TestFeedParsing:
         collector = RSSNewsCollector()
 
         with (
-            patch("app.collectors.rss_news_collector.feedparser") as mock_fp,
+            patch("app.services.rss_news_service.feedparser") as mock_fp,
             patch.object(collector, "_extract_article_content") as mock_extract,
         ):
             mock_feed = MagicMock()
@@ -172,7 +172,7 @@ class TestFeedParsing:
             log.info("Short content articles: %d (should be 0)", len(articles))
             assert len(articles) == 0
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_deduplicates_by_hash(self, mock_get_db: MagicMock) -> None:
         """Already-seen articles should be skipped."""
         mock_db = MagicMock()
@@ -181,7 +181,7 @@ class TestFeedParsing:
 
         collector = RSSNewsCollector()
 
-        with patch("app.collectors.rss_news_collector.feedparser") as mock_fp:
+        with patch("app.services.rss_news_service.feedparser") as mock_fp:
             mock_feed = MagicMock()
             mock_feed.entries = MOCK_FEED_ENTRIES[:2]
             mock_fp.parse.return_value = mock_feed
@@ -201,7 +201,7 @@ class TestFeedParsing:
 class TestRSSDBIntegration:
     """Tests for database operations."""
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_daily_guard(self, mock_get_db: MagicMock) -> None:
         """Should skip scraping if already collected today."""
         import asyncio
@@ -221,7 +221,7 @@ class TestRSSDBIntegration:
         log.info("Daily guard result: %d articles (should use cache)", len(result))
         assert len(result) > 0  # Returns cached data
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_get_articles_for_ticker(self, mock_get_db: MagicMock) -> None:
         """Should return articles mentioning a specific ticker."""
         import asyncio
@@ -243,7 +243,7 @@ class TestRSSDBIntegration:
         assert result[0]["title"] == "AAPL Earnings Beat"
         assert result[0]["content"] == "Apple reported strong Q4 earnings..."
 
-    @patch("app.collectors.rss_news_collector.get_db")
+    @patch("app.services.rss_news_service.get_db")
     def test_get_discovery_tickers(self, mock_get_db: MagicMock) -> None:
         """Should generate scored tickers from article mentions."""
         import asyncio

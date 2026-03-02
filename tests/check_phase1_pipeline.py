@@ -3,8 +3,8 @@ import sys
 sys.path.insert(0, ".")
 
 print("1. Importing modules...")
-from app.engine.quant_signals import QuantSignalEngine
-from app.engine.data_distiller import DataDistiller
+from app.services.quant_engine import QuantSignalEngine
+from app.services.data_distiller import DataDistiller
 from app.database import get_db
 print("   All imports OK")
 

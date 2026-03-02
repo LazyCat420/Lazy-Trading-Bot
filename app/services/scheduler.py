@@ -361,7 +361,7 @@ class TradingScheduler:
                 "[Scheduler] === WAKEUP: %s — %s ===", ticker, reason,
             )
             from app.services.deep_analysis_service import DeepAnalysisService
-            from app.engine.portfolio_strategist import PortfolioStrategist
+            from app.services.portfolio_strategist import PortfolioStrategist
             from app.services.paper_trader import PaperTrader
 
             # Re-analyze the single ticker

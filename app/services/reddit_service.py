@@ -22,7 +22,7 @@ from typing import Any
 import requests
 from fake_useragent import UserAgent
 
-from app.collectors.ticker_validator import TickerValidator
+from app.services.ticker_validator import TickerValidator
 from app.models.discovery import ScoredTicker
 from app.config import settings
 from app.services.llm_service import LLMService

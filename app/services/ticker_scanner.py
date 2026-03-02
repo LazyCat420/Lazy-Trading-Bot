@@ -12,7 +12,7 @@ import json
 import time
 from datetime import datetime
 
-from app.collectors.ticker_validator import TickerValidator
+from app.services.ticker_validator import TickerValidator
 from app.database import get_db
 from app.models.discovery import ScoredTicker
 from app.config import settings

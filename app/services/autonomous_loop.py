@@ -556,8 +556,8 @@ class AutonomousLoop:
             f"for trading decisions…"
         )
 
-        from app.engine.portfolio_strategist import PortfolioStrategist
-        from app.engine.strategist_audit import StrategistAudit
+        from app.services.portfolio_strategist import PortfolioStrategist
+        from app.services.strategist_audit import StrategistAudit
 
         audit = StrategistAudit()
         strategist = PortfolioStrategist(
