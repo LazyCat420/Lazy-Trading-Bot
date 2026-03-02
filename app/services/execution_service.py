@@ -57,15 +57,9 @@ class ExecutionService:
             DecisionLogger.update_decision_status(decision_id, "hold")
             return {"status": "hold", "symbol": symbol, "reason": "HOLD decision"}
 
-        # ── Gate 1: Market hours ────────────────────────────────
-        try:
-            from app.utils.market_hours import is_market_open
-            if not is_market_open():
-                logger.info("[Execution] Market closed — skipping %s %s", side, symbol)
-                DecisionLogger.update_decision_status(decision_id, "skipped_market_closed")
-                return {"status": "skipped", "reason": "market_closed"}
-        except ImportError:
-            pass  # market_hours module not available, skip gate
+        # NOTE: Market hours gate removed. This is a paper trader —
+        # blocking simulated trades when the market is closed has no value.
+        # Re-add this gate when integrating with a real broker.
 
         # ── Get portfolio state ─────────────────────────────────
         portfolio = self._trader.get_portfolio()

@@ -1,12 +1,12 @@
 """Tests for ExecutionService — safety gates, dry-run, duplicate detection.
 
-Uses freezegun for time-dependent tests, mocks for PaperTrader,
-and patches market_hours to avoid real-time gate blocking.
+Uses mocks for PaperTrader. Market hours gate removed (paper trading
+runs 24/7).
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -47,14 +47,6 @@ def _mock_trader(cash: float = 50_000, positions: list | None = None) -> MagicMo
     return trader
 
 
-def _market_open_patch():
-    """Context manager to patch market hours as always open."""
-    return patch(
-        "app.utils.market_hours.is_market_open",
-        return_value=True,
-    )
-
-
 class TestDryRun:
     """Dry-run should log but not execute."""
 
@@ -67,10 +59,9 @@ class TestDryRun:
             rationale="Test", bot_id="test",
         )
         d_id = DecisionLogger.log_decision(action)
-        with _market_open_patch():
-            result = await executor.execute(
-                action, d_id, dry_run=True, current_price=500.0,
-            )
+        result = await executor.execute(
+            action, d_id, dry_run=True, current_price=500.0,
+        )
         assert result["status"] == "dry_run"
         assert result["symbol"] == "NVDA"
         assert result["qty"] > 0
@@ -103,10 +94,9 @@ class TestSafetyGates:
             rationale="Test", bot_id="test",
         )
         d_id = DecisionLogger.log_decision(action)
-        with _market_open_patch():
-            result = await executor.execute(
-                action, d_id, dry_run=True, current_price=0,
-            )
+        result = await executor.execute(
+            action, d_id, dry_run=True, current_price=0,
+        )
         assert result["status"] == "error"
         assert "price" in result["reason"]
 
@@ -119,32 +109,11 @@ class TestSafetyGates:
             rationale="Take profit", bot_id="test",
         )
         d_id = DecisionLogger.log_decision(action)
-        with _market_open_patch():
-            result = await executor.execute(
-                action, d_id, dry_run=False, current_price=500.0,
-            )
+        result = await executor.execute(
+            action, d_id, dry_run=False, current_price=500.0,
+        )
         assert result["status"] == "skipped"
         assert "no position" in result["reason"]
-
-    @pytest.mark.asyncio
-    async def test_market_closed_blocks_trade(self):
-        """Market hours gate should block when market is closed."""
-        trader = _mock_trader()
-        executor = ExecutionService(trader)
-        action = TradeAction(
-            action="BUY", symbol="NVDA", confidence=0.85,
-            rationale="Test", bot_id="test",
-        )
-        d_id = DecisionLogger.log_decision(action)
-        with patch(
-            "app.utils.market_hours.is_market_open",
-            return_value=False,
-        ):
-            result = await executor.execute(
-                action, d_id, dry_run=False, current_price=500.0,
-            )
-        assert result["status"] == "skipped"
-        assert "market" in result["reason"]
 
 
 class TestDuplicateDetection:
@@ -159,20 +128,19 @@ class TestDuplicateDetection:
             rationale="First buy", bot_id="test",
         )
 
-        with _market_open_patch():
-            d_id1 = DecisionLogger.log_decision(action)
-            result1 = await executor.execute(
-                action, d_id1, dry_run=True, current_price=500.0,
-            )
-            assert result1["status"] == "dry_run"
+        d_id1 = DecisionLogger.log_decision(action)
+        result1 = await executor.execute(
+            action, d_id1, dry_run=True, current_price=500.0,
+        )
+        assert result1["status"] == "dry_run"
 
-            # Second identical within 5 min should be blocked
-            d_id2 = DecisionLogger.log_decision(action)
-            result2 = await executor.execute(
-                action, d_id2, dry_run=True, current_price=500.0,
-            )
-            assert result2["status"] == "skipped"
-            assert "duplicate" in result2["reason"]
+        # Second identical within 5 min should be blocked
+        d_id2 = DecisionLogger.log_decision(action)
+        result2 = await executor.execute(
+            action, d_id2, dry_run=True, current_price=500.0,
+        )
+        assert result2["status"] == "skipped"
+        assert "duplicate" in result2["reason"]
 
 
 class TestLiveExecution:
@@ -187,10 +155,9 @@ class TestLiveExecution:
             rationale="Strong buy", bot_id="live_test",
         )
         d_id = DecisionLogger.log_decision(action)
-        with _market_open_patch():
-            result = await executor.execute(
-                action, d_id, dry_run=False, current_price=180.0,
-            )
+        result = await executor.execute(
+            action, d_id, dry_run=False, current_price=180.0,
+        )
         assert result["status"] == "executed"
         trader.buy.assert_called_once()
 
@@ -204,9 +171,8 @@ class TestLiveExecution:
             rationale="Take profit", bot_id="live_test",
         )
         d_id = DecisionLogger.log_decision(action)
-        with _market_open_patch():
-            result = await executor.execute(
-                action, d_id, dry_run=False, current_price=170.0,
-            )
+        result = await executor.execute(
+            action, d_id, dry_run=False, current_price=170.0,
+        )
         assert result["status"] == "executed"
         trader.sell.assert_called_once()

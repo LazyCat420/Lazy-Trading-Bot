@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\execution_service.py
+# hypothesis_version: 6.151.9
+
+[0.0, 100, 500, 50000, 'BUY', 'HOLD', 'HOLD decision', 'SELL', 'avg_entry_price', 'bot_id', 'cash_balance', 'computed qty = 0', 'dry_run', 'error', 'error_no_price', 'exceeds max notional', 'executed', 'failed', 'filled', 'hold', 'lastPrice', 'order_id', 'positions', 'price', 'qty', 'reason', 'rejected', 'rejected_by_trader', 'side', 'skipped', 'skipped_daily_limit', 'skipped_duplicate', 'skipped_max_notional', 'skipped_no_position', 'skipped_qty_zero', 'status', 'stop', 'symbol', 'take_profit', 'ticker', 'ts']
