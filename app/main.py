@@ -420,6 +420,8 @@ async def get_vram_estimate(model: str = "") -> dict:
         "kv_bytes_per_token": 0,
         "model_max_ctx": 0,
         "model_found": False,
+        "is_audited": False,
+        "proven_max_ctx": 0,
     }
 
     try:
@@ -470,25 +472,30 @@ async def get_vram_estimate(model: str = "") -> dict:
             # BUT: sanity-check against Jetson unified-memory inflation
             theoretical_rate = est["kv_bytes_per_token"]
             cached = _cfg.LLM_VRAM_MEASUREMENTS.get(target_model)
-            if cached and cached.get("real_kv_rate"):
-                cached_rate = cached["real_kv_rate"]
-                if (
-                    theoretical_rate > 0
-                    and cached_rate > theoretical_rate * 4.0
-                ):
-                    # Inflated — use theoretical × 1.5 instead
-                    result["kv_bytes_per_token"] = theoretical_rate * 1.5
-                    result["using_cached_rate"] = False
-                    result["cache_rejected"] = True
-                    logger.warning(
-                        "[VRAM] Cached kv_rate %.0f > 4× theoretical "
-                        "%.0f — using %.0f (theo×1.5)",
-                        cached_rate, theoretical_rate,
-                        theoretical_rate * 1.5,
-                    )
-                else:
-                    result["kv_bytes_per_token"] = cached_rate
-                    result["using_cached_rate"] = True
+            if cached:
+                if "proven_max_ctx" in cached:
+                    result["is_audited"] = True
+                    result["proven_max_ctx"] = cached["proven_max_ctx"]
+                
+                if cached.get("real_kv_rate"):
+                    cached_rate = cached["real_kv_rate"]
+                    if (
+                        theoretical_rate > 0
+                        and cached_rate > theoretical_rate * 4.0
+                    ):
+                        # Inflated — use theoretical × 1.5 instead
+                        result["kv_bytes_per_token"] = theoretical_rate * 1.5
+                        result["using_cached_rate"] = False
+                        result["cache_rejected"] = True
+                        logger.warning(
+                            "[VRAM] Cached kv_rate %.0f > 4× theoretical "
+                            "%.0f — using %.0f (theo×1.5)",
+                            cached_rate, theoretical_rate,
+                            theoretical_rate * 1.5,
+                        )
+                    else:
+                        result["kv_bytes_per_token"] = cached_rate
+                        result["using_cached_rate"] = True
 
     except Exception as exc:
         logger.warning("[VRAM] Estimate endpoint error: %s", exc)
@@ -528,12 +535,19 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
         if not bot_for_model:
             # Auto-create a bot entry for this model
             _prov_url = merged.get("ollama_url", "http://localhost:11434")
+            # Clamp context to proven hardware limit if calibrated
+            _user_ctx = merged.get("context_size", 8192)
+            _cached = settings.LLM_VRAM_MEASUREMENTS.get(model_id)
+            if _cached and "proven_max_ctx" in _cached:
+                _ctx = min(_user_ctx, _cached["proven_max_ctx"])
+            else:
+                _ctx = _user_ctx
             bot_for_model = _BReg.register_bot(
                 model_name=model_id,
                 display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
                 provider="ollama",
                 provider_url=_prov_url,
-                context_length=merged.get("context_size", 8192),
+                context_length=_ctx,
                 temperature=merged.get("temperature", 0.3),
                 top_p=merged.get("top_p", 1.0),
                 max_tokens=merged.get("max_tokens", 0),
@@ -547,10 +561,17 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
             )
         else:
             # Update existing bot settings
+            # Clamp context to proven hardware limit if calibrated
+            _user_ctx = merged.get("context_size", 8192)
+            _cached = settings.LLM_VRAM_MEASUREMENTS.get(model_id)
+            if _cached and "proven_max_ctx" in _cached:
+                _ctx = min(_user_ctx, _cached["proven_max_ctx"])
+            else:
+                _ctx = _user_ctx
             _BReg.update_bot_settings(
                 bot_for_model["bot_id"],
                 {
-                    "context_length": merged.get("context_size", 8192),
+                    "context_length": _ctx,
                     "temperature": merged.get("temperature", 0.3),
                     "top_p": merged.get("top_p", 1.0),
                 },
@@ -1773,6 +1794,8 @@ async def reorder_bots(req: BotReorderRequest) -> dict:
 @app.get("/api/leaderboard")
 async def get_leaderboard() -> dict:
     """Get all bots ranked by total P&L."""
+    from app.config import settings as _cfg
+    
     # Recalculate stats for all active bots
     bots = BotRegistry.list_bots()
     for bot in bots:
@@ -1780,7 +1803,20 @@ async def get_leaderboard() -> dict:
             BotRegistry.update_stats(bot["bot_id"])
         except Exception:
             pass  # Skip bots with no data yet
+            
     rankings = BotRegistry.get_leaderboard()
+    
+    # Inject VRAM stats for UI tooltip
+    for bot in rankings:
+        model = bot.get("model_name", "")
+        cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
+        if cached and "proven_max_ctx" in cached:
+            bot["computed_max_ctx"] = cached["proven_max_ctx"]
+            bot["computed_vram_gb"] = round(cached.get("vram_usage_gb", 0), 1)
+        else:
+            bot["computed_max_ctx"] = None
+            bot["computed_vram_gb"] = None
+            
     return {"count": len(rankings), "leaderboard": rankings}
 
 
@@ -2086,6 +2122,18 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         logger.info(
                             "[RunAll] ✅ Ollama model warmed: %s",
                             model_name,
+                        )
+                    # Sync proven context back to bot DB + global settings
+                    if warm.get("recommended_ctx"):
+                        from app.services.bot_registry import BotRegistry as _BReg
+                        rec = warm["recommended_ctx"]
+                        settings.LLM_CONTEXT_SIZE = rec
+                        _BReg.update_bot_settings(
+                            bot_id, {"context_length": rec},
+                        )
+                        logger.info(
+                            "[RunAll] Synced bot %s context_length → %d",
+                            bot_id, rec,
                         )
                     else:
                         _run_all_log(

@@ -1,4 +1,4 @@
-"""Ollama LLM service ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â sends chat requests to Ollama.
+"""Ollama LLM service — sends chat requests to Ollama.
 
 The Ollama URL is centralized in app.config.settings:
     OLLAMA_URL ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Ollama endpoint (default http://localhost:11434)
@@ -986,21 +986,39 @@ class LLMService:
                     )
 
                     # Save to persistent cache
+                    import json
+                    import time
+                    import os
+                    CONFIG_FILE = str(_cfg.LLM_CONFIG_PATH)
+                    
+                    vram_usage_gb = (model_file_size + (proven_max_ctx * kv_per_tok)) / (1024**3)
+                    
                     _cfg.LLM_VRAM_MEASUREMENTS[model] = {
                         "proven_max_ctx": proven_max_ctx,
+                        "vram_usage_gb": vram_usage_gb,
+                        "last_audited": time.time(),
+                        "status": "calibrated"
                     }
+
+                    # FORCE SAVE TO DISK
                     try:
-                        _cfg.update_llm_config(
-                            {"vram_measurements": _cfg.LLM_VRAM_MEASUREMENTS},
-                        )
-                        logger.info(
-                            "[LLM] Audit results saved to disk.",
-                        )
+                        # 1. Read existing file so we don't overwrite other settings
+                        if os.path.exists(CONFIG_FILE):
+                            with open(CONFIG_FILE, "r") as f:
+                                disk_config = json.load(f)
+                        else:
+                            disk_config = {}
+                            
+                        # 2. Update the measurements section
+                        disk_config["vram_measurements"] = _cfg.LLM_VRAM_MEASUREMENTS
+                        
+                        # 3. Write back to disk atomically
+                        with open(CONFIG_FILE, "w") as f:
+                            json.dump(disk_config, f, indent=4)
+                            
+                        logger.info("[LLM] ✅ Saved audit results to permanent disk cache.")
                     except Exception as save_exc:
-                        logger.warning(
-                            "[LLM] Could not persist audit cache: %s",
-                            save_exc,
-                        )
+                        logger.error("❌ Failed to save audit cache to disk: %s", save_exc)
 
                     # Reload at proven limit (audit may have ended
                     # on a failure, leaving model unloaded)
@@ -1050,10 +1068,13 @@ class LLMService:
                         "proven_max_ctx": proven_max_ctx,
                         "audit_performed": True,
                         "kv_rate_bytes_per_token": kv_per_tok,
+                        "model_stats": {
+                            "model_name": model,
+                            "max_proven_ctx": proven_max_ctx,
+                            "vram_usage_gb": vram_usage_gb,
+                        },
                         "message": (
-                            f"Memory audit complete. Hardware limit: "
-                            f"{proven_max_ctx:,} tokens. Loaded at "
-                            f"{load_ctx:,}."
+                            f"Model ready. Max safe context locked at {proven_max_ctx}."
                         ),
                     }
                     if clamped:

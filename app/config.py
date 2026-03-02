@@ -178,9 +178,13 @@ class Settings:
         # Attach VRAM measurement data for the current model (if cached)
         vram = self.LLM_VRAM_MEASUREMENTS.get(self.LLM_MODEL)
         if vram:
-            cfg["last_measured_vram_bytes"] = vram.get("size_vram", 0)
-            cfg["last_measured_ctx"] = vram.get("ctx", 0)
-            cfg["kv_rate_bytes_per_token"] = vram.get("kv_rate", 0)
+            proven_ctx = vram.get("proven_max_ctx", 0)
+            cfg["last_measured_ctx"] = proven_ctx
+            cfg["model_stats"] = {
+                "model_name": self.LLM_MODEL,
+                "max_proven_ctx": proven_ctx,
+                # vram_usage_gb could be calculated here or omitted if frontend calculates
+            }
         return cfg
 
 

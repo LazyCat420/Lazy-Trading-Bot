@@ -2802,13 +2802,26 @@ const SettingsPage = () => {
                         {/* Context Size — Slider + Text Input */}
                         <div className="col-span-3">
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">Context Size</label>
+
+                            {vramEstimate && vramEstimate.model_found && !vramEstimate.is_audited && (
+                                <div className="mb-3 p-3 rounded-lg bg-orange-500/10 border border-orange-500/30">
+                                    <div className="flex items-start gap-2">
+                                        <span className="material-symbols-outlined text-orange-400 text-lg mt-0.5">warning</span>
+                                        <div className="flex-1">
+                                            <h4 className="text-xs font-bold text-orange-400 mb-0.5">Calibration Required</h4>
+                                            <p className="text-[10px] text-text-muted leading-tight">This model has not been calibrated for your hardware yet. The next pipeline run will take ~20-60 seconds longer to perform an initial VRAM audit. This will only happen once.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="flex items-center gap-3 mb-2">
                                 <input
                                     type="range"
                                     value={llmConfig.context_size}
                                     onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
                                     min={2048}
-                                    max={vramEstimate?.model_max_ctx || 131072}
+                                    max={vramEstimate?.is_audited ? vramEstimate.proven_max_ctx : (vramEstimate?.model_max_ctx || 131072)}
                                     step={1024}
                                     className="flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-primary"
                                     style={{
@@ -2835,7 +2848,7 @@ const SettingsPage = () => {
                                     value={llmConfig.context_size}
                                     onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
                                     min={2048}
-                                    max={vramEstimate?.model_max_ctx || 131072}
+                                    max={vramEstimate?.is_audited ? vramEstimate.proven_max_ctx : (vramEstimate?.model_max_ctx || 131072)}
                                     step={1024}
                                     className="w-24 bg-onyx-black border border-border-dark rounded px-2 py-1.5 text-xs text-white font-mono focus:border-primary focus:outline-none transition text-center"
                                 />
@@ -2853,6 +2866,13 @@ const SettingsPage = () => {
                                     </div>
                                 );
                             })()}
+
+                            {vramEstimate?.is_audited && (
+                                <div className="text-[10px] text-green-400 font-mono mt-2 flex items-center gap-1.5 border border-green-500/20 bg-green-500/5 px-2 py-1 rounded w-fit">
+                                    <span className="material-symbols-outlined text-[12px]">lock</span>
+                                    Hardware Limit: {vramEstimate.proven_max_ctx.toLocaleString()} tokens
+                                </div>
+                            )}
                         </div>
 
                         {/* Discovery Temperature */}
@@ -5215,10 +5235,14 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                 }, "ACTIVE"),
                                                 positions.length > 0 && React.createElement("span", {
                                                     className: "px-1.5 py-0.5 rounded text-[9px] font-mono bg-purple-500/10 text-purple-400"
-                                                }, `${positions.length} holding${positions.length > 1 ? "s" : ""}`)
+                                                }, `${positions.length} holding${positions.length > 1 ? "s" : ""}`),
+                                                bot.computed_max_ctx && React.createElement("span", {
+                                                    className: "px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-500/10 text-blue-400 cursor-help",
+                                                    title: `Model: ${bot.model_name}\nCtx Used: ${bot.context_length || "?"} / ${bot.computed_max_ctx.toLocaleString()} (Max)\nEst. VRAM: ${bot.computed_vram_gb || "?"} GB`
+                                                }, `${bot.computed_vram_gb || "?"} GB`)
                                             ),
                                             React.createElement("div", { className: "text-[10px] text-text-muted font-mono mt-0.5" },
-                                                `ollama • ctx ${bot.context_length || "?"} • temp ${bot.temperature || "?"}`
+                                                `ollama • ctx ${bot.computed_max_ctx || bot.context_length || "?"} • temp ${bot.temperature || "?"}`
                                             )
                                         ),
 
