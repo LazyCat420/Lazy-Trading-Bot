@@ -165,6 +165,22 @@ class WatchlistManager:
         if not ticker:
             return {"error": "Empty ticker"}
 
+        # ── Filter pipeline guard ────────────────────────────
+        from app.services.symbol_filter import get_filter_pipeline
+
+        fr = get_filter_pipeline().run(
+            ticker, {"source": source, "bot_id": self.bot_id},
+        )
+        if not fr.passed:
+            logger.info(
+                "[Watchlist] Rejected %s (%s)", ticker, fr.reason,
+            )
+            return {
+                "error": f"Rejected: {fr.reason}",
+                "ticker": ticker,
+            }
+        ticker = fr.symbol  # use normalized form
+
         db = get_db()
         now = datetime.now()
 

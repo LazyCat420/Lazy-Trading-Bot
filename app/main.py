@@ -274,6 +274,55 @@ async def clear_watchlist() -> dict:
     return _watchlist_mgr.clear()
 
 
+# ── Exclusion / Scoreboard Delete API ─────────────────────────────
+
+@app.delete("/api/scoreboard/{symbol}")
+async def delete_from_scoreboard(symbol: str) -> dict:
+    """Remove a symbol from scoreboard + watchlist, persist exclusion."""
+    from app.services.symbol_filter import UserExclusionsService
+
+    symbol = symbol.upper().strip()
+    svc = UserExclusionsService()
+    svc.exclude(symbol, bot_id="default", reason="user_deleted")
+
+    db = get_db()
+    # Remove from watchlist
+    db.execute(
+        "UPDATE watchlist SET status = 'removed' "
+        "WHERE ticker = ? AND status = 'active'",
+        [symbol],
+    )
+    # Remove from ticker_scores
+    db.execute(
+        "DELETE FROM ticker_scores WHERE ticker = ?", [symbol],
+    )
+    db.commit()
+    logger.info("[Scoreboard] Deleted + excluded %s", symbol)
+    return {"status": "excluded", "symbol": symbol}
+
+
+@app.get("/api/exclusions")
+async def list_exclusions() -> dict:
+    """List all user-excluded symbols."""
+    from app.services.symbol_filter import UserExclusionsService
+
+    svc = UserExclusionsService()
+    exclusions = svc.list_exclusions(bot_id="default")
+    return {"exclusions": exclusions, "count": len(exclusions)}
+
+
+@app.post("/api/exclusions/{symbol}/restore")
+async def restore_exclusion(symbol: str) -> dict:
+    """Restore a previously excluded symbol."""
+    from app.services.symbol_filter import UserExclusionsService
+
+    svc = UserExclusionsService()
+    found = svc.restore(symbol.upper().strip(), bot_id="default")
+    if found:
+        return {"status": "restored", "symbol": symbol.upper().strip()}
+    return {"status": "not_found", "symbol": symbol.upper().strip()}
+
+
 @app.put("/api/watchlist")
 async def update_watchlist_legacy(req: WatchlistUpdateRequest) -> dict:
     """Legacy: update watchlist from JSON file (kept for backwards compat)."""
@@ -590,55 +639,52 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
         result["active_bot_id"] = bot_for_model["bot_id"]
         result["active_bot_name"] = bot_for_model.get("display_name", model_id)
 
-    # ── Ollama: verify model exists + pre-warm into VRAM ──────────
+    # ── Ollama: fire calibration in background ──────────────────────
     model_id = merged.get("model", "")
     if model_id:
         ollama_url = merged.get(
             "ollama_url", "http://localhost:11434"
         ).rstrip("/")
-        try:
-            warm_result = await LLMService.verify_and_warm_ollama_model(
-                ollama_url, model_id, keep_alive="10m",
-            )
-            result["ollama_verified"] = warm_result
 
-            if warm_result.get("status") == "oom_error":
-                # OOM — do NOT update context_size; keep last working value
-                # Revert the context_size we just saved to disk
-                old_ctx = warm_result.get("suggested_ctx", 8192)
-                settings.LLM_CONTEXT_SIZE = old_ctx
-                result["config"]["context_size"] = old_ctx
-                logger.warning(
-                    "[Ollama] OOM at ctx=%d — keeping ctx=%d. "
-                    "Suggested: %d",
-                    warm_result.get("requested_ctx", 0),
-                    old_ctx,
-                    warm_result.get("suggested_ctx", 0),
+        async def _background_calibrate() -> None:
+            """Run verify_and_warm in the background; update settings on success."""
+            try:
+                warm_result = await LLMService.verify_and_warm_ollama_model(
+                    ollama_url, model_id, keep_alive="10m",
                 )
-            else:
-                # Apply the recommended context size if probing found a cap
-                rec_ctx = warm_result.get("recommended_ctx")
-                if rec_ctx and rec_ctx != merged.get("context_size"):
-                    settings.LLM_CONTEXT_SIZE = rec_ctx
-                    result["config"]["context_size"] = rec_ctx
-                    logger.info(
-                        "[Ollama] Context size adjusted to %d based on VRAM",
-                        rec_ctx,
+                if warm_result.get("status") == "oom_error":
+                    old_ctx = warm_result.get("suggested_ctx", 8192)
+                    settings.LLM_CONTEXT_SIZE = old_ctx
+                    logger.warning(
+                        "[Ollama] OOM at ctx=%d — keeping ctx=%d",
+                        warm_result.get("requested_ctx", 0),
+                        old_ctx,
                     )
-        except Exception as exc:
-            result["ollama_verified"] = {
-                "status": "verification_failed",
-                "error": str(exc),
-                "note": (
-                    "Config was saved but Ollama model verification "
-                    "failed. Ensure the Ollama server is reachable."
-                ),
-            }
-            logger.warning(
-                "[Ollama] Model verification failed: %s", exc,
-            )
+                else:
+                    rec_ctx = warm_result.get("recommended_ctx")
+                    if rec_ctx and rec_ctx != merged.get("context_size"):
+                        settings.LLM_CONTEXT_SIZE = rec_ctx
+                        logger.info(
+                            "[Ollama] Context size adjusted to %d based on VRAM",
+                            rec_ctx,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "[Ollama] Background calibration failed: %s", exc,
+                )
+
+        asyncio.create_task(_background_calibrate())
+        result["calibration_started"] = True
 
     return result
+
+
+@app.get("/api/settings/calibration-status")
+async def get_calibration_status() -> dict:
+    """Return real-time calibration state for frontend polling."""
+    from app.services.calibration_tracker import CalibrationTracker
+
+    return CalibrationTracker.get_state()
 
 
 @app.get("/api/llm-models")

@@ -523,6 +523,31 @@ class DiscoveryService:
         if not tickers:
             return
 
+        # ── Filter pipeline: block junk symbols before DB write ──
+        from app.services.symbol_filter import get_filter_pipeline
+
+        pipeline = get_filter_pipeline()
+        valid_tickers = []
+        for t in tickers:
+            r = pipeline.run(
+                t.ticker, {"source": t.source},
+            )
+            if r.passed:
+                valid_tickers.append(t)
+            else:
+                logger.info(
+                    "[Discovery] Filtered out %s (%s)",
+                    t.ticker, r.reason,
+                )
+        if not valid_tickers:
+            logger.info("[Discovery] All %d tickers filtered out", len(tickers))
+            return
+        logger.info(
+            "[Discovery] %d/%d tickers passed filter",
+            len(valid_tickers), len(tickers),
+        )
+        tickers = valid_tickers
+
         db = get_db()
         now = datetime.now()
 

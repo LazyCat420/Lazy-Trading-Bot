@@ -2424,14 +2424,63 @@ const SettingsPage = () => {
     const [oomError, setOomError] = useState(null); // {requested_ctx, suggested_ctx, message}
     // Audit result state
     const [auditResult, setAuditResult] = useState(null); // { message, proven_max_ctx }
+    // Calibration polling state
+    const [calibrationStatus, setCalibrationStatus] = useState(null); // polled from /api/settings/calibration-status
+    const pollingRef = useRef(null);
+
+    // ── Calibration polling helpers ─────────────────────────────
+    const stopPolling = useCallback(() => {
+        if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+        }
+    }, []);
+
+    const startPolling = useCallback(() => {
+        stopPolling();
+        const poll = async () => {
+            try {
+                const res = await fetch("/api/settings/calibration-status");
+                const state = await res.json();
+                setCalibrationStatus(state);
+                if (state.status === "success") {
+                    stopPolling();
+                    setSaveStatus("saved");
+                    RetroSFX.successChime();
+                    setAuditResult({ message: state.current_step, proven_max_ctx: 0 });
+                    fetchVramEstimate(state.model || llmConfig.model);
+                    // Refresh config from server
+                    try {
+                        const cfgRes = await fetch("/api/llm-config");
+                        const cfgData = await cfgRes.json();
+                        setLlmConfig(prev => ({ ...prev, ...cfgData }));
+                    } catch (_) { }
+                    setTimeout(() => { setCalibrationStatus(null); setSaveStatus(null); }, 5000);
+                } else if (state.status === "error") {
+                    stopPolling();
+                    setSaveStatus("error");
+                    setTimeout(() => { setCalibrationStatus(null); setSaveStatus(null); }, 8000);
+                } else if (state.status === "idle") {
+                    stopPolling();
+                    setCalibrationStatus(null);
+                }
+            } catch (_) { }
+        };
+        poll(); // immediate first check
+        pollingRef.current = setInterval(poll, 1500);
+    }, [stopPolling, llmConfig.model]);
+
+    // Cleanup polling on unmount
+    useEffect(() => () => stopPolling(), [stopPolling]);
 
     useEffect(() => {
         const load = async () => {
             try {
-                const [stratRes, riskRes, llmRes] = await Promise.all([
+                const [stratRes, riskRes, llmRes, calRes] = await Promise.all([
                     fetch("/api/strategy"),
                     fetch("/api/risk-params"),
                     fetch("/api/llm-config"),
+                    fetch("/api/settings/calibration-status"),
                 ]);
                 const stratData = await stratRes.json();
                 setStrategy(stratData.strategy || "");
@@ -2439,6 +2488,13 @@ const SettingsPage = () => {
                 setRiskParams(prev => ({ ...prev, ...riskData }));
                 const llmData = await llmRes.json();
                 setLlmConfig(llmData);
+                // Check if calibration is in progress
+                const calData = await calRes.json();
+                if (calData.status === "calibrating") {
+                    setCalibrationStatus(calData);
+                    setSaveStatus("saving");
+                    startPolling();
+                }
                 // Fetch VRAM estimate data for this model
                 fetchVramEstimate(llmData.model);
                 // Auto-fetch models on load
@@ -2488,47 +2544,24 @@ const SettingsPage = () => {
             });
             const data = await res.json();
 
-            // Check for OOM error from the verify step
-            const verified = data.ollama_verified;
-            if (verified && verified.status === "oom_error") {
-                setOomError({
-                    requested_ctx: verified.requested_ctx,
-                    suggested_ctx: verified.suggested_ctx,
-                    message: verified.message,
-                    kv_rate: verified.kv_rate_bytes_per_token,
-                });
-                // Update local config to reflect what the backend kept
-                setLlmConfig(prev => ({ ...prev, context_size: data.config?.context_size || prev.context_size }));
-                setSaveStatus("error");
+            // Config saved — if calibration started, begin polling
+            if (data.calibration_started) {
+                startPolling();
             } else {
                 setSaveStatus("saved");
                 RetroSFX.successChime();
+            }
 
-                if (verified && verified.audit_performed) {
-                    setAuditResult({
-                        message: verified.message,
-                        proven_max_ctx: verified.proven_max_ctx
-                    });
-                }
-
-                // Smoothly slide down context slider to match the backend's safe limit
-                if (verified && verified.recommended_ctx && verified.recommended_ctx !== llmConfig.context_size) {
-                    setLlmConfig(prev => ({ ...prev, context_size: verified.recommended_ctx }));
-                }
-
-                // Refresh VRAM estimate after successful save
-                fetchVramEstimate(data.config?.model || llmConfig.model);
-                // Update local config from server response
-                if (data.config) {
-                    setLlmConfig(prev => ({ ...prev, ...data.config }));
-                }
+            // Update local config from server response
+            if (data.config) {
+                setLlmConfig(prev => ({ ...prev, ...data.config }));
             }
             // Notify other components (e.g. Autobot Monitor) to refresh bot label
             window.dispatchEvent(new CustomEvent("llm-config-saved"));
         } catch (e) {
             setSaveStatus("error");
+            setTimeout(() => setSaveStatus(null), 5000);
         }
-        setTimeout(() => setSaveStatus(null), 5000);
     };
 
     // Use the OOM-suggested context and re-save
@@ -2696,6 +2729,67 @@ const SettingsPage = () => {
                             </button>
                         </div>
                     </div>
+
+                    {/* Calibration Progress Banner */}
+                    {calibrationStatus && calibrationStatus.status === "calibrating" && (
+                        <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/30 animate-fadeIn">
+                            <div className="flex items-start gap-3">
+                                <span className="material-symbols-outlined text-primary text-xl mt-0.5 animate-spin">progress_activity</span>
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-bold text-primary mb-1">
+                                        Calibrating: {calibrationStatus.model}
+                                    </h4>
+                                    <p className="text-xs text-text-muted mb-2">{calibrationStatus.current_step}</p>
+                                    {/* Progress bar */}
+                                    <div className="w-full h-2 bg-onyx-black rounded-full overflow-hidden mb-2">
+                                        <div className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                                            style={{ width: `${calibrationStatus.progress_pct || 0}%` }} />
+                                    </div>
+                                    <div className="flex justify-between text-[10px] font-mono text-text-muted">
+                                        <span>{calibrationStatus.progress_pct || 0}%</span>
+                                        <span>Do not close this page — you can navigate away and return</span>
+                                    </div>
+                                    {/* Mini log */}
+                                    {calibrationStatus.logs && calibrationStatus.logs.length > 0 && (
+                                        <div className="mt-2 max-h-24 overflow-y-auto bg-onyx-black/50 rounded p-2 border border-border-dark"
+                                            style={{ scrollbarWidth: "thin" }}>
+                                            {calibrationStatus.logs.map((log, i) => (
+                                                <div key={i} className="text-[10px] font-mono text-text-secondary leading-relaxed">
+                                                    <span className="text-primary/40 mr-1">›</span>{log}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Calibration Error Banner */}
+                    {calibrationStatus && calibrationStatus.status === "error" && (
+                        <div className="mb-4 p-4 rounded-lg bg-red-500/10 border border-red-500/30 animate-fadeIn">
+                            <div className="flex items-start gap-3">
+                                <span className="material-symbols-outlined text-red-400 text-xl mt-0.5">error</span>
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-bold text-red-400 mb-1">Calibration Failed</h4>
+                                    <p className="text-xs text-text-muted">{calibrationStatus.current_step}</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Calibration Success Banner */}
+                    {calibrationStatus && calibrationStatus.status === "success" && (
+                        <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/30 animate-fadeIn">
+                            <div className="flex items-start gap-3">
+                                <span className="material-symbols-outlined text-green-400 text-xl mt-0.5">check_circle</span>
+                                <div className="flex-1">
+                                    <h4 className="text-sm font-bold text-green-400 mb-1">Calibration Complete</h4>
+                                    <p className="text-xs text-text-muted">{calibrationStatus.current_step}</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* OOM Error Banner */}
                     {oomError && (
@@ -3479,6 +3573,18 @@ const useMonitorData = () => {
         }
     };
 
+    const deleteFromScoreboard = async (ticker) => {
+        if (!confirm(`Exclude ${ticker} from scoreboard? It won't appear again unless manually restored.`)) return;
+        try {
+            await fetch(`/api/scoreboard/${ticker}`, { method: "DELETE" });
+            fetchScores();
+            fetchWatchlist();
+            RetroSFX.click();
+        } catch (e) {
+            console.error("Delete from scoreboard error:", e);
+        }
+    };
+
     const importFromDiscovery = async () => {
         RetroSFX.click();
         setWlImporting(true);
@@ -3873,6 +3979,10 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         onClick: (e) => { e.stopPropagation(); addToWatchlist(s.ticker); },
                         className: "icon-btn", title: "Add to Watchlist",
                     }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "playlist_add")),
+                    React.createElement("button", {
+                        onClick: (e) => { e.stopPropagation(); deleteFromScoreboard(s.ticker); },
+                        className: "icon-btn text-red-400 hover:text-red-300", title: "Exclude from scoreboard",
+                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "block")),
                     React.createElement("button", {
                         onClick: (e) => { e.stopPropagation(); navigate(`/analysis/${s.ticker}`); },
                         className: "icon-btn", title: "Analyze",

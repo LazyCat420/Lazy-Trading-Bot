@@ -684,7 +684,12 @@ class LLMService:
         Returns dict with model info.  On predicted/actual OOM, returns
         status="oom_error" with suggested_ctx.
         """
+        from app.services.calibration_tracker import CalibrationTracker
+
         base_url = base_url.rstrip("/")
+
+        CalibrationTracker.set_status("calibrating", model=model)
+        CalibrationTracker.update_progress("Step 1: Verifying model exists...", 10)
 
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
@@ -727,6 +732,7 @@ class LLMService:
 
                 # â€”â€” Step 2: Query architecture â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
                 try:
+                    CalibrationTracker.update_progress("Step 2: Querying model architecture...", 25)
                     show_resp = await client.post(
                         f"{base_url}/api/show",
                         json={"name": model},
@@ -764,6 +770,7 @@ class LLMService:
                 desired_ctx = max(desired_ctx, 2048)
 
                 # â€”â€” Step 4: Estimate VRAM (for frontend display) â€”
+                CalibrationTracker.update_progress("Step 4: Estimating VRAM requirements...", 50)
                 estimate = LLMService.estimate_model_vram(
                     model_info,
                     model_file_size,
@@ -813,6 +820,11 @@ class LLMService:
                     load_ctx = max(load_ctx, 2048)
                     clamped = load_ctx < desired_ctx
 
+                    CalibrationTracker.update_progress(
+                        f"Fast path: loading {model} at "
+                        f"ctx={load_ctx} (limit={proven_max_ctx})",
+                        70,
+                    )
                     logger.info(
                         "[LLM] âš¡ FAST PATH: %s audited limit=%d. "
                         "Loading at ctx=%d (desired=%d)",
@@ -852,6 +864,10 @@ class LLMService:
                             },
                         )
                         warm_resp.raise_for_status()
+                        CalibrationTracker.set_status("success")
+                        CalibrationTracker.update_progress(
+                            f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
+                        )
                         logger.info(
                             "[LLM] âœ… Model %s loaded at ctx=%d",
                             model,
@@ -867,6 +883,12 @@ class LLMService:
                             model,
                         )
                         _cfg.LLM_VRAM_MEASUREMENTS.pop(model, None)
+                        CalibrationTracker.set_status("error")
+                        CalibrationTracker.update_progress(
+                            f"Cached limit {proven_max_ctx:,} "
+                            f"failed for {model}. Re-audit.",
+                            100,
+                        )
                         try:
                             _cfg.update_llm_config(
                                 {"vram_measurements": _cfg.LLM_VRAM_MEASUREMENTS},
@@ -915,6 +937,9 @@ class LLMService:
                         model,
                     )
 
+                    CalibrationTracker.update_progress(
+                        f"Memory audit: testing hardware limits for {model}...", 55,
+                    )
                     # Define stepped context sizes to test
                     audit_steps = [
                         2048,
@@ -935,7 +960,18 @@ class LLMService:
 
                     last_successful_ctx = 0
 
-                    for ctx_test in audit_steps:
+                    for step_idx, ctx_test in enumerate(audit_steps):
+                        # Scale progress 60-90% across audit steps
+                        step_pct = 60 + int(
+                            30 * step_idx
+                            / max(len(audit_steps) - 1, 1)
+                        )
+                        CalibrationTracker.update_progress(
+                            f"Audit {step_idx + 1}/"
+                            f"{len(audit_steps)}: "
+                            f"ctx={ctx_test:,}...",
+                            step_pct,
+                        )
                         logger.info(
                             "[LLM] ðŸ” Audit step: testing ctx=%d...",
                             ctx_test,
@@ -979,6 +1015,10 @@ class LLMService:
 
                     # Handle total failure (even 2048 failed)
                     if last_successful_ctx == 0:
+                        CalibrationTracker.set_status("error")
+                        CalibrationTracker.update_progress(
+                            f"Failed: {model} weights exceed available memory.", 100,
+                        )
                         logger.error(
                             "[LLM] âŒ Model %s cannot load at any "
                             "context size. Model weights exceed "
@@ -1064,11 +1104,21 @@ class LLMService:
                             },
                         )
                         warm_resp.raise_for_status()
+                        CalibrationTracker.set_status("success")
+                        CalibrationTracker.update_progress(
+                            f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
+                        )
                         logger.info(
                             "[LLM] âœ… Final load at ctx=%d after audit",
                             load_ctx,
                         )
                     except httpx.HTTPStatusError:
+                        CalibrationTracker.set_status("error")
+                        CalibrationTracker.update_progress(
+                            f"Final reload at ctx={load_ctx:,}"
+                            " failed after audit.",
+                            100,
+                        )
                         logger.warning(
                             "[LLM] Final reload at ctx=%d failed "
                             "after audit. Model may be unloaded.",
@@ -1100,6 +1150,8 @@ class LLMService:
                         result["clamped_from"] = desired_ctx
                     return result
         except Exception as exc:
+            CalibrationTracker.set_status("error")
+            CalibrationTracker.update_progress(f"Failed: {exc}", 100)
             logger.warning(
                 "[LLM] Ollama model verification failed: %s",
                 exc,

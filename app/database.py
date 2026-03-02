@@ -604,6 +604,29 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── User Exclusions: persisted delete-from-scoreboard ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_exclusions (
+            symbol     VARCHAR NOT NULL,
+            bot_id     VARCHAR NOT NULL DEFAULT 'default',
+            reason     VARCHAR DEFAULT '',
+            created_by VARCHAR DEFAULT 'user',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, bot_id)
+        );
+    """)
+
+    # ── Rejected Symbols: quarantine log for filter rejects ──────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejected_symbols (
+            symbol       VARCHAR NOT NULL,
+            source       VARCHAR NOT NULL,
+            reason       VARCHAR NOT NULL,
+            raw_context  VARCHAR DEFAULT '',
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
