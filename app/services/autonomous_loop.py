@@ -130,6 +130,11 @@ class AutonomousLoop:
                 vram_gb, model_max, old_ctx,
                 settings.LLM_CONTEXT_SIZE,
             )
+            self._log(
+                f"✅ Pre-warmed {settings.LLM_MODEL} | "
+                f"VRAM Used: {vram_gb:.1f}GB | "
+                f"Max Ctx Loaded: {settings.LLM_CONTEXT_SIZE}"
+            )
             self._health.record_check(
                 "LLM model pre-warmed",
                 passed=True,
@@ -380,6 +385,7 @@ class AutonomousLoop:
                         f"${ticker}: data collection complete",
                         ticker=ticker,
                     )
+                    self._log(f"➤ Finished data collection for ${ticker}")
                     return ticker
                 except Exception as exc:
                     logger.warning("[AutoLoop] Collection failed for %s: %s", ticker, exc)
@@ -390,6 +396,7 @@ class AutonomousLoop:
                         ticker=ticker,
                         status="error",
                     )
+                    self._log(f"⚠ Failed data collection for ${ticker}: {exc}")
                     return None
 
         results = await asyncio.gather(*[_collect_one(t) for t in tickers])
@@ -466,8 +473,11 @@ class AutonomousLoop:
             metadata={"tickers": tickers, "count": len(tickers)},
         )
         dossiers = await self.deep_analysis.analyze_batch(
-            tickers, concurrency=2, portfolio_context=portfolio_context,
+            tickers, 
+            concurrency=2, 
+            portfolio_context=portfolio_context,
             bot_id=self.bot_id,
+            progress_callback=lambda t: self._log(f"➤ Finished deep analysis for ${t}"),
         )
 
         summaries = []

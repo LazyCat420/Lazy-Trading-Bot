@@ -12,6 +12,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
+from typing import Any
 
 from app.database import get_db
 from app.engine.dossier_synthesizer import DossierSynthesizer
@@ -149,19 +150,24 @@ class DeepAnalysisService:
         concurrency: int = 2,
         portfolio_context: dict | None = None,
         bot_id: str | None = None,
+        progress_callback: Any = None,
     ) -> list[TickerDossier]:
         """Analyze multiple tickers with bounded concurrency.
 
         Default concurrency=2 to avoid overwhelming the LLM backend.
+        Accepts optional progress_callback(ticker_str) for real-time reporting.
         """
         sem = asyncio.Semaphore(concurrency)
         results: list[TickerDossier] = []
 
         async def _run(t: str) -> TickerDossier:
             async with sem:
-                return await self.analyze_ticker(
+                d = await self.analyze_ticker(
                     t, portfolio_context=portfolio_context, bot_id=bot_id,
                 )
+                if progress_callback:
+                    progress_callback(t)
+                return d
 
         tasks = [_run(t) for t in tickers]
         dossiers = await asyncio.gather(*tasks, return_exceptions=True)

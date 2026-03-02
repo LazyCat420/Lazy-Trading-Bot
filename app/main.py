@@ -2111,9 +2111,13 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         )
                     elif warm.get("pre_warmed"):
                         rec_ctx = warm.get("recommended_ctx", "?")
+                        vram_bytes = warm.get("vram_bytes", 0)
+                        vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
+
                         _run_all_log(
-                            f"✅ Ollama model warmed: {model_name} "
-                            f"(recommended ctx={rec_ctx})",
+                            f"✅ Ollama model warmed: {model_name} | "
+                            f"VRAM Used: {vram_gb:.1f}GB | "
+                            f"eff_ctx={rec_ctx}",
                             level="success",
                             phase="model_load",
                             bot_id=bot_id,

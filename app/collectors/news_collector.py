@@ -150,21 +150,33 @@ class NewsCollector:
             t = yf.Ticker(ticker)
             news_list = t.news or []
 
-            for item in news_list[:limit]:
+            for raw_item in news_list[:limit]:
+                # 1. Unpack modern schema if it exists
+                item = raw_item.get("content", raw_item) if isinstance(raw_item, dict) else raw_item
+                
                 title = item.get("title", "").strip()
                 if not title:
                     continue
 
+                # 2. Extract Publisher (New: provider.displayName | Old: publisher)
                 publisher = item.get("publisher", "")
-                link = item.get("link", "") or item.get("url", "")
-                pub_ts = item.get("providerPublishTime")
-                thumbnail = ""
+                if not publisher and isinstance(item.get("provider"), dict):
+                    publisher = item.get("provider", {}).get("displayName", "")
 
+                # 3. Extract Link (New: clickThroughUrl.url | Old: link/url)
+                link = item.get("link", "") or item.get("url", "")
+                if not link and isinstance(item.get("clickThroughUrl"), dict):
+                    link = item.get("clickThroughUrl", {}).get("url", "")
+                    
+                # 4. Extract Publish Time (New: pubDate ISO | Old: providerPublishTime INT)
+                pub_ts = item.get("providerPublishTime") or item.get("pubDate")
+
+                thumbnail = ""
                 # Extract thumbnail if available
                 thumbs = item.get("thumbnail", {})
                 if isinstance(thumbs, dict):
                     resolutions = thumbs.get("resolutions", [])
-                    if resolutions:
+                    if resolutions and isinstance(resolutions, list):
                         thumbnail = resolutions[0].get("url", "")
 
                 # Parse publish time
@@ -176,7 +188,10 @@ class NewsCollector:
                                 pub_ts, tz=timezone.utc
                             )
                         else:
-                            published_at = datetime.fromisoformat(str(pub_ts))
+                            # Handle ISO strings like "2026-02-27T04:16:29Z"
+                            # Replace Z with +00:00 for python fromisoformat
+                            iso_str = str(pub_ts).replace("Z", "+00:00")
+                            published_at = datetime.fromisoformat(iso_str)
                     except (ValueError, OSError):
                         pass
 
