@@ -410,16 +410,56 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
     """)
 
     # ── Phase 3: Trading Engine tables ─────────────────────────
+    # ── Positions: migrate old ticker-only PK → composite (ticker, bot_id) ──
+    try:
+        cols = [r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'positions'"
+        ).fetchall()]
+        if cols and "bot_id" not in cols:
+            # Old schema: ticker-only PK, no bot_id. Migrate.
+            logger.info("[DB] Migrating positions table → composite PK (ticker, bot_id)")
+            conn.execute("ALTER TABLE positions RENAME TO _positions_old")
+            conn.execute("""
+                CREATE TABLE positions (
+                    ticker            VARCHAR NOT NULL,
+                    qty               INTEGER NOT NULL,
+                    avg_entry_price   DOUBLE NOT NULL,
+                    stop_loss         DOUBLE DEFAULT 0,
+                    take_profit       DOUBLE DEFAULT 0,
+                    trailing_stop_pct DOUBLE DEFAULT 0,
+                    opened_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_updated      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    bot_id            VARCHAR NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (ticker, bot_id)
+                );
+            """)
+            conn.execute("""
+                INSERT INTO positions
+                    (ticker, qty, avg_entry_price, stop_loss, take_profit,
+                     trailing_stop_pct, opened_at, last_updated, bot_id)
+                SELECT ticker, qty, avg_entry_price, stop_loss, take_profit,
+                       trailing_stop_pct, opened_at, last_updated, 'default'
+                FROM _positions_old
+            """)
+            conn.execute("DROP TABLE _positions_old")
+            conn.commit()
+            logger.info("[DB] Positions migration complete")
+    except Exception:
+        pass  # Table doesn't exist yet, CREATE below handles it
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS positions (
-            ticker            VARCHAR PRIMARY KEY,
+            ticker            VARCHAR NOT NULL,
             qty               INTEGER NOT NULL,
             avg_entry_price   DOUBLE NOT NULL,
             stop_loss         DOUBLE DEFAULT 0,
             take_profit       DOUBLE DEFAULT 0,
             trailing_stop_pct DOUBLE DEFAULT 0,
             opened_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            last_updated      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            bot_id            VARCHAR NOT NULL DEFAULT 'default',
+            PRIMARY KEY (ticker, bot_id)
         );
     """)
 
@@ -435,7 +475,8 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             conviction_score DOUBLE DEFAULT 0,
             signal           VARCHAR DEFAULT '',
             filled_at        TIMESTAMP,
-            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            bot_id           VARCHAR NOT NULL DEFAULT 'default'
         );
     """)
 
@@ -450,7 +491,8 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             action          VARCHAR DEFAULT 'sell',
             qty             INTEGER NOT NULL,
             status          VARCHAR DEFAULT 'active',
-            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            bot_id          VARCHAR NOT NULL DEFAULT 'default'
         );
     """)
 
@@ -461,7 +503,8 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             total_positions_value  DOUBLE DEFAULT 0,
             total_portfolio_value  DOUBLE DEFAULT 0,
             realized_pnl           DOUBLE DEFAULT 0,
-            unrealized_pnl         DOUBLE DEFAULT 0
+            unrealized_pnl         DOUBLE DEFAULT 0,
+            bot_id                 VARCHAR NOT NULL DEFAULT 'default'
         );
     """)
 
