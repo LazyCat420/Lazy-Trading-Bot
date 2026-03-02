@@ -917,7 +917,7 @@ class LLMService:
                             },
                         )
                         warm_resp.raise_for_status()
-                        CalibrationTracker.set_status("success")
+                        CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
                         CalibrationTracker.update_progress(
                             f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
                         )
@@ -1155,7 +1155,7 @@ class LLMService:
                             },
                         )
                         warm_resp.raise_for_status()
-                        CalibrationTracker.set_status("success")
+                        CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
                         CalibrationTracker.update_progress(
                             f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
                         )

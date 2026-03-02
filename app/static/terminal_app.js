@@ -2447,7 +2447,7 @@ const SettingsPage = () => {
                     stopPolling();
                     setSaveStatus("saved");
                     RetroSFX.successChime();
-                    setAuditResult({ message: state.current_step, proven_max_ctx: 0 });
+                    setAuditResult({ message: state.current_step, proven_max_ctx: state.proven_max_ctx || 0 });
                     fetchVramEstimate(state.model || llmConfig.model);
                     // Refresh config from server
                     try {
@@ -2831,7 +2831,7 @@ const SettingsPage = () => {
                                     </h4>
                                     <p className="text-xs text-text-muted mb-2">{auditResult.message}</p>
                                     <div className="text-[11px] font-mono text-green-400/80">
-                                        Proven Hardware Limit: {(auditResult.proven_max_ctx || 0).toLocaleString()} limit
+                                        Proven Hardware Limit: {(auditResult.proven_max_ctx || 0).toLocaleString()} tokens
                                     </div>
                                 </div>
                             </div>

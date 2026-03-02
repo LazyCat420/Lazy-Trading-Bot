@@ -22,6 +22,7 @@ class CalibrationTracker:
         "logs": [],
         "progress_pct": 0,
         "started_at": None,
+        "proven_max_ctx": 0,
     }
 
     @classmethod
@@ -30,11 +31,18 @@ class CalibrationTracker:
         return {**cls._state, "logs": list(cls._state["logs"])}
 
     @classmethod
-    def set_status(cls, status: str, model: str | None = None) -> None:
+    def set_status(
+        cls,
+        status: str,
+        model: str | None = None,
+        proven_max_ctx: int = 0,
+    ) -> None:
         """Transition calibration status."""
         cls._state["status"] = status
         if model:
             cls._state["model"] = model
+        if proven_max_ctx > 0:
+            cls._state["proven_max_ctx"] = proven_max_ctx
         if status == "calibrating":
             cls._state["started_at"] = time.time()
         if status in ("idle", "success", "error"):
@@ -44,6 +52,7 @@ class CalibrationTracker:
             cls._state["progress_pct"] = 0
             cls._state["current_step"] = ""
             cls._state["model"] = None
+            cls._state["proven_max_ctx"] = 0
 
     @classmethod
     def update_progress(cls, step_message: str, pct: int) -> None:
