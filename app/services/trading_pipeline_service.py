@@ -191,13 +191,20 @@ class TradingPipelineService:
 
         # ── Execute ───────────────────────────────────────────
         if action.action in ("BUY", "SELL"):
-            exec_result = await self._executor.execute(
-                action=action,
-                decision_id=decision_id,
-                dry_run=self._dry_run,
-                atr=context.get("atr", 0.0),
-                current_price=context.get("last_price", 0.0),
-            )
+            try:
+                exec_result = await self._executor.execute(
+                    action=action,
+                    decision_id=decision_id,
+                    dry_run=self._dry_run,
+                    atr=context.get("atr", 0.0),
+                    current_price=context.get("last_price", 0.0),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[TradingPipeline] Execution failed for %s: %s",
+                    ticker, exc,
+                )
+                exec_result = {"status": "error", "reason": str(exc)}
             result["exec_status"] = exec_result.get("status", "unknown")
             result["exec_detail"] = exec_result
 

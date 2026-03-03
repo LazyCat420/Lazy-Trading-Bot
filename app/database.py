@@ -411,14 +411,21 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
 
     # ── Phase 3: Trading Engine tables ─────────────────────────
     # ── Positions: migrate old ticker-only PK → composite (ticker, bot_id) ──
+    # NOTE: The old check ("bot_id" not in cols) was wrong — _migrate_columns()
+    # adds bot_id via ALTER TABLE but never fixes the PK. We now check the
+    # actual PK column count to detect the stale single-column PK.
     try:
-        cols = [r[0] for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
+        pk_cols = conn.execute(
+            "SELECT column_name FROM information_schema.key_column_usage "
             "WHERE table_name = 'positions'"
-        ).fetchall()]
-        if cols and "bot_id" not in cols:
-            # Old schema: ticker-only PK, no bot_id. Migrate.
-            logger.info("[DB] Migrating positions table → composite PK (ticker, bot_id)")
+        ).fetchall()
+        needs_pk_migration = len(pk_cols) == 1  # Only 'ticker', missing 'bot_id' in PK
+        if needs_pk_migration:
+            logger.info(
+                "[DB] Detected single-column PK on positions (cols=%s) → "
+                "rebuilding with composite PK (ticker, bot_id)",
+                [r[0] for r in pk_cols],
+            )
             conn.execute("ALTER TABLE positions RENAME TO _positions_old")
             conn.execute("""
                 CREATE TABLE positions (
@@ -434,19 +441,40 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
                     PRIMARY KEY (ticker, bot_id)
                 );
             """)
-            conn.execute("""
-                INSERT INTO positions
-                    (ticker, qty, avg_entry_price, stop_loss, take_profit,
-                     trailing_stop_pct, opened_at, last_updated, bot_id)
-                SELECT ticker, qty, avg_entry_price, stop_loss, take_profit,
-                       trailing_stop_pct, opened_at, last_updated, 'default'
-                FROM _positions_old
-            """)
+            # Migrate data — handle both old (no bot_id) and new (has bot_id) schemas
+            old_cols = [r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = '_positions_old'"
+            ).fetchall()]
+            if "bot_id" in old_cols:
+                conn.execute("""
+                    INSERT INTO positions
+                        (ticker, qty, avg_entry_price, stop_loss, take_profit,
+                         trailing_stop_pct, opened_at, last_updated, bot_id)
+                    SELECT ticker, qty, avg_entry_price,
+                           COALESCE(stop_loss, 0), COALESCE(take_profit, 0),
+                           COALESCE(trailing_stop_pct, 0), opened_at, last_updated,
+                           COALESCE(bot_id, 'default')
+                    FROM _positions_old
+                """)
+            else:
+                conn.execute("""
+                    INSERT INTO positions
+                        (ticker, qty, avg_entry_price, stop_loss, take_profit,
+                         trailing_stop_pct, opened_at, last_updated, bot_id)
+                    SELECT ticker, qty, avg_entry_price,
+                           COALESCE(stop_loss, 0), COALESCE(take_profit, 0),
+                           COALESCE(trailing_stop_pct, 0), opened_at, last_updated,
+                           'default'
+                    FROM _positions_old
+                """)
             conn.execute("DROP TABLE _positions_old")
             conn.commit()
-            logger.info("[DB] Positions migration complete")
-    except Exception:
-        pass  # Table doesn't exist yet, CREATE below handles it
+            logger.info("[DB] Positions PK migration complete → (ticker, bot_id)")
+    except Exception as exc:
+        # Table doesn't exist yet — CREATE below handles it.
+        # Log the error so it's not silently swallowed.
+        logger.debug("[DB] Positions migration skipped: %s", exc)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS positions (

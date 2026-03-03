@@ -89,10 +89,12 @@ class PaperTrader:
                 self.bot_id, ticker, old_qty, qty, new_qty, new_avg,
             )
         else:
-            # New position
+            # New position — use INSERT OR REPLACE as a safety net in case
+            # _get_position_row missed an orphaned row from old schema
             db.execute(
                 """
-                INSERT INTO positions (ticker, qty, avg_entry_price, opened_at, last_updated, bot_id)
+                INSERT OR REPLACE INTO positions
+                    (ticker, qty, avg_entry_price, opened_at, last_updated, bot_id)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [ticker, qty, price, now, now, self.bot_id],

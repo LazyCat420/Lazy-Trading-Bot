@@ -1,28 +1,15 @@
-# Fix: Positions Table PK Conflict — DONE
-
-## Problem
-
-BUY orders for KO and NVDA failed with:
-
-```
-Constraint Error: Duplicate key "ticker: KO" violates primary key constraint
-```
+﻿# Fix BUY Trade Execution Failures — DONE
 
 ## Root Cause
+1. DuckDB positions table had stale single-column PK (ticker only) — migration check was wrong
+2. Cash starvation: .27 on  portfolio caused all buys to fail
 
-`positions` table had `ticker VARCHAR PRIMARY KEY` — single-column PK.
-Multi-bot system needs `PRIMARY KEY (ticker, bot_id)` so each bot can hold the same ticker independently.
+## Fixes Applied
+- database.py: Migration now checks actual PK column count via key_column_usage
+- paper_trader.py: INSERT changed to INSERT OR REPLACE
+- portfolio_strategist.py: Cash pre-check skips LLM loop when insufficient funds
+- 	rading_pipeline_service.py: Execution wrapped in try/except
 
-`PaperTrader._get_position_row()` correctly filtered by `bot_id` in WHERE clauses,
-but the INSERT hit the ticker-only PK constraint when a different bot already owned the position.
-
-## Fix Applied
-
-1. **`database.py`**: Changed positions DDL to `PRIMARY KEY (ticker, bot_id)`
-2. **Runtime migration**: Detects old schema (no `bot_id` column), recreates table preserving data
-3. **Also added `bot_id`** column to `orders`, `price_triggers`, `portfolio_snapshots` DDL
-
-## Verification
-
-- 66 tests pass, ruff clean
-- Server restart will trigger migration automatically
+## Verified
+- 25/25 tests pass, 0 failures
+- Ruff lint clean (only pre-existing style issues)

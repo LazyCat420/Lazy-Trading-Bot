@@ -191,8 +191,37 @@ class PortfolioStrategist:
             "market=%d candidates",
             portfolio_data.get("cash_balance", 0),
             portfolio_data.get("position_count", 0),
-            market_data.get("total", 0),
+            market_data.get("total_new", market_data.get("total", 0)),
         )
+
+        # ── Cash pre-check: skip LLM loop if cash can't buy anything ──
+        cash = portfolio_data.get("cash_balance", 0)
+        candidate_prices = [
+            c["price"] for c in market_data.get("candidates", [])
+            if c.get("price") and c["price"] > 0
+        ]
+        min_price = min(candidate_prices) if candidate_prices else float("inf")
+        if cash < min_price and candidate_prices:
+            logger.warning(
+                "[Strategist] Insufficient cash ($%.2f) to buy cheapest "
+                "candidate ($%.2f). Skipping LLM loop.",
+                cash, min_price,
+            )
+            self._audit.log_finish(
+                f"Skipped: insufficient cash (${cash:.2f} < ${min_price:.2f})",
+                [],
+            )
+            audit_path = self._audit.generate_report()
+            return {
+                "orders_placed": 0,
+                "orders": [],
+                "triggers_set": 0,
+                "triggers": [],
+                "turns_used": 0,
+                "summary": f"Insufficient cash (${cash:.2f}) to buy cheapest candidate (${min_price:.2f})",
+                "actions_log": [],
+                "audit_report": audit_path,
+            }
 
         # Build held-tickers warning for prompt injection
         held_tickers = [
