@@ -746,6 +746,17 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Circuit Breaker: daily drawdown kill switch ──────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS circuit_breaker_state (
+            bot_id      VARCHAR PRIMARY KEY,
+            is_tripped  BOOLEAN DEFAULT FALSE,
+            tripped_at  TIMESTAMP,
+            reason      VARCHAR DEFAULT '',
+            reset_at    TIMESTAMP
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

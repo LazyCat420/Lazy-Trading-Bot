@@ -323,6 +323,24 @@ async def restore_exclusion(symbol: str) -> dict:
     return {"status": "not_found", "symbol": symbol.upper().strip()}
 
 
+# ── Circuit Breaker API ──────────────────────────────────────────
+
+@app.get("/api/circuit-breaker/{bot_id}")
+async def get_circuit_breaker_status(bot_id: str = "default") -> dict:
+    """Get circuit breaker status for a bot."""
+    from app.services.circuit_breaker import CircuitBreaker
+
+    return CircuitBreaker.get_status(bot_id)
+
+
+@app.post("/api/circuit-breaker/{bot_id}/reset")
+async def reset_circuit_breaker(bot_id: str = "default") -> dict:
+    """Manually reset the circuit breaker for a bot."""
+    from app.services.circuit_breaker import CircuitBreaker
+
+    return CircuitBreaker.reset(bot_id)
+
+
 @app.put("/api/watchlist")
 async def update_watchlist_legacy(req: WatchlistUpdateRequest) -> dict:
     """Legacy: update watchlist from JSON file (kept for backwards compat)."""

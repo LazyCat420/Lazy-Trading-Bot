@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\circuit_breaker.py
+# hypothesis_version: 6.151.9
+
+[5.0, 100, 'bot_id', 'default', 'error', 'is_tripped', 'last_reset', 'reason', 'reset', 'status', 'threshold_pct', 'tripped_at']

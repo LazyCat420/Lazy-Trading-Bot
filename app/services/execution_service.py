@@ -57,9 +57,17 @@ class ExecutionService:
             DecisionLogger.update_decision_status(decision_id, "hold")
             return {"status": "hold", "symbol": symbol, "reason": "HOLD decision"}
 
-        # NOTE: Market hours gate removed. This is a paper trader —
-        # blocking simulated trades when the market is closed has no value.
-        # Re-add this gate when integrating with a real broker.
+        # ── Gate 0: Circuit breaker (daily drawdown) ────────────
+        from app.services.circuit_breaker import CircuitBreaker
+
+        tripped, cb_reason = CircuitBreaker.is_tripped(action.bot_id)
+        if tripped:
+            logger.warning(
+                "[Execution] CIRCUIT BREAKER tripped for %s: %s",
+                symbol, cb_reason,
+            )
+            DecisionLogger.update_decision_status(decision_id, "circuit_breaker")
+            return {"status": "circuit_breaker", "symbol": symbol, "reason": cb_reason}
 
         # ── Get portfolio state ─────────────────────────────────
         portfolio = self._trader.get_portfolio()

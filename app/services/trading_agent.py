@@ -20,8 +20,10 @@ Your job: decide BUY, SELL, or HOLD based on the data provided.
 
 RULES:
 - Be decisive. If unsure, output HOLD with low confidence.
-- Your rationale must reference at least one data point.
-- Do NOT invent numbers. Use only the data given to you.
+- Your rationale must reference at least one data point from the context.
+- You may ONLY cite numbers and facts explicitly present in the user context below.
+- Do NOT use outside knowledge or training data for price targets or fundamentals.
+- If the context does not support a clear trade, you MUST output HOLD.
 - Do NOT suggest further research. Make a call now.
 
 OUTPUT FORMAT (JSON only, no markdown):
@@ -62,6 +64,33 @@ class TradingAgent:
         """
         symbol = context.get("symbol", "UNKNOWN")
         user_prompt = self._build_prompt(context)
+
+        # ── Context window budget guard ─────────────────────────
+        # If the prompt is too large, progressively truncate news_summary
+        from app.config import settings
+
+        max_ctx = getattr(settings, "LLM_CONTEXT_SIZE", 32768)
+        budget = int(max_ctx * 0.80)  # Leave 20% for LLM response
+        total_tokens = _llm.estimate_tokens(_SYSTEM_PROMPT + user_prompt)
+
+        if total_tokens > budget:
+            # Truncate news_summary to fit
+            news = context.get("news_summary", "")
+            if news:
+                overshoot = total_tokens - budget
+                chars_to_cut = overshoot * 4  # ~4 chars per token
+                trimmed_news = news[: max(0, len(news) - chars_to_cut)]
+                if trimmed_news != news:
+                    context["news_summary"] = trimmed_news + "\n[...truncated for context budget]"
+                    user_prompt = self._build_prompt(context)
+                    logger.warning(
+                        "[TradingAgent] Context budget guard: trimmed news for %s "
+                        "(%d tokens → ~%d tokens, budget=%d)",
+                        symbol,
+                        total_tokens,
+                        _llm.estimate_tokens(_SYSTEM_PROMPT + user_prompt),
+                        budget,
+                    )
 
         logger.info("[TradingAgent] Analyzing %s...", symbol)
 
