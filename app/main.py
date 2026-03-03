@@ -1126,6 +1126,24 @@ def _set_active_bot(bot_id: str) -> None:
     _active_bot_id = bot_id
     logger.info("[ActiveBot] Switched to bot_id=%s", bot_id)
 
+    # Sync global LLM settings to match this bot's stored config
+    # so the next run_full_loop uses the correct model.
+    from app.services.bot_registry import BotRegistry as _BReg
+
+    bot = _BReg.get_bot(bot_id)
+    if bot:
+        settings.LLM_MODEL = bot.get("model_name", settings.LLM_MODEL)
+        settings.LLM_CONTEXT_SIZE = bot.get("context_length", settings.LLM_CONTEXT_SIZE)
+        settings.LLM_TEMPERATURE = bot.get("temperature", settings.LLM_TEMPERATURE)
+        settings.LLM_TOP_P = bot.get("top_p", settings.LLM_TOP_P)
+        provider_url = bot.get("provider_url", "")
+        if provider_url:
+            settings.OLLAMA_URL = provider_url
+        logger.info(
+            "[ActiveBot] Synced settings: model=%s ctx=%d url=%s",
+            settings.LLM_MODEL, settings.LLM_CONTEXT_SIZE, settings.OLLAMA_URL,
+        )
+
 
 def _active_trader() -> PaperTrader:
     """Return a PaperTrader scoped to the active bot."""
@@ -1154,7 +1172,7 @@ async def set_active_bot(req: dict) -> dict:
     """Switch the active bot. Body: {"bot_id": "..."}."""
     bid = req.get("bot_id", "default")
     _set_active_bot(bid)
-    return {"status": "ok", "active_bot_id": bid}
+    return {"status": "ok", "active_bot_id": bid, "synced_model": settings.LLM_MODEL}
 
 
 @app.get("/api/portfolio")
