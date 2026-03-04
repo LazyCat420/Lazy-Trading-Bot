@@ -3788,6 +3788,8 @@ const AutobotMonitorPage = ({ monitorData }) => {
     const [activeTab, setActiveTab] = useState("scoreboard"); // "scoreboard" | "activity" | "watchlist" | "portfolio"
     const [expandedBotId, setExpandedBotId] = useState(null);
     const [expandedWlTicker, setExpandedWlTicker] = useState(null);
+    const [expandedPosTicker, setExpandedPosTicker] = useState(null);
+    const [expandedHoldingTicker, setExpandedHoldingTicker] = useState(null);
     const navigate = useNavigate();
 
     // Destructure all data from the persistent hook
@@ -5093,13 +5095,19 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                     )
                                 ),
                                 React.createElement("tbody", null,
-                                    ...(portfolio.positions || []).map((pos, i) =>
+                                    ...(portfolio.positions || []).flatMap((pos, i) => [
                                         React.createElement("tr", {
                                             key: pos.ticker,
-                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"}`
+                                            className: `border-b border-border-dark/50 hover:bg-onyx-surface cursor-pointer transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"} ${expandedPosTicker === pos.ticker ? "bg-onyx-surface" : ""}`,
+                                            onClick: () => { console.log("[Dossier] Portfolio expand:", pos.ticker); setExpandedPosTicker(expandedPosTicker === pos.ticker ? null : pos.ticker); },
                                         },
                                             React.createElement("td", { className: "px-4 py-3" },
-                                                React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${pos.ticker}`)
+                                                React.createElement("div", { className: "flex items-center gap-2" },
+                                                    React.createElement("span", { className: `material-symbols-outlined text-sm ${expandedPosTicker === pos.ticker ? "text-primary" : "text-text-muted"}` },
+                                                        expandedPosTicker === pos.ticker ? "expand_less" : "expand_more"
+                                                    ),
+                                                    React.createElement("span", { className: "text-white font-bold font-mono text-sm" }, `$${pos.ticker}`)
+                                                )
                                             ),
                                             React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-white" }, pos.qty),
                                             React.createElement("td", { className: "text-right px-4 py-3 text-sm font-mono text-text-secondary" }, fmt.usd(pos.avg_entry_price)),
@@ -5118,19 +5126,29 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                 pos.opened_at ? fmt.ago(pos.opened_at) : "—"
                                             ),
                                             React.createElement("td", { className: "text-center px-4 py-3" },
-                                                React.createElement(ConfirmButton, {
-                                                    onConfirm: () => closePosition(pos.ticker),
-                                                    label: "Close",
-                                                    confirmLabel: `Close ${pos.ticker}?`,
-                                                    icon: "sell",
-                                                    confirmIcon: "warning",
-                                                    className: "px-2.5 py-1 rounded text-[10px] font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
-                                                    confirmClassName: "px-2.5 py-1 rounded text-[10px] font-bold text-red-300 bg-red-500/25 border border-red-500/40 animate-pulse transition-all",
-                                                    title: "Close position at market price",
-                                                })
+                                                React.createElement("span", { onClick: (e) => e.stopPropagation() },
+                                                    React.createElement(ConfirmButton, {
+                                                        onConfirm: () => closePosition(pos.ticker),
+                                                        label: "Close",
+                                                        confirmLabel: `Close ${pos.ticker}?`,
+                                                        icon: "sell",
+                                                        confirmIcon: "warning",
+                                                        className: "px-2.5 py-1 rounded text-[10px] font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all",
+                                                        confirmClassName: "px-2.5 py-1 rounded text-[10px] font-bold text-red-300 bg-red-500/25 border border-red-500/40 animate-pulse transition-all",
+                                                        title: "Close position at market price",
+                                                    })
+                                                )
+                                            )
+                                        ),
+                                        // Dossier detail row
+                                        expandedPosTicker === pos.ticker && React.createElement("tr", { key: `${pos.ticker}-dossier` },
+                                            React.createElement("td", { colSpan: 8, className: "p-0" },
+                                                React.createElement("div", { className: "animate-fadeIn" },
+                                                    React.createElement(TickerDetailPanel, { ticker: pos.ticker })
+                                                )
                                             )
                                         )
-                                    )
+                                    ].filter(Boolean))
                                 )
                             )
                     ),
@@ -5487,13 +5505,17 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                             ? React.createElement("div", { className: "text-xs text-text-muted py-2 text-center" },
                                                 "No open positions — all cash"
                                             )
-                                            : React.createElement("div", { className: "grid grid-cols-3 gap-2" },
-                                                ...positions.map(pos =>
+                                            : React.createElement("div", { className: "space-y-2" },
+                                                ...positions.flatMap(pos => [
                                                     React.createElement("div", {
                                                         key: pos.ticker,
-                                                        className: "flex items-center justify-between p-2 rounded bg-onyx-black/40 border border-border-dark/50"
+                                                        className: `flex items-center justify-between p-2 rounded bg-onyx-black/40 border border-border-dark/50 cursor-pointer hover:bg-white/5 transition-colors ${expandedHoldingTicker === pos.ticker ? "border-primary/30" : ""}`,
+                                                        onClick: () => { console.log("[Dossier] Leaderboard expand:", pos.ticker); setExpandedHoldingTicker(expandedHoldingTicker === pos.ticker ? null : pos.ticker); },
                                                     },
-                                                        React.createElement("div", null,
+                                                        React.createElement("div", { className: "flex items-center gap-2" },
+                                                            React.createElement("span", { className: `material-symbols-outlined text-sm ${expandedHoldingTicker === pos.ticker ? "text-primary" : "text-text-muted"}` },
+                                                                expandedHoldingTicker === pos.ticker ? "expand_less" : "expand_more"
+                                                            ),
                                                             React.createElement("span", { className: "text-white font-bold text-sm" }, `$${pos.ticker}`),
                                                             React.createElement("span", { className: "text-text-muted text-[10px] ml-1.5" }, `×${pos.qty}`)
                                                         ),
@@ -5505,8 +5527,15 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                                 fmt.usd(pos.qty * pos.avg_entry_price)
                                                             )
                                                         )
+                                                    ),
+                                                    // Dossier panel for this holding
+                                                    expandedHoldingTicker === pos.ticker && React.createElement("div", {
+                                                        key: `${pos.ticker}-dossier`,
+                                                        className: "rounded border border-primary/20 overflow-hidden animate-fadeIn"
+                                                    },
+                                                        React.createElement(TickerDetailPanel, { ticker: pos.ticker })
                                                     )
-                                                )
+                                                ].filter(Boolean))
                                             )
                                     )
                                 );
