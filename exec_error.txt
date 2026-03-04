@@ -1,0 +1,61 @@
+﻿[2026-03-03 16:15:20] INFO     lazy_trader ΓÇö Log started: trading_bot_2026-03-03_16-15-20.log
+[2026-03-03 16:15:20] INFO     lazy_trader ΓÇö Opening DuckDB at D:\Github\Lazy-Trading-Bot\data\trading_bot.duckdb
+[2026-03-03 16:15:20] INFO     lazy_trader ΓÇö DuckDB tables initialized
+[2026-03-03 16:15:20] INFO     lazy_trader ΓÇö Migration: reset -1 contaminated last_analyzed values
+d:\Github\Lazy-Trading-Bot\venv\Scripts\pyth
+on.exe : Traceback (most recent call last):
+At line:1 char:1
++ d:\Github\Lazy-Trading-Bot\venv\Scripts\py
+thon.exe d:\Github\Lazy-Tra ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: 
+    (Traceback (most recent call last)::St  
+  ring) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommand 
+   Error
+ 
+  File 
+"d:\Github\Lazy-Trading-Bot\test_exec.py", 
+line 35, in <module>
+    asyncio.run(test_execution())
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File 
+"D:\Miniconda3\Lib\asyncio\runners.py", 
+line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File 
+"D:\Miniconda3\Lib\asyncio\runners.py", 
+line 118, in run
+    return 
+self._loop.run_until_complete(task)
+           
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File 
+"D:\Miniconda3\Lib\asyncio\base_events.py", 
+line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File 
+"d:\Github\Lazy-Trading-Bot\test_exec.py", 
+line 14, in test_execution
+    action = TradeAction(
+        bot_id="default",
+    ...<5 lines>...
+        time_horizon="SWING"
+    )
+  File "D:\Github\Lazy-Trading-Bot\venv\Lib\
+site-packages\pydantic\main.py", line 250, 
+in __init__
+    validated_self = self.__pydantic_validat
+or__.validate_python(data, 
+self_instance=self)
+pydantic_core._pydantic_core.ValidationError
+: 1 validation error for TradeAction
+confidence
+  Input should be less than or equal to 1 
+[type=less_than_equal, input_value=85.0, 
+input_type=float]
+    For further information visit https://er
+rors.pydantic.dev/2.12/v/less_than_equal

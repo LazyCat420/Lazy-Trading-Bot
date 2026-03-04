@@ -12,11 +12,11 @@ import json
 import time
 from datetime import datetime
 
-from app.services.ticker_validator import TickerValidator
+from app.config import settings
 from app.database import get_db
 from app.models.discovery import ScoredTicker
-from app.config import settings
 from app.services.llm_service import LLMService
+from app.services.ticker_validator import TickerValidator
 from app.utils.logger import logger
 
 # Maximum chars of transcript to send to the LLM per video.
@@ -223,24 +223,33 @@ class TickerScanner:
 
         try:
             raw = await self.llm.chat(
-                system=(
-                    "You are a stock ticker extraction tool. Return ONLY valid JSON."
-                ),
+                system=("You are a stock ticker extraction tool. Return ONLY valid JSON."),
                 user=prompt,
                 response_format="json",
                 temperature=settings.LLM_DISCOVERY_TEMPERATURE,
+                audit_step="youtube_ticker_scan",
+                audit_ticker=title[:60] if title else "unknown",
             )
             cleaned = LLMService.clean_json_response(raw)
             tickers = json.loads(cleaned)
+
+            # LLMs sometimes return {"tickers": [...]} instead of [...]
+            if isinstance(tickers, dict):
+                tickers = (
+                    tickers.get("tickers")
+                    or tickers.get("symbols")
+                    or tickers.get("ticker_symbols")
+                    or next(iter(tickers.values()))
+                    if tickers
+                    else []
+                )
 
             if isinstance(tickers, list):
                 # Filter to valid-looking ticker symbols
                 result = [
                     t.upper().strip()
                     for t in tickers
-                    if isinstance(t, str)
-                    and 1 <= len(t.strip()) <= 5
-                    and t.strip().isalpha()
+                    if isinstance(t, str) and 1 <= len(t.strip()) <= 5 and t.strip().isalpha()
                 ]
                 logger.info(
                     "[YouTube Scanner] LLM extracted %d tickers from '%s': %s",

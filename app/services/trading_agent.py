@@ -156,10 +156,14 @@ class TradingAgent:
         pv = ctx.get("portfolio_value", 0)
         max_pct = ctx.get("max_position_pct", 15)
         parts.append(
-            f"\nPORTFOLIO: Cash=${cash:,.0f}  |  "
-            f"Total=${pv:,.0f}  |  "
-            f"Max position={max_pct}%"
+            f"\nPORTFOLIO: Cash=${cash:,.0f}  |  Total=${pv:,.0f}  |  Max position={max_pct}%"
         )
+
+        # Quant verdict from deep analysis
+        conv = ctx.get("dossier_conviction", 0)
+        sig = ctx.get("dossier_signal", "UNKNOWN")
+        if conv or sig != "UNKNOWN":
+            parts.append(f"\nQUANT VERDICT: {sig} (conviction={conv:.0%})")
 
         # Existing position
         pos = ctx.get("existing_position", {})

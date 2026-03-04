@@ -14,8 +14,13 @@ class ScoredTicker(BaseModel):
     ticker: str
     discovery_score: float = 0.0
     source: Literal[
-        "youtube", "reddit", "reddit+youtube",
-        "sec_13f", "congress", "multi",
+        "youtube",
+        "reddit",
+        "reddit+youtube",
+        "sec_13f",
+        "congress",
+        "rss_news",
+        "multi",
     ] = "reddit"
     source_detail: str = ""  # channel name or subreddit
     sentiment_hint: Literal["bullish", "bearish", "neutral"] = "neutral"

@@ -19,6 +19,17 @@ import numpy as np
 from app.models.dossier import QuantScorecard
 
 
+def _val(obj: Any, key: str, default: Any = None) -> Any:
+    """Get a value from either a dict or an object attribute.
+
+    DuckDB rows may arrive as dicts (via dict(zip(cols, row))) or as
+    dataclass/namedtuple objects.  This helper handles both transparently.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 class DataDistiller:
     """Transform raw data into structured LLM-ready analysis packets."""
 
@@ -48,8 +59,8 @@ class DataDistiller:
             parts.append("No price data available.")
             return "\n".join(parts)
 
-        # Extract close prices
-        closes = [float(p.close) for p in prices if hasattr(p, "close")]
+        # Extract close prices (handle both dict and object rows)
+        closes = [float(_val(p, "close")) for p in prices if _val(p, "close") is not None]
         if len(closes) < 5:
             parts.append("Insufficient price data for pattern analysis.")
             return "\n".join(parts)
@@ -59,8 +70,7 @@ class DataDistiller:
         parts.append(f"Current Price: ${latest:.2f}")
 
         # Price change over multiple timeframes
-        for label, days in [("1 week", 5), ("1 month", 21), ("3 months", 63),
-                             ("6 months", 126)]:
+        for label, days in [("1 week", 5), ("1 month", 21), ("3 months", 63), ("6 months", 126)]:
             if len(closes) >= days:
                 change = (closes[-1] / closes[-days] - 1) * 100
                 parts.append(f"  {label}: {change:+.1f}%")
@@ -69,9 +79,9 @@ class DataDistiller:
         parts.append("\n--- Trend Regime ---")
         if technicals:
             t = technicals[-1]
-            sma20 = getattr(t, "sma_20", None)
-            sma50 = getattr(t, "sma_50", None)
-            sma200 = getattr(t, "sma_200", None)
+            sma20 = _val(t, "sma_20")
+            sma50 = _val(t, "sma_50")
+            sma200 = _val(t, "sma_200")
 
             if sma20 and sma50 and sma200:
                 if latest > sma20 > sma50 > sma200:
@@ -86,9 +96,7 @@ class DataDistiller:
                     parts.append("SIDEWAYS/TRANSITIONAL: Mixed SMA alignment")
 
                 # Distance from key averages
-                parts.append(
-                    f"  Distance from SMA200: {(latest / sma200 - 1) * 100:+.1f}%"
-                )
+                parts.append(f"  Distance from SMA200: {(latest / sma200 - 1) * 100:+.1f}%")
 
         # ── Key Crossover Detection ──
         parts.append("\n--- Key Crossovers (recent 10 days) ---")
@@ -103,11 +111,11 @@ class DataDistiller:
         parts.append("\n--- Momentum Status ---")
         if technicals:
             t = technicals[-1]
-            rsi = getattr(t, "rsi", None)
-            macd = getattr(t, "macd", None)
-            macd_signal = getattr(t, "macd_signal", None)
-            macd_hist = getattr(t, "macd_hist", None)
-            adx = getattr(t, "adx", None)
+            rsi = _val(t, "rsi")
+            macd = _val(t, "macd")
+            macd_signal = _val(t, "macd_signal")
+            macd_hist = _val(t, "macd_hist")
+            adx = _val(t, "adx")
 
             if rsi is not None:
                 if rsi > 70:
@@ -129,7 +137,7 @@ class DataDistiller:
 
                 if macd_hist is not None:
                     # Check histogram trend
-                    hist_vals = [getattr(t2, "macd_hist", None) for t2 in technicals[-5:]]
+                    hist_vals = [_val(t2, "macd_hist") for t2 in technicals[-5:]]
                     hist_vals = [h for h in hist_vals if h is not None]
                     if len(hist_vals) >= 3:
                         if all(hist_vals[i] > hist_vals[i - 1] for i in range(1, len(hist_vals))):
@@ -165,10 +173,8 @@ class DataDistiller:
         # ── Volume Profile ──
         parts.append("\n--- Volume Analysis ---")
         if prices:
-            recent_vols = [float(p.volume) for p in prices[-20:]
-                           if hasattr(p, "volume") and p.volume]
-            older_vols = [float(p.volume) for p in prices[-60:-20]
-                          if hasattr(p, "volume") and p.volume]
+            recent_vols = [float(_val(p, "volume")) for p in prices[-20:] if _val(p, "volume")]
+            older_vols = [float(_val(p, "volume")) for p in prices[-60:-20] if _val(p, "volume")]
 
             if recent_vols and older_vols:
                 avg_recent = np.mean(recent_vols)
@@ -227,11 +233,11 @@ class DataDistiller:
 
         # ── Valuation Snapshot ──
         parts.append("--- Valuation ---")
-        pe = getattr(f, "trailing_pe", 0) or 0
-        fpe = getattr(f, "forward_pe", 0) or 0
-        ps_ratio = getattr(f, "price_to_sales", 0) or 0
-        pb_ratio = getattr(f, "price_to_book", 0) or 0
-        peg = getattr(f, "peg_ratio", 0) or 0
+        pe = _val(f, "trailing_pe", 0) or 0
+        fpe = _val(f, "forward_pe", 0) or 0
+        ps_ratio = _val(f, "price_to_sales", 0) or 0
+        pb_ratio = _val(f, "price_to_book", 0) or 0
+        peg = _val(f, "peg_ratio", 0) or 0
 
         if pe > 0:
             if pe > 40:
@@ -248,9 +254,13 @@ class DataDistiller:
             else:
                 parts.append(f"  Forward P/E: {fpe:.1f} — Earnings DECLINE expected")
         if ps_ratio > 0:
-            parts.append(f"  P/S: {ps_ratio:.1f} — {'Expensive' if ps_ratio > 10 else 'Fair' if ps_ratio > 3 else 'Value'}")
+            parts.append(
+                f"  P/S: {ps_ratio:.1f} — {'Expensive' if ps_ratio > 10 else 'Fair' if ps_ratio > 3 else 'Value'}"
+            )
         if pb_ratio > 0:
-            parts.append(f"  P/B: {pb_ratio:.1f} — {'Premium' if pb_ratio > 5 else 'Fair' if pb_ratio > 1 else 'Below book value'}")
+            parts.append(
+                f"  P/B: {pb_ratio:.1f} — {'Premium' if pb_ratio > 5 else 'Fair' if pb_ratio > 1 else 'Below book value'}"
+            )
         if peg > 0:
             if peg < 1:
                 parts.append(f"  PEG: {peg:.2f} — UNDERVALUED relative to growth")
@@ -260,16 +270,18 @@ class DataDistiller:
         # ── Revenue Trajectory ──
         if financial_history and len(financial_history) >= 2:
             parts.append("\n--- Revenue Trajectory ---")
-            revs = [(getattr(fh, "year", 0), getattr(fh, "revenue", 0))
-                     for fh in financial_history if getattr(fh, "revenue", None)]
+            revs = [
+                (_val(fh, "year", 0), _val(fh, "revenue", 0))
+                for fh in financial_history
+                if _val(fh, "revenue")
+            ]
             revs.sort()
             if len(revs) >= 2:
                 for i in range(1, len(revs)):
                     if revs[i - 1][1] and revs[i - 1][1] > 0:
                         growth = (revs[i][1] / revs[i - 1][1] - 1) * 100
                         parts.append(
-                            f"  {revs[i][0]}: ${revs[i][1] / 1e9:.1f}B "
-                            f"({growth:+.1f}% YoY)"
+                            f"  {revs[i][0]}: ${revs[i][1] / 1e9:.1f}B ({growth:+.1f}% YoY)"
                         )
                     else:
                         parts.append(f"  {revs[i][0]}: ${revs[i][1] / 1e9:.1f}B")
@@ -288,9 +300,9 @@ class DataDistiller:
         # ── Cash Flow Quality ──
         if cashflow:
             cf = cashflow[0]  # most recent year
-            ocf = getattr(cf, "operating_cashflow", 0) or 0
-            ni = getattr(f, "net_income", 0) or 0
-            fcf = getattr(cf, "free_cashflow", 0) or 0
+            ocf = _val(cf, "operating_cashflow", 0) or 0
+            ni = _val(f, "net_income", 0) or 0
+            fcf = _val(cf, "free_cashflow", 0) or 0
 
             parts.append("\n--- Cash Flow Quality ---")
             if ni > 0 and ocf > 0:
@@ -304,16 +316,17 @@ class DataDistiller:
                     parts.append(f"  OCF/NI: {quality:.1f}x — Normal earnings quality")
                 else:
                     parts.append(
-                        f"  OCF/NI: {quality:.1f}x — LOW quality "
-                        f"(accruals inflating profits)"
+                        f"  OCF/NI: {quality:.1f}x — LOW quality (accruals inflating profits)"
                     )
 
             if fcf:
-                mcap = getattr(f, "market_cap", 0) or 0
+                mcap = _val(f, "market_cap", 0) or 0
                 if mcap > 0:
                     fcf_yield = (fcf / mcap) * 100
-                    parts.append(f"  FCF Yield: {fcf_yield:.1f}% — "
-                                 f"{'Attractive' if fcf_yield > 5 else 'Normal' if fcf_yield > 2 else 'Low'}")
+                    parts.append(
+                        f"  FCF Yield: {fcf_yield:.1f}% — "
+                        f"{'Attractive' if fcf_yield > 5 else 'Normal' if fcf_yield > 2 else 'Low'}"
+                    )
 
         # ── Quant Scores ──
         if scorecard:
@@ -340,15 +353,9 @@ class DataDistiller:
             eyg = scorecard.earnings_yield_gap
             if eyg != 0:
                 if eyg > 0.03:
-                    parts.append(
-                        f"  Earnings Yield Gap: {eyg:+.1%} — "
-                        f"CHEAP vs bonds (buy signal)"
-                    )
+                    parts.append(f"  Earnings Yield Gap: {eyg:+.1%} — CHEAP vs bonds (buy signal)")
                 elif eyg < -0.01:
-                    parts.append(
-                        f"  Earnings Yield Gap: {eyg:+.1%} — "
-                        f"EXPENSIVE vs bonds"
-                    )
+                    parts.append(f"  Earnings Yield Gap: {eyg:+.1%} — EXPENSIVE vs bonds")
                 else:
                     parts.append(f"  Earnings Yield Gap: {eyg:+.1%} — Fair")
 
@@ -374,8 +381,8 @@ class DataDistiller:
         parts.append("--- Risk-Adjusted Performance ---")
         if risk_metrics:
             rm = risk_metrics
-            sharpe = getattr(rm, "sharpe_ratio", 0) or 0
-            sortino = getattr(rm, "sortino_ratio", 0) or 0
+            sharpe = _val(rm, "sharpe_ratio", 0) or 0
+            sortino = _val(rm, "sortino_ratio", 0) or 0
 
             # Contextualize vs benchmarks
             if sharpe > 1.5:
@@ -397,24 +404,16 @@ class DataDistiller:
         # ── Dollar-Amount Risk ──
         if risk_metrics:
             rm = risk_metrics
-            var95 = getattr(rm, "var_95", 0) or 0
-            cvar95 = getattr(rm, "cvar_95", 0) or 0
+            var95 = _val(rm, "var_95", 0) or 0
+            cvar95 = _val(rm, "cvar_95", 0) or 0
 
             parts.append("\n--- Worst-Case Scenarios (per $10,000) ---")
-            parts.append(
-                f"  VaR(95%): ${abs(var95) * 10000:.0f} "
-                f"daily loss on 1-in-20 bad day"
-            )
-            parts.append(
-                f"  CVaR(95%): ${abs(cvar95) * 10000:.0f} "
-                f"avg loss when exceeding VaR"
-            )
+            parts.append(f"  VaR(95%): ${abs(var95) * 10000:.0f} daily loss on 1-in-20 bad day")
+            parts.append(f"  CVaR(95%): ${abs(cvar95) * 10000:.0f} avg loss when exceeding VaR")
 
-            mdd = getattr(rm, "max_drawdown", 0) or 0
-            cur_dd = getattr(rm, "current_drawdown", 0) or 0
-            parts.append(
-                f"  Max Historical Drawdown: {mdd * 100:.1f}%"
-            )
+            mdd = _val(rm, "max_drawdown", 0) or 0
+            cur_dd = _val(rm, "current_drawdown", 0) or 0
+            parts.append(f"  Max Historical Drawdown: {mdd * 100:.1f}%")
             parts.append(
                 f"  Current Drawdown: {cur_dd * 100:.1f}% "
                 f"({'room to deteriorate' if cur_dd > mdd * 0.5 else 'well within historical range'})"
@@ -423,12 +422,8 @@ class DataDistiller:
         # ── Position Sizing Guidance ──
         if scorecard:
             parts.append("\n--- Position Sizing (Kelly Criterion) ---")
-            parts.append(
-                f"  Full Kelly: {scorecard.kelly_fraction:.1%} of portfolio"
-            )
-            parts.append(
-                f"  Half-Kelly (recommended): {scorecard.half_kelly:.1%} of portfolio"
-            )
+            parts.append(f"  Full Kelly: {scorecard.kelly_fraction:.1%} of portfolio")
+            parts.append(f"  Half-Kelly (recommended): {scorecard.half_kelly:.1%} of portfolio")
 
             if scorecard.omega_ratio > 1.5:
                 parts.append(
@@ -437,8 +432,7 @@ class DataDistiller:
                 )
             elif scorecard.omega_ratio < 0.8:
                 parts.append(
-                    f"  Omega Ratio: {scorecard.omega_ratio:.2f} — "
-                    f"⚠️ Losses outweigh gains"
+                    f"  Omega Ratio: {scorecard.omega_ratio:.2f} — ⚠️ Losses outweigh gains"
                 )
 
         return "\n".join(parts)
@@ -461,10 +455,10 @@ class DataDistiller:
             curr = recent[i]
 
             # Golden Cross / Death Cross (SMA50 vs SMA200)
-            p50 = getattr(prev, "sma_50", None)
-            c50 = getattr(curr, "sma_50", None)
-            p200 = getattr(prev, "sma_200", None)
-            c200 = getattr(curr, "sma_200", None)
+            p50 = _val(prev, "sma_50")
+            c50 = _val(curr, "sma_50")
+            p200 = _val(prev, "sma_200")
+            c200 = _val(curr, "sma_200")
             if p50 and c50 and p200 and c200:
                 if p50 < p200 and c50 >= c200:
                     signals.append(f"GOLDEN CROSS (SMA50 crossed above SMA200) {10 - i}d ago")
@@ -472,10 +466,10 @@ class DataDistiller:
                     signals.append(f"DEATH CROSS (SMA50 crossed below SMA200) {10 - i}d ago")
 
             # MACD crossover
-            pm = getattr(prev, "macd", None)
-            cm = getattr(curr, "macd", None)
-            ps = getattr(prev, "macd_signal", None)
-            cs = getattr(curr, "macd_signal", None)
+            pm = _val(prev, "macd")
+            cm = _val(curr, "macd")
+            ps = _val(prev, "macd_signal")
+            cs = _val(curr, "macd_signal")
             if pm is not None and cm is not None and ps is not None and cs is not None:
                 if pm < ps and cm >= cs:
                     signals.append(f"MACD bullish crossover {10 - i}d ago")
@@ -483,8 +477,8 @@ class DataDistiller:
                     signals.append(f"MACD bearish crossover {10 - i}d ago")
 
             # RSI crossing 30/70
-            pr = getattr(prev, "rsi", None)
-            cr = getattr(curr, "rsi", None)
+            pr = _val(prev, "rsi")
+            cr = _val(curr, "rsi")
             if pr is not None and cr is not None:
                 if pr < 30 and cr >= 30:
                     signals.append(f"RSI crossed up through 30 (oversold exit) {10 - i}d ago")
@@ -508,8 +502,8 @@ class DataDistiller:
         p_first = closes[-20:-mid]
         p_second = closes[-mid:]
 
-        rsi_first = [getattr(t, "rsi", None) for t in technicals[-20:-mid]]
-        rsi_second = [getattr(t, "rsi", None) for t in technicals[-mid:]]
+        rsi_first = [_val(t, "rsi") for t in technicals[-20:-mid]]
+        rsi_second = [_val(t, "rsi") for t in technicals[-mid:]]
 
         rsi_first = [r for r in rsi_first if r is not None]
         rsi_second = [r for r in rsi_second if r is not None]
@@ -562,8 +556,9 @@ class DataDistiller:
         return supports[:3], resistances[:3]
 
     @staticmethod
-    def _cluster_levels(levels: list[float], reference: float,
-                        threshold: float = 0.02) -> list[float]:
+    def _cluster_levels(
+        levels: list[float], reference: float, threshold: float = 0.02
+    ) -> list[float]:
         """Cluster nearby price levels together."""
         if not levels:
             return []

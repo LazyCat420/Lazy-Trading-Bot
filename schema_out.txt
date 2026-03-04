@@ -1,0 +1,17 @@
+Checking All Table Primary Keys:
+  [COMPOSITE/OTHER PK] analyst_data: ['ticker', 'snapshot_date']
+  [COMPOSITE/OTHER PK] balance_sheet: ['ticker', 'year']
+  [COMPOSITE/OTHER PK] cash_flows: ['ticker', 'year']
+  [COMPOSITE/OTHER PK] earnings_calendar: ['ticker', 'snapshot_date']
+  [COMPOSITE/OTHER PK] financial_history: ['ticker', 'year']
+  [COMPOSITE/OTHER PK] fundamentals: ['ticker', 'snapshot_date']
+  [COMPOSITE/OTHER PK] insider_activity: ['ticker', 'snapshot_date']
+  [COMPOSITE/OTHER PK] news_articles: ['ticker', 'article_hash']
+  [COMPOSITE/OTHER PK] positions: ['ticker', 'bot_id']
+  [COMPOSITE/OTHER PK] price_history: ['ticker', 'date']
+  [COMPOSITE/OTHER PK] risk_metrics: ['ticker', 'computed_date']
+  [COMPOSITE/OTHER PK] sec_13f_holdings: ['cik', 'ticker', 'filing_quarter']
+  [COMPOSITE/OTHER PK] technicals: ['ticker', 'date']
+  [SINGLE TICKER PK] ticker_scores
+  [COMPOSITE/OTHER PK] watchlist: ['ticker', 'bot_id']
+  [COMPOSITE/OTHER PK] youtube_transcripts: ['ticker', 'video_id']

@@ -65,6 +65,7 @@ class TradingPipelineService:
         # ── Step 1: Get tickers ────────────────────────────────
         if not tickers:
             from app.services.watchlist_manager import WatchlistManager
+
             wm = WatchlistManager(bot_id=self._bot_id)
             tickers = wm.get_active_tickers()
 
@@ -102,11 +103,13 @@ class TradingPipelineService:
                 results.append(result)
             except Exception as exc:
                 logger.error("[TradingPipeline] Failed for %s: %s", ticker, exc)
-                results.append({
-                    "ticker": ticker,
-                    "status": "error",
-                    "error": str(exc),
-                })
+                results.append(
+                    {
+                        "ticker": ticker,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
 
         # ── Summary ────────────────────────────────────────────
         elapsed = round(time.time() - t0, 1)
@@ -122,11 +125,14 @@ class TradingPipelineService:
         }
 
         # Count orders for compatibility with autonomous_loop health checks
-        summary["orders"] = len([
-            r for r in results
-            if r.get("exec_status") in ("executed", "dry_run")
-            and r.get("action") in ("BUY", "SELL")
-        ])
+        summary["orders"] = len(
+            [
+                r
+                for r in results
+                if r.get("exec_status") in ("executed", "dry_run")
+                and r.get("action") in ("BUY", "SELL")
+            ]
+        )
 
         logger.info(
             "[TradingPipeline] Done: %d decisions, %d executions in %.1fs",
@@ -142,8 +148,11 @@ class TradingPipelineService:
         return summary
 
     async def _process_ticker(
-        self, ticker: str, portfolio: dict,
-        cycle_dir=None, cycle_id: str = "",
+        self,
+        ticker: str,
+        portfolio: dict,
+        cycle_dir=None,
+        cycle_id: str = "",
     ) -> dict:
         """Process a single ticker: context → decide → execute."""
         # ── Build context ──────────────────────────────────────
@@ -202,7 +211,8 @@ class TradingPipelineService:
             except Exception as exc:
                 logger.error(
                     "[TradingPipeline] Execution failed for %s: %s",
-                    ticker, exc,
+                    ticker,
+                    exc,
                 )
                 exec_result = {"status": "error", "reason": str(exc)}
             result["exec_status"] = exec_result.get("status", "unknown")
@@ -239,7 +249,8 @@ class TradingPipelineService:
             context["last_price"] = fi.get("lastPrice", 0) or 0
             context["today_change_pct"] = (
                 ((fi.get("lastPrice", 0) / fi.get("previousClose", 1)) - 1) * 100
-                if fi.get("previousClose") else 0
+                if fi.get("previousClose")
+                else 0
             )
             context["volume"] = fi.get("lastVolume", 0) or 0
             context["avg_volume"] = fi.get("threeMonthAverageVolume", 0) or 0
@@ -250,10 +261,10 @@ class TradingPipelineService:
         # ── ATR from technicals (for risk rules) ──────────────
         try:
             from app.database import get_db
+
             db = get_db()
             row = db.execute(
-                "SELECT atr FROM technicals WHERE ticker = ? "
-                "ORDER BY date DESC LIMIT 1",
+                "SELECT atr FROM technicals WHERE ticker = ? ORDER BY date DESC LIMIT 1",
                 [ticker],
             ).fetchone()
             context["atr"] = float(row[0]) if row and row[0] else 0.0
@@ -297,10 +308,23 @@ class TradingPipelineService:
             if dossier.get("bear_case"):
                 parts.append(f"BEAR: {dossier['bear_case'][:150]}")
             context["news_summary"] = "\n".join(parts) if parts else ""
+
+            # Dossier conviction + signal for the trading agent
+            context["dossier_conviction"] = dossier.get("conviction_score", 0)
+            dossier_sig = (
+                "BUY"
+                if context["dossier_conviction"] >= 0.7
+                else "SELL"
+                if context["dossier_conviction"] <= 0.3
+                else "HOLD"
+            )
+            context["dossier_signal"] = dossier_sig
         else:
             context["technical_summary"] = ""
             context["quant_summary"] = ""
             context["news_summary"] = ""
+            context["dossier_conviction"] = 0
+            context["dossier_signal"] = "UNKNOWN"
 
         # ── Portfolio context ─────────────────────────────────
         context["portfolio_cash"] = portfolio.get("cash_balance", 0)

@@ -34,17 +34,20 @@ class NewsCollector:
         # Daily guard — skip if already scraped today
         db = get_db()
         today_start = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
         )
         existing = db.execute(
-            "SELECT COUNT(*) FROM news_articles "
-            "WHERE ticker = ? AND collected_at >= ?",
+            "SELECT COUNT(*) FROM news_articles WHERE ticker = ? AND collected_at >= ?",
             [ticker, today_start],
         ).fetchone()
         if existing and existing[0] > 0:
             logger.info(
                 "News for %s already scraped today (%d articles), skipping",
-                ticker, existing[0],
+                ticker,
+                existing[0],
             )
             return []
 
@@ -81,19 +84,24 @@ class NewsCollector:
                          published_at, summary, thumbnail_url, source)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    [a.ticker, a.article_hash, a.title, a.publisher, a.url,
-                     a.published_at, a.summary, a.thumbnail_url, a.source],
+                    [
+                        a.ticker,
+                        a.article_hash,
+                        a.title,
+                        a.publisher,
+                        a.url,
+                        a.published_at,
+                        a.summary,
+                        a.thumbnail_url,
+                        a.source,
+                    ],
                 )
                 new_count += 1
 
-        logger.info(
-            "Collected %d articles for %s (%d new)", len(articles), ticker, new_count
-        )
+        logger.info("Collected %d articles for %s (%d new)", len(articles), ticker, new_count)
         return articles
 
-    async def get_all_historical(
-        self, ticker: str, limit: int = 200
-    ) -> list[NewsArticle]:
+    async def get_all_historical(self, ticker: str, limit: int = 200) -> list[NewsArticle]:
         """Retrieve ALL stored news articles for a ticker from the database.
 
         Returns the full accumulated history — agents receive every article
@@ -153,7 +161,7 @@ class NewsCollector:
             for raw_item in news_list[:limit]:
                 # 1. Unpack modern schema if it exists
                 item = raw_item.get("content", raw_item) if isinstance(raw_item, dict) else raw_item
-                
+
                 title = item.get("title", "").strip()
                 if not title:
                     continue
@@ -167,7 +175,7 @@ class NewsCollector:
                 link = item.get("link", "") or item.get("url", "")
                 if not link and isinstance(item.get("clickThroughUrl"), dict):
                     link = item.get("clickThroughUrl", {}).get("url", "")
-                    
+
                 # 4. Extract Publish Time (New: pubDate ISO | Old: providerPublishTime INT)
                 pub_ts = item.get("providerPublishTime") or item.get("pubDate")
 
@@ -184,9 +192,7 @@ class NewsCollector:
                 if pub_ts:
                     try:
                         if isinstance(pub_ts, int | float):
-                            published_at = datetime.fromtimestamp(
-                                pub_ts, tz=timezone.utc
-                            )
+                            published_at = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
                         else:
                             # Handle ISO strings like "2026-02-27T04:16:29Z"
                             # Replace Z with +00:00 for python fromisoformat
@@ -196,9 +202,7 @@ class NewsCollector:
                         pass
 
                 # Create hash for dedup
-                article_hash = hashlib.md5(
-                    f"{title}|{publisher}".encode()
-                ).hexdigest()
+                article_hash = hashlib.md5(f"{title}|{publisher}".encode()).hexdigest()
 
                 articles.append(
                     NewsArticle(
@@ -259,15 +263,11 @@ class NewsCollector:
                 pub_parsed = entry.get("published_parsed")
                 if pub_parsed:
                     try:
-                        published_at = datetime(
-                            *pub_parsed[:6], tzinfo=timezone.utc
-                        )
+                        published_at = datetime(*pub_parsed[:6], tzinfo=timezone.utc)
                     except (TypeError, ValueError):
                         pass
 
-                article_hash = hashlib.md5(
-                    f"gnews|{title}|{publisher}".encode()
-                ).hexdigest()
+                article_hash = hashlib.md5(f"gnews|{title}|{publisher}".encode()).hexdigest()
 
                 articles.append(
                     NewsArticle(
@@ -317,18 +317,42 @@ class NewsCollector:
 
                 for hit in hits[:limit]:
                     source = hit.get("_source", {})
-                    title = source.get("display_names", [f"{ticker} SEC Filing"])[0] if source.get("display_names") else source.get("file_description", f"{ticker} SEC Filing")
+                    title = (
+                        source.get("display_names", [f"{ticker} SEC Filing"])[0]
+                        if source.get("display_names")
+                        else source.get("file_description", f"{ticker} SEC Filing")
+                    )
                     form_type = source.get("form_type", "")
                     filed = source.get("file_date", "")
                     accession = source.get("accession_no", "").replace("-", "")
+                    file_desc = source.get("file_description", "")
+                    entity_name = source.get("entity_name", ticker)
+                    period = source.get("period_of_report", "")
 
-                    link = f"https://www.sec.gov/Archives/edgar/data/{accession}" if accession else ""
-                    summary = f"Form {form_type}" if form_type else ""
+                    link = (
+                        f"https://www.sec.gov/Archives/edgar/data/{accession}" if accession else ""
+                    )
+
+                    # Build a meaningful summary from available fields
+                    summary_parts = []
+                    if form_type:
+                        summary_parts.append(f"Form {form_type}")
+                    if file_desc:
+                        summary_parts.append(file_desc)
+                    if entity_name and entity_name != ticker:
+                        summary_parts.append(f"Filed by {entity_name}")
+                    if period:
+                        summary_parts.append(f"Period: {period}")
+                    elif filed:
+                        summary_parts.append(f"Filed: {filed}")
+                    summary = " | ".join(summary_parts) if summary_parts else f"{ticker} SEC Filing"
 
                     published_at = None
                     if filed:
                         try:
-                            published_at = datetime.strptime(filed, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                            published_at = datetime.strptime(filed, "%Y-%m-%d").replace(
+                                tzinfo=timezone.utc
+                            )
                         except ValueError:
                             pass
 
@@ -349,9 +373,7 @@ class NewsCollector:
                         )
                     )
             else:
-                logger.warning(
-                    "SEC EDGAR API returned %d for %s", resp.status_code, ticker
-                )
+                logger.warning("SEC EDGAR API returned %d for %s", resp.status_code, ticker)
 
         except Exception as e:
             logger.error("SEC EDGAR fetch failed for %s: %s", ticker, e)

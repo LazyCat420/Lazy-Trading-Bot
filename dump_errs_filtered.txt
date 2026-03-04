@@ -1,0 +1,6 @@
+[2026-03-02 14:36:57.722502] Execution 174335fb (Decision c997e182): Constraint Error: Duplicate key "ticker: KO" violates primary key constraint.
+[2026-03-02 14:37:17.706469] Execution 67a53d9e (Decision 944fc8db): Constraint Error: Duplicate key "ticker: NVDA" violates primary key constraint.
+[2026-03-02 16:22:12.730207] Execution c4663925 (Decision 19789d42): Constraint Error: Duplicate key "ticker: KO" violates primary key constraint.
+[2026-03-02 16:22:30.977049] Execution 38626006 (Decision 64cc6d70): Constraint Error: Duplicate key "ticker: NVDA" violates primary key constraint.
+[2026-03-02 16:22:55.069508] Execution 58b0ad88 (Decision f8262b36): Constraint Error: Duplicate key "ticker: AAPL" violates primary key constraint.
+[2026-03-02 16:23:31.582390] Execution c709c861 (Decision 072b8e1d): Constraint Error: Duplicate key "ticker: LLY" violates primary key constraint.

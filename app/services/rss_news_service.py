@@ -96,9 +96,7 @@ class RSSNewsCollector:
             )
             return self._get_recent_from_db()
 
-        logger.info(
-            "[RSS News] Starting full-article collection from %d feeds", len(RSS_FEEDS)
-        )
+        logger.info("[RSS News] Starting full-article collection from %d feeds", len(RSS_FEEDS))
 
         all_articles: list[dict[str, Any]] = []
         for feed_config in RSS_FEEDS:
@@ -117,9 +115,7 @@ class RSSNewsCollector:
                     e,
                 )
 
-        logger.info(
-            "[RSS News] Total: %d articles with full content", len(all_articles)
-        )
+        logger.info("[RSS News] Total: %d articles with full content", len(all_articles))
         return all_articles
 
     async def get_articles_for_ticker(self, ticker: str) -> list[dict[str, Any]]:
@@ -184,18 +180,14 @@ class RSSNewsCollector:
                 ScoredTicker(
                     ticker=ticker,
                     discovery_score=float(count) * 1.0,
-                    source="reddit",  # Use "reddit" as fallback since Literal is limited
+                    source="rss_news",
                     source_detail=f"Mentioned in {count} news articles",
                     sentiment_hint="neutral",
-                    context_snippets=[
-                        f"Found in {count} recent financial news articles"
-                    ],
+                    context_snippets=[f"Found in {count} recent financial news articles"],
                 )
             )
 
-        logger.info(
-            "[RSS News] Generated %d discovery tickers from articles", len(tickers)
-        )
+        logger.info("[RSS News] Generated %d discovery tickers from articles", len(tickers))
         return tickers
 
     # ── Private: feed scraping ───────────────────────────────────
@@ -230,9 +222,7 @@ class RSSNewsCollector:
                 continue
 
             # Generate hash for dedup
-            article_hash = hashlib.md5(
-                f"{feed_name}|{title}|{url}".encode()
-            ).hexdigest()[:16]
+            article_hash = hashlib.md5(f"{feed_name}|{title}|{url}".encode()).hexdigest()[:16]
 
             # Skip if already in DB
             existing = db.execute(
@@ -334,9 +324,7 @@ class RSSNewsCollector:
 
                 self._newspaper_available = True
             except ImportError:
-                logger.warning(
-                    "[RSS News] newspaper3k not installed — pip install newspaper3k"
-                )
+                logger.warning("[RSS News] newspaper3k not installed — pip install newspaper3k")
                 self._newspaper_available = False
 
         if not self._newspaper_available:
@@ -380,6 +368,7 @@ class RSSNewsCollector:
         """
         # Common false positives to exclude
         exclusions = {
+            # English words (2-3 letter)
             "THE",
             "AND",
             "FOR",
@@ -389,6 +378,83 @@ class RSSNewsCollector:
             "WAS",
             "HAS",
             "HAD",
+            "ITS",
+            "ALL",
+            "NEW",
+            "NOW",
+            "WAY",
+            "MAY",
+            "SAY",
+            "SHE",
+            "HER",
+            "HIS",
+            "HOW",
+            "TOP",
+            "BIG",
+            "OLD",
+            "FAR",
+            "ONE",
+            "TWO",
+            "CAN",
+            "DID",
+            "GET",
+            "GOT",
+            "LET",
+            "PUT",
+            "RUN",
+            "SET",
+            "TRY",
+            "USE",
+            "OUR",
+            "OWN",
+            "WHY",
+            "WHO",
+            "FEW",
+            "ANY",
+            "END",
+            "ADD",
+            "AGO",
+            "AID",
+            "AIM",
+            "ASK",
+            "BAN",
+            "BAD",
+            "BET",
+            "BIT",
+            "BUY",
+            "CUT",
+            "DUE",
+            "ERA",
+            "FIT",
+            "HIT",
+            "JOB",
+            "KEY",
+            "LAW",
+            "LAY",
+            "LED",
+            "LOG",
+            "LOW",
+            "MAP",
+            "MET",
+            "MIX",
+            "NET",
+            "ODD",
+            "OIL",
+            "PAY",
+            "PER",
+            "RAW",
+            "RED",
+            "ROW",
+            "SAT",
+            "SIT",
+            "SIX",
+            "TAX",
+            "TEN",
+            "TIP",
+            "VIA",
+            "WON",
+            "YET",
+            # English words (4-5 letter)
             "WITH",
             "THIS",
             "THAT",
@@ -412,24 +478,111 @@ class RSSNewsCollector:
             "YOUR",
             "SOME",
             "THEN",
-            "ITS",
-            "ALL",
-            "NEW",
-            "NOW",
-            "WAY",
-            "MAY",
-            "SAY",
-            "SHE",
-            "HER",
-            "HIS",
-            "HOW",
-            "TOP",
-            "BIG",
-            "OLD",
-            "FAR",
-            "ONE",
-            "TWO",
+            "BACK",
+            "BEST",
+            "BOTH",
+            "CALL",
+            "COME",
+            "DOWN",
+            "EVEN",
+            "FIND",
+            "GOOD",
+            "HERE",
+            "HIGH",
+            "HOME",
+            "KEEP",
+            "LAST",
+            "LONG",
+            "LOOK",
+            "MOST",
+            "MUCH",
+            "MUST",
+            "NAME",
+            "NEXT",
+            "ONLY",
+            "OPEN",
+            "PART",
+            "PLAN",
+            "REAL",
+            "SAME",
+            "SHOW",
+            "SIDE",
+            "TAKE",
+            "TELL",
+            "TURN",
+            "WELL",
+            "WORK",
+            "YEAR",
+            "SAYS",
+            "SAID",
+            "GOES",
+            "GONE",
+            "SEEN",
+            "WEEK",
+            "DEAL",
+            "MOVE",
+            "NEED",
+            "NEAR",
+            "RISE",
+            "FELL",
+            "LIVE",
+            "FREE",
+            "FULL",
+            "READ",
+            "LEAD",
+            "HALF",
+            "GAVE",
+            "ADDS",
+            "LOSS",
+            "TEAM",
+            "HOLD",
+            "SELL",
+            "PUSH",
+            "JUMP",
+            "DROP",
+            "FLAT",
+            "GAIN",
+            "HITS",
+            "LATE",
+            "FACE",
+            "HELP",
+            "LACK",
+            "NOTE",
+            "SEES",
+            "SENT",
+            "SIGN",
+            "SOLD",
+            "SOON",
+            "STAY",
+            "STEP",
+            "TALK",
+            "TOOK",
+            "VIEW",
+            "VOTE",
+            "WARN",
+            "EYES",
+            "AMID",
+            "FIRM",
+            "GROW",
+            "LEFT",
+            "MARK",
+            "PASS",
+            "RACE",
+            "RISK",
+            "RULE",
+            "SAVE",
+            "TEST",
+            "USED",
+            "WRAP",
+            "HUGE",
+            "PLAY",
+            "RATE",
+            "DEEP",
+            # Financial / business terms
             "CEO",
+            "CFO",
+            "CTO",
+            "COO",
             "SEC",
             "IPO",
             "GDP",
@@ -437,18 +590,70 @@ class RSSNewsCollector:
             "FED",
             "NYSE",
             "ETF",
-            "AI",
+            "LLC",
+            "INC",
+            "CORP",
+            "EBIT",
+            "GAAP",
+            "REIT",
+            "ESG",
+            "DEI",
+            "ROI",
+            "EPS",
+            "PE",
+            "SPAC",
+            "FDIC",
+            "FOMC",
+            "OPEC",
+            "OECD",
+            "IMF",
+            # Media / data providers (top false positives)
+            "CNBC",
+            "WSJ",
+            "BBC",
+            "CNN",
+            "FOX",
+            "NBC",
+            "ABC",
+            "CBS",
+            "NPR",
+            "PBS",
+            "LSEG",
+            "AP",
+            "CNET",
+            # Countries / regions / currencies
+            "UAE",
             "US",
             "USA",
             "UK",
             "EU",
-            "CEO",
-            "CFO",
-            "CTO",
-            "COO",
-            "LLC",
-            "INC",
-            "CORP",
+            "EUR",
+            "USD",
+            "GBP",
+            "JPY",
+            "CNY",
+            "CAD",
+            "AUD",
+            "NZD",
+            # Tech terms
+            "AI",
+            "API",
+            "GPU",
+            "CPU",
+            "RAM",
+            "SSD",
+            "IOT",
+            "VPN",
+            "DNS",
+            "SSL",
+            "HTTP",
+            # Other frequent false positives
+            "TV",
+            "NEWS",
+            "EDIT",
+            "BLOG",
+            "POST",
+            "TECH",
         }
 
         # Find $TICKER patterns (most reliable)

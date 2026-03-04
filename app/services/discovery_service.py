@@ -6,19 +6,18 @@ Runs all collectors IN PARALLEL, merges scores, persists to DuckDB.
 from __future__ import annotations
 
 import asyncio
-
 import time
 from datetime import datetime
 from typing import Any
 
+from app.database import get_db
+from app.models.discovery import DiscoveryResult, ScoredTicker
 from app.services.congress_service import CongressCollector
 from app.services.reddit_service import RedditCollector
 from app.services.rss_news_service import RSSNewsCollector
 from app.services.sec_13f_service import SEC13FCollector
 from app.services.ticker_scanner import TickerScanner
 from app.services.youtube_service import YouTubeCollector
-from app.database import get_db
-from app.models.discovery import DiscoveryResult, ScoredTicker
 from app.utils.logger import logger
 
 
@@ -65,8 +64,7 @@ class DiscoveryService:
         remaining = dt_after + ts_after
 
         logger.info(
-            "[Discovery] clear_data complete — "
-            "remaining: discovered_tickers=%d, ticker_scores=%d",
+            "[Discovery] clear_data complete — remaining: discovered_tickers=%d, ticker_scores=%d",
             dt_after,
             ts_after,
         )
@@ -95,9 +93,7 @@ class DiscoveryService:
         self._running = True
         start = time.time()
         logger.info("=" * 70)
-        logger.info(
-            "[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers
-        )
+        logger.info("[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers)
         logger.info("=" * 70)
 
         reddit_tickers: list[ScoredTicker] = []
@@ -126,7 +122,7 @@ class DiscoveryService:
                     elapsed,
                 )
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 elapsed = time.time() - t0
                 logger.error(
                     "[Discovery] %s TIMED OUT after %.1fs — skipping",
@@ -211,6 +207,7 @@ class DiscoveryService:
         # mega-caps (AAPL, MSFT, NVDA) that dominate every data source.
         try:
             from app.services.watchlist_manager import WatchlistManager
+
             wm = WatchlistManager()
             active_tickers = set(wm.get_active_tickers())
             if active_tickers:
@@ -229,9 +226,7 @@ class DiscoveryService:
 
         # Cap results if max_tickers is set (for faster debugging)
         if max_tickers and len(merged) > max_tickers:
-            logger.info(
-                "[Discovery] Capping results from %d to %d", len(merged), max_tickers
-            )
+            logger.info("[Discovery] Capping results from %d to %d", len(merged), max_tickers)
             merged = merged[:max_tickers]
 
         # Persist to DuckDB
@@ -304,9 +299,7 @@ class DiscoveryService:
         ).fetchone()
 
         # Last discovered_at
-        last_row = db.execute(
-            "SELECT MAX(discovered_at) FROM discovered_tickers"
-        ).fetchone()
+        last_row = db.execute("SELECT MAX(discovered_at) FROM discovered_tickers").fetchone()
 
         return {
             "is_running": self._running,
@@ -327,7 +320,9 @@ class DiscoveryService:
         }
 
     def get_latest_scores(
-        self, limit: int = 20, offset: int = 0,
+        self,
+        limit: int = 20,
+        offset: int = 0,
     ) -> dict:
         """Get latest aggregated scores from DuckDB with pagination.
 
@@ -493,6 +488,7 @@ class DiscoveryService:
                         "reddit+youtube",
                         "sec_13f",
                         "congress",
+                        "rss_news",
                         "multi",
                     }
                     if merged_source not in valid:
@@ -513,9 +509,7 @@ class DiscoveryService:
                 combined[t.ticker] = t
 
         # Sort by total score descending
-        result = sorted(
-            combined.values(), key=lambda x: x.discovery_score, reverse=True
-        )
+        result = sorted(combined.values(), key=lambda x: x.discovery_score, reverse=True)
         return result
 
     def _save_to_db(self, tickers: list[ScoredTicker]) -> None:
@@ -530,21 +524,24 @@ class DiscoveryService:
         valid_tickers = []
         for t in tickers:
             r = pipeline.run(
-                t.ticker, {"source": t.source},
+                t.ticker,
+                {"source": t.source},
             )
             if r.passed:
                 valid_tickers.append(t)
             else:
                 logger.info(
                     "[Discovery] Filtered out %s (%s)",
-                    t.ticker, r.reason,
+                    t.ticker,
+                    r.reason,
                 )
         if not valid_tickers:
             logger.info("[Discovery] All %d tickers filtered out", len(tickers))
             return
         logger.info(
             "[Discovery] %d/%d tickers passed filter",
-            len(valid_tickers), len(tickers),
+            len(valid_tickers),
+            len(tickers),
         )
         tickers = valid_tickers
 
