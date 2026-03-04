@@ -1,53 +1,52 @@
-# Portfolio UI Upgrades: Finviz Links & Deep Data Accordions
+# UI Upgrades: Internal Stock Terminal & Deep Data Accordions
 
 ## Objective
-Enhance the "Open Positions" view in the Portfolio tab so users can quickly verify charts on Finviz and dive into the underlying data/rationale for each trade without leaving the bot's interface.
+Enhance the bot's interface so users can click any ticker (in Portfolio or the Bot Leaderboard) to open an internal "Stock Terminal." This terminal will display the local data the bot scraped (charts, technicals, news, and LLM rationale) while providing external shortcut links to Finviz and Yahoo Finance. Additionally, implement a collapsible data accordion in the Portfolio view for quick context.
 
 ---
 
-## Ticket 1: Finviz Hyperlinks for Tickers
-**Goal:** Make every ticker in the Open Positions list a clickable link to Finviz.
-
-*   **Frontend Action (`app/static/terminal_app.js` or equivalent frontend logic):**
-    *   Locate the JS function that renders the open position rows.
-    *   Change the plain text rendering of the ticker to an anchor tag:
-        ```html
-        <a href="https://finviz.com/quote.ashx?t=${position.ticker}" target="_blank" class="finviz-link">${position.ticker}</a>
-        ```
-    *   **CSS:** Add styling for `.finviz-link` (e.g., standard terminal green/blue, `text-decoration: underline` on hover) so it blends with the terminal theme but clearly indicates interactivity.
-
----
-
-## Ticket 2: Backend Data Enrichment for Positions
-**Goal:** Ensure the backend portfolio endpoint returns all the "useful data" needed for the collapsible menu so the frontend doesn't have to make secondary fetch requests.
-
-*   **Backend Action (`app/main.py` routes & `app/services/paper_trader.py`):**
-    *   Update the endpoint that serves the Portfolio data (likely `/api/portfolio` or `/api/positions`).
-    *   When fetching open positions from the DuckDB `positions` table, do a `LEFT JOIN` or secondary query on the `trade_decisions` or `llm_audit_logs` tables to pull the latest context for that specific ticker and `bot_id`.
-    *   Enrich the API JSON payload to include an object of `details`. For example:
-        *   `rationale`: The LLM's reasoning for the BUY.
-        *   `confidence`: The confidence score.
-        *   `technicals`: RSI, MACD, Volume (if stored).
-        *   `entry_date`, `stop_loss`, `take_profit` (if applicable).
-
----
-
-## Ticket 3: Collapsible Details Menu (The Accordion)
-**Goal:** Add a toggleable detail pane under each stock row to display the enriched data.
+## Ticket 1: The Internal "Stock Terminal" View
+**Goal:** Create a dedicated view/modal that acts as the "source of truth" for what the bot knows about a specific stock.
 
 *   **Frontend Action (`app/static/terminal_app.js`):**
-    *   Modify the table/list generation to append an extra "detail row" or `div` right after the main position row. 
-    *   Give it a class like `.position-details` and set default CSS to `display: none;`.
-    *   Add an expand/collapse toggle button (e.g., `[+]` or `▼`) to the main row next to the ticker or at the far right.
-    *   **JS Logic:** Add an event listener to the toggle button. When clicked:
-        1. Swap the icon to `[-]` or `▲`.
-        2. Toggle the `display` property of the adjacent `.position-details` container.
-    *   **Inner Layout:** Format the detail row as a neat, terminal-styled pre-formatted text box or a CSS grid displaying the enriched backend data (Rationale, Technicals, Risk metrics).
+    *   Create a new modal or a slide-out panel (e.g., `#stock-terminal-modal`).
+    *   **Header:** Display the Ticker Symbol prominently. Next to it, add external icon links:
+        *   `[Finviz]` -> `https://finviz.com/quote.ashx?t=${ticker}`
+        *   `[Yahoo]` -> `https://finance.yahoo.com/quote/${ticker}`
+    *   **Body layout (Grid):**
+        *   *Top Section:* Price chart (using a lightweight library like Lightweight Charts or simply displaying the raw OHLCV data array the bot pulled).
+        *   *Middle Section:* Technical and Fundamental data table (RSI, MACD, Volume, etc., pulled straight from DuckDB).
+        *   *Bottom Section:* "Bot Memory" - A scrolling text box showing the scraped news articles and the LLM's summarized rationale.
+
+*   **Backend Action (`app/main.py`):**
+    *   Create a new endpoint: `GET /api/stock-terminal/{bot_id}/{ticker}`
+    *   This endpoint aggregates data from `positions`, `trade_decisions`, and `llm_audit_logs` to feed the frontend modal.
+
+---
+
+## Ticket 2: Global Ticker Click Handlers
+**Goal:** Ensure every ticker symbol across the app routes to the new Stock Terminal.
+
+*   **Frontend Action (`app/static/terminal_app.js`):**
+    *   **Portfolio View:** Convert all plain-text tickers in "Open Positions" to styled clickable links (`<a class="internal-ticker-link" data-ticker="${position.ticker}">...</a>`).
+    *   **Bot Leaderboard View:** Convert all plain-text tickers in the dropdowns (Scoreboard/Watchlist) to the same clickable link format.
+    *   **Event Listener:** Bind a global click handler to `.internal-ticker-link` that prevents default navigation, extracts the `data-ticker`, and opens the Stock Terminal Modal (fetching data from the Ticket 1 endpoint).
+
+---
+
+## Ticket 3: Collapsible Details Menu (The Portfolio Accordion)
+**Goal:** Add a toggleable detail pane under each stock row in the Portfolio so users don't *have* to open the full terminal for a quick glance.
+
+*   **Frontend Action (`app/static/terminal_app.js`):**
+    *   Modify the Portfolio table/list generation to append a hidden "detail row" (`<div class="position-details" style="display: none;">`).
+    *   Add an expand/collapse toggle button (e.g., `[+]` or `▼`) to the main row.
+    *   **JS Logic:** On click, toggle the display of the detail row.
+    *   **Content:** Display a miniaturized version of the bot's rationale and confidence score. (Data provided via the standard Portfolio API payload).
 
 ---
 
 ## Acceptance Criteria
-1. Clicking any ticker symbol in the Portfolio tab opens a new browser tab straight to its Finviz quote page.
-2. Clicking the `[+]` toggle on a position smoothly expands a panel showing the LLM's exact rationale and collected data for that trade.
-3. Clicking the toggle again collapses the panel cleanly without breaking the UI layout.
-4. The expanded data accurately reflects the historical decision data stored in DuckDB.
+1. Clicking any ticker symbol in the Portfolio tab OR the Bot Leaderboard opens the internal Stock Terminal modal.
+2. The Stock Terminal displays local database data (price, technicals, scraped news) and the LLM's thought process.
+3. The top of the Stock Terminal contains working external links to Finviz and Yahoo Finance.
+4. Clicking the `[+]` toggle on a Portfolio position smoothly expands a quick-glance panel showing the LLM's rationale.
