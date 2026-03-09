@@ -23,6 +23,11 @@ from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.llm_service import LLMService
 from app.services.paper_trader import PaperTrader
 from app.services.peer_fetcher import PeerFetcher
+from app.services.research_tools import (
+    RESEARCH_TOOL_DESCRIPTIONS,
+    RESEARCH_TOOL_NAMES,
+    TOOL_REGISTRY as RESEARCH_TOOL_REGISTRY,
+)
 from app.services.yfinance_service import YFinanceCollector
 from app.utils.logger import logger
 
@@ -116,7 +121,12 @@ IMPORTANT RULES:
 - Portfolio + market data is already provided — jump straight to analysis.
   Call get_dossier ONLY for tickers you're considering trading.
   Do NOT call get_dossier for every ticker — be selective.
+
 """
+# Append research tools to tool descriptions
+TOOL_DESCRIPTIONS += RESEARCH_TOOL_DESCRIPTIONS.replace(
+    '{"tool":', '{"action":',
+)
 
 # JSON Schema for structured output — enforces the LLM can ONLY produce
 # valid {"action": "...", "params": {...}} objects, not free-form text.
@@ -137,6 +147,8 @@ ACTION_SCHEMA = {
                 "remove_from_watchlist",
                 "schedule_wakeup",
                 "finish",
+                # Research tools
+                *RESEARCH_TOOL_NAMES,
             ],
         },
         "params": {
@@ -473,6 +485,8 @@ class PortfolioStrategist:
             "get_market_status": self._tool_get_market_status,
             "remove_from_watchlist": self._tool_remove_from_watchlist,
             "schedule_wakeup": self._tool_schedule_wakeup,
+            # Research tools (from research_tools.py)
+            **RESEARCH_TOOL_REGISTRY,
         }
 
         executor = executors.get(action_name)

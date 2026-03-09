@@ -83,6 +83,11 @@ class LLMConfigRequest(BaseModel):
     model: str | None = None
     context_size: int | None = None
     temperature: float | None = None
+    # RAG / Embedding settings
+    embedding_model: str | None = None
+    rag_enabled: bool | None = None
+    rag_top_k: int | None = None
+    rag_max_chars: int | None = None
 
 
 # ── Singleton services ──────────────────────────────────────────────
@@ -1642,6 +1647,31 @@ async def _auto_start_scheduler() -> None:
             )
     except Exception:
         logger.warning("[Boot] Could not auto-select active bot")
+
+    # ── Auto-pull embedding model for RAG ──────────────────────
+    # Ensures the embedding model (e.g. nomic-embed-text) is available
+    # in Ollama before any trading cycle tries to use it.
+    if getattr(settings, "RAG_ENABLED", True):
+        try:
+            from app.services.embedding_service import EmbeddingService
+
+            embed_svc = EmbeddingService()
+            model_ok = await embed_svc.ensure_model_loaded()
+            if model_ok:
+                logger.info(
+                    "[Boot] ✅ Embedding model ready: %s",
+                    embed_svc.model,
+                )
+            else:
+                logger.warning(
+                    "[Boot] ⚠️ Embedding model %s not available — "
+                    "RAG will be degraded until model is pulled",
+                    embed_svc.model,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[Boot] Could not pre-pull embedding model: %s", exc,
+            )
 
 
 @app.post("/api/scheduler/start")

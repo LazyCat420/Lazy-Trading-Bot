@@ -586,11 +586,14 @@ class TestActionSchema:
     def test_schema_action_enum(self):
         """Schema action should include all tool names."""
         from app.services.portfolio_strategist import ACTION_SCHEMA
+        from app.services.research_tools import RESEARCH_TOOL_NAMES
         enum = ACTION_SCHEMA["properties"]["action"]["enum"]
         expected = [
             "get_portfolio", "get_market_overview", "get_dossier",
             "get_sector_peers", "place_buy", "place_sell", "set_triggers",
             "get_market_status", "remove_from_watchlist", "schedule_wakeup",
             "finish",
+            # Research tools
+            *RESEARCH_TOOL_NAMES,
         ]
         assert set(enum) == set(expected)

@@ -46,7 +46,31 @@ fi
 source venv/bin/activate
 echo "[✓] Virtual environment activated."
 
-# ── 3. Install / update dependencies ────────────────────────────
+# ── 3. Ensure TA-Lib C library is installed ─────────────────────
+if ! ldconfig -p 2>/dev/null | grep -q libta-lib; then
+  echo "[…] TA-Lib C library not found. Installing..."
+  echo "    (requires sudo — you may be prompted for your password)"
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq libta-lib0-dev ta-lib 2>/dev/null || {
+    # If not in apt, build from source
+    echo "[…] Not in apt — building TA-Lib from source..."
+    cd /tmp
+    wget -q https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
+    tar -xzf ta-lib-0.6.4-src.tar.gz
+    cd ta-lib-0.6.4
+    ./configure --prefix=/usr/local
+    make -j"$(nproc)"
+    sudo make install
+    sudo ldconfig
+    cd "$SCRIPT_DIR"
+    rm -rf /tmp/ta-lib-0.6.4 /tmp/ta-lib-0.6.4-src.tar.gz
+  }
+  echo "[✓] TA-Lib C library installed."
+else
+  echo "[✓] TA-Lib C library found."
+fi
+
+# ── 4. Install / update dependencies ────────────────────────────
 if [ "requirements.txt" -nt "venv/.deps_installed" ]; then
   echo "[…] Installing dependencies (this may take a minute)..."
   pip install --upgrade pip --quiet
@@ -57,10 +81,51 @@ else
   echo "[✓] Dependencies up to date."
 fi
 
-# ── 4. Ensure data directories exist ────────────────────────────
+# ── 5. Pre-pull embedding model for RAG ─────────────────────────
+# Read embedding model + Ollama URL from llm_config.json if set
+EMBED_MODEL="nomic-embed-text:latest"
+OLLAMA_URL="http://localhost:11434"
+LLM_CONFIG="app/user_config/llm_config.json"
+if [ -f "$LLM_CONFIG" ]; then
+  CUSTOM_EMBED=$(python3 -c "
+import json
+try:
+    d = json.load(open('$LLM_CONFIG'))
+    print(d.get('embedding_model', ''))
+except: pass
+" 2>/dev/null)
+  if [ -n "$CUSTOM_EMBED" ]; then
+    EMBED_MODEL="$CUSTOM_EMBED"
+  fi
+  CUSTOM_URL=$(python3 -c "
+import json
+try:
+    d = json.load(open('$LLM_CONFIG'))
+    print(d.get('ollama_url', ''))
+except: pass
+" 2>/dev/null)
+  if [ -n "$CUSTOM_URL" ]; then
+    OLLAMA_URL="$CUSTOM_URL"
+  fi
+fi
+echo "[…] Ensuring embedding model '$EMBED_MODEL' is available..."
+# Use the HTTP API (not CLI) — the ollama binary may not be on PATH in VS Code
+if curl -sf "$OLLAMA_URL/api/show" -d "{\"name\": \"$EMBED_MODEL\"}" >/dev/null 2>&1; then
+  echo "[✓] Embedding model '$EMBED_MODEL' already pulled."
+else
+  echo "[…] Pulling embedding model '$EMBED_MODEL' (first time only)..."
+  curl -sf "$OLLAMA_URL/api/pull" -d "{\"name\": \"$EMBED_MODEL\", \"stream\": false}" >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    echo "[✓] Embedding model pulled."
+  else
+    echo "[⚠] Could not pull embedding model — server will retry at startup."
+  fi
+fi
+
+# ── 6. Ensure data directories exist ────────────────────────────
 mkdir -p data/cache data/reports logs
 
-# ── 5. Launch the server ─────────────────────────────────────────
+# ── 7. Launch the server ─────────────────────────────────────────
 echo
 echo "========================================="
 echo "  Starting server on http://localhost:8000"

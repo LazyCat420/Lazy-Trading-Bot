@@ -190,6 +190,11 @@ class Settings:
             "num_experts": self.LLM_NUM_EXPERTS,
             "gpu_offload": self.LLM_GPU_OFFLOAD,
             "system_total_vram_gb": self.SYSTEM_TOTAL_VRAM_GB,
+            # RAG settings
+            "embedding_model": self.RAG_EMBEDDING_MODEL,
+            "rag_enabled": self.RAG_ENABLED,
+            "rag_top_k": self.RAG_TOP_K,
+            "rag_max_chars": self.RAG_MAX_CHARS,
         }
         # Attach VRAM measurement data for the current model (if cached)
         vram = self.LLM_VRAM_MEASUREMENTS.get(self.LLM_MODEL)

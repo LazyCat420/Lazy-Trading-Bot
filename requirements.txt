@@ -9,7 +9,12 @@ apscheduler>=3.10.0
 yfinance>=0.2.50
 pandas>=2.2.0
 pandas-ta>=0.3.14b
+TA-Lib>=0.4.32
 lxml>=5.0.0
+
+# YouTube
+youtube-transcript-api>=0.6.3
+yt-dlp>=2024.1.0
 
 # Database
 duckdb>=1.2.0
@@ -20,9 +25,6 @@ httpx>=0.28.0
 # Deep Analysis (4-Layer Funnel)
 rank-bm25>=0.2.2
 scipy>=1.14.0
-
-# YouTube Transcripts
-youtube-transcript-api>=0.6.3
 
 # News Scraping
 beautifulsoup4>=4.12.0
