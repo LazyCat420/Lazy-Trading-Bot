@@ -1,4 +1,4 @@
-"""Windows-optimized server entry point."""
+"""Server entry point."""
 
 import uvicorn
 

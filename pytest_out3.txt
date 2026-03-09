@@ -322,7 +322,7 @@ app\services\paper_trader.py:579: in _ensure_initial_balance
 app\database.py:19: in get_db
     _connection = duckdb.connect(db_path)
                   ^^^^^^^^^^^^^^^^^^^^^^^
-E   _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
+E   _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
 E   
 E   File is already open in 
 E   D:\Miniconda3\python.exe (PID 21140)
@@ -386,7 +386,7 @@ venv\Lib\site-packages\pandas_ta\__init__.py:37
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ===========================
-ERROR example_repos/Trading-Terminal/tests/test_api.py - _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
+ERROR example_repos/Trading-Terminal/tests/test_api.py - _duckdb.IOException: IO Error: Cannot open file "d:\github\lazy-trading-bot\data\trading_bot.duckdb": The process cannot access the file because it is being used by another process.
 ERROR scripts/test_ollama_parallel.py
 ERROR test_freeze_results.txt - UnicodeDecodeError: 'utf-8' codec can't decod...
 ERROR test_import_output.txt - UnicodeDecodeError: 'utf-8' codec can't decode...

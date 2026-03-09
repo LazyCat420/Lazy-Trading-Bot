@@ -53,7 +53,6 @@ DEFAULT_FILERS: list[dict[str, str]] = [
     {"cik": "0001167483", "name": "DE Shaw & Co"},
     {"cik": "0001040127", "name": "AQR Capital Management"},
     {"cik": "0001009207", "name": "Millennium Management"},
-    {"cik": "0001116304", "name": "Pershing Square Capital"},
     {"cik": "0001079114", "name": "Viking Global Investors"},
     {"cik": "0001029160", "name": "Druckenmiller (Duquesne Family Office)"},
     {"cik": "0001541617", "name": "Coatue Management"},

@@ -101,8 +101,8 @@ class DeepAnalysisService:
             if rows:
                 cols = [d[0] for d in db.description]
                 prices = [dict(zip(cols, r)) for r in rows]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] price_history fetch failed for %s: %s", ticker, exc)
 
         # Technicals
         technicals = []
@@ -114,8 +114,8 @@ class DeepAnalysisService:
             if rows:
                 cols = [d[0] for d in db.description]
                 technicals = [dict(zip(cols, r)) for r in rows]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] technicals fetch failed for %s: %s", ticker, exc)
 
         # Fundamentals
         fundamentals = None
@@ -128,29 +128,68 @@ class DeepAnalysisService:
             if row:
                 cols = [d[0] for d in db.description]
                 fundamentals = dict(zip(cols, row))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] fundamentals fetch failed for %s: %s", ticker, exc)
 
         # Risk metrics
         risk_metrics = None
         try:
             row = db.execute(
                 "SELECT * FROM risk_metrics WHERE ticker = ? "
-                "ORDER BY computed_at DESC LIMIT 1",
+                "ORDER BY computed_date DESC LIMIT 1",
                 [ticker],
             ).fetchone()
             if row:
                 cols = [d[0] for d in db.description]
                 risk_metrics = dict(zip(cols, row))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] risk_metrics fetch failed for %s: %s", ticker, exc)
+
+        # Financial history (revenue trajectory for distiller)
+        financial_history = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM financial_history WHERE ticker = ? ORDER BY year",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                financial_history = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] financial_history fetch failed for %s: %s", ticker, exc)
+
+        # Balance sheet (for Altman Z-Score context)
+        balance_sheet = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM balance_sheet WHERE ticker = ? ORDER BY year DESC",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                balance_sheet = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] balance_sheet fetch failed for %s: %s", ticker, exc)
+
+        # Cash flows (for FCF yield, earnings quality)
+        cashflow = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM cash_flows WHERE ticker = ? ORDER BY year DESC",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                cashflow = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] cash_flows fetch failed for %s: %s", ticker, exc)
 
         # Distill all data (pure Python — no LLM)
         price_analysis = self._distiller.distill_price_action(
             prices, technicals, scorecard,
         )
         fund_analysis = self._distiller.distill_fundamentals(
-            fundamentals, [], [], [], scorecard,
+            fundamentals, financial_history, balance_sheet, cashflow, scorecard,
         )
         risk_analysis = self._distiller.distill_risk(risk_metrics, scorecard)
 

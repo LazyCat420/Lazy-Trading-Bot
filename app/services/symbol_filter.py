@@ -68,6 +68,23 @@ class ExclusionListFilter:
         return FilterResult(True, "", symbol)
 
 
+class ForeignExchangeFilter:
+    """Reject non-US exchange suffixes (.MX, .L, .TO, etc)."""
+
+    _FOREIGN_SUFFIXES = {
+        ".MX", ".L", ".TO", ".SA", ".DE", ".PA", ".HK",
+        ".SS", ".SZ", ".TW", ".AX", ".NS", ".BO", ".KS",
+    }
+
+    def apply(self, symbol: str, ctx: dict[str, Any]) -> FilterResult:
+        for suffix in self._FOREIGN_SUFFIXES:
+            if symbol.endswith(suffix):
+                return FilterResult(
+                    False, f"foreign_exchange:{suffix}", symbol,
+                )
+        return FilterResult(True, "", symbol)
+
+
 class UserExclusionFilter:
     """Check user_exclusions table (bot-scoped)."""
 
@@ -165,6 +182,7 @@ def get_filter_pipeline() -> FilterPipeline:
         _pipeline = FilterPipeline([
             NormalizeFilter(),
             FormatFilter(),
+            ForeignExchangeFilter(),
             ExclusionListFilter(),
             UserExclusionFilter(),
             AssetCheckFilter(),

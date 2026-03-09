@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\embedding_service.py
+# hypothesis_version: 6.151.9
+
+[0.05, 0.1, 120.0, 200, 300, 2048, ',', '/', 'MED', 'RAG_EMBEDDING_MODEL', 'SWING', 'UNKNOWN', 'by_type', 'channel', 'chunks', 'decision', 'decisions', 'elapsed_s', 'embedded', 'embeddings', 'input', 'model', 'news', 'pending', 'raw_transcript', 'reddit', 'rejected', 'skipped', 'sources', 'title', 'total_chunks', 'total_embedded', 'total_sources', 'video_id', 'youtube']

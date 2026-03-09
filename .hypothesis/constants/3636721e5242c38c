@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\trading_agent.py
+# hypothesis_version: 6.151.9
+
+[0.2, 0.8, 32768, '?', 'LLM_CONTEXT_SIZE', 'UNKNOWN', 'avg_volume', 'default', 'dossier_conviction', 'dossier_signal', 'existing_position', 'json', 'last_price', 'max_position_pct', 'news_summary', 'portfolio_cash', 'portfolio_value', 'qty', 'quant_flags', 'quant_summary', 'symbol', 'technical_summary', 'today_change_pct', 'trading_decision', 'volume']

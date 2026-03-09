@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\symbol_filter.py
+# hypothesis_version: 6.151.9
+
+[500, '$', '.AX', '.BO', '.DE', '.HK', '.KS', '.L', '.MX', '.NS', '.PA', '.SA', '.SS', '.SZ', '.TO', '.TW', '?', '\\s+', 'bot_id', 'created_at', 'default', 'exclusion_list', 'last_price', 'no_market_data', 'raw', 'reason', 'source', 'symbol', 'unknown', 'user_deleted', 'user_excluded', 'yfinance_error']

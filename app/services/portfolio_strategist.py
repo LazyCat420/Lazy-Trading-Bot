@@ -1044,7 +1044,16 @@ class PortfolioStrategist:
             if raw:
                 user_strategy = f"\n\n## User Custom Strategy\n\n{raw}"
 
-        return f"{strategy}{user_strategy}\n\n{TOOL_DESCRIPTIONS}"
+        # ── Cash awareness header ──────────────────────────────
+        # Inject current cash balance so the LLM knows upfront
+        # whether BUY actions are feasible (prevents wasted turns)
+        cash = self._trader.get_cash_balance()
+        cash_header = (
+            f"⚠️ CURRENT CASH AVAILABLE: ${cash:,.2f}\n"
+            f"{'DO NOT attempt BUY orders — insufficient funds.' if cash < 50 else ''}\n\n"
+        )
+
+        return f"{cash_header}{strategy}{user_strategy}\n\n{TOOL_DESCRIPTIONS}"
 
     # NOTE: _format_conversation was removed. LLMService.chat() now accepts
     # a native messages array, so multi-turn conversations are passed

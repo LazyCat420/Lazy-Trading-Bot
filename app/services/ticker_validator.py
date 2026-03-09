@@ -223,9 +223,10 @@ class TickerValidator:
         "WHITE", "WHOLE", "WHOSE", "WIDER", "WIDTH", "WOMAN", "WOMEN",
         "WORLD", "WORRY", "WORSE", "WORST", "WORTH", "WOULD", "WOUND",
         "WRIST", "WRITE", "WRONG", "WROTE", "YIELD", "YOUNG", "YOUTH",
-        # ── Government / org acronyms ──
+        # ── Government / org acronyms + known bad tickers ──
         "CEO", "CFO", "COO", "SEC", "GDP", "USA", "IRS", "FBI", "CIA",
         "NASA", "NATO", "JOBS", "DEPT", "CORP", "GOVT", "EURO", "ASIA",
+        "CNBC",  # Closed-end fund ticker — no usable data, always crashes
     }
 
     def __init__(self) -> None:

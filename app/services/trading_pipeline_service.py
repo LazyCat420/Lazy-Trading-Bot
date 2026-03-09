@@ -37,6 +37,7 @@ class TradingPipelineService:
         *,
         dry_run: bool = True,
         bot_id: str = "default",
+        query_vector_cache: dict[str, list[float]] | None = None,
     ) -> None:
         self._trader = paper_trader
         self._agent = TradingAgent()
@@ -45,6 +46,7 @@ class TradingPipelineService:
         self._artifacts = ArtifactLogger()
         self._dry_run = dry_run
         self._bot_id = bot_id
+        self._query_vector_cache = query_vector_cache or {}
 
     async def run_once(
         self,
@@ -97,10 +99,45 @@ class TradingPipelineService:
         portfolio = self._trader.get_portfolio()
         results = []
 
+        # Priority sort: BUY-signal tickers first (most actionable),
+        # then HOLD, then SELL — so we process the best opportunities
+        # before burning LLM time on low-priority tickers.
+        _SIGNAL_PRIORITY = {"BUY": 0, "PENDING": 1, "HOLD": 2, "SELL": 3}
+        try:
+            from app.services.watchlist_manager import WatchlistManager
+            wm = WatchlistManager(bot_id=self._bot_id)
+            signals = wm.get_ticker_signals()  # {ticker: signal}
+            valid_tickers.sort(
+                key=lambda t: _SIGNAL_PRIORITY.get(signals.get(t, "PENDING"), 1),
+            )
+            logger.info(
+                "[TradingPipeline] Sorted %d tickers by signal priority",
+                len(valid_tickers),
+            )
+        except Exception:
+            pass  # Sort is best-effort
+
+        _MAX_ORDERS_PER_CYCLE = 5
+        orders_this_cycle = 0
+
         for ticker in valid_tickers:
+            # Early termination: stop if we've hit the daily trade limit
+            if orders_this_cycle >= _MAX_ORDERS_PER_CYCLE:
+                logger.info(
+                    "[TradingPipeline] Hit %d-order limit — skipping remaining tickers",
+                    _MAX_ORDERS_PER_CYCLE,
+                )
+                break
+
             try:
                 result = await self._process_ticker(ticker, portfolio, cycle_dir, cycle_id)
                 results.append(result)
+                is_order = (
+                    result.get("exec_status") in ("executed", "dry_run")
+                    and result.get("action") in ("BUY", "SELL")
+                )
+                if is_order:
+                    orders_this_cycle += 1
             except Exception as exc:
                 logger.error("[TradingPipeline] Failed for %s: %s", ticker, exc)
                 results.append(
@@ -165,6 +202,56 @@ class TradingPipelineService:
 
         # ── Get LLM decision ──────────────────────────────────
         action, raw_llm = await self._agent.decide(context, self._bot_id)
+
+        # ── Post-LLM sanity check (BUY bias guardrail) ────────
+        flags = set(context.get("quant_flags", []))
+        conviction = context.get("dossier_conviction", 0.5)
+        dossier_sig = context.get("dossier_signal", "UNKNOWN")
+
+        if action.action == "BUY":
+            override_reason = ""
+            # Rule: Can't BUY against a SELL verdict
+            if dossier_sig == "SELL":
+                override_reason = (
+                    f"quant verdict is SELL (conviction={conviction:.0%})"
+                )
+            # Rule: Bankruptcy risk = forced HOLD
+            elif "bankruptcy_risk_high" in flags:
+                override_reason = "bankruptcy_risk_high flag present"
+            # Rule: Drawdown + negative Sortino = forced SELL
+            elif (
+                "drawdown_exceeds_20pct" in flags
+                and "negative_sortino" in flags
+            ):
+                override_reason = (
+                    "drawdown_exceeds_20pct + negative_sortino"
+                )
+                action.action = "SELL"
+                action.confidence = min(action.confidence, 0.40)
+            # Rule: Low conviction = forced HOLD
+            elif conviction < 0.35 and action.confidence > 0.60:
+                override_reason = (
+                    f"conviction={conviction:.0%} too low for "
+                    f"BUY confidence={action.confidence:.0%}"
+                )
+
+            if override_reason and action.action == "BUY":
+                logger.warning(
+                    "[TradingPipeline] BUY override for %s → HOLD: %s",
+                    ticker, override_reason,
+                )
+                action.action = "HOLD"
+                action.confidence = min(action.confidence, 0.40)
+                action.risk_notes = (
+                    f"[GUARDRAIL] {override_reason}. "
+                    f"Original: BUY. {action.risk_notes or ''}"
+                )
+            elif override_reason:
+                # Action was changed to SELL by a specific rule above
+                logger.warning(
+                    "[TradingPipeline] BUY override for %s → %s: %s",
+                    ticker, action.action, override_reason,
+                )
 
         # ── Log decision ──────────────────────────────────────
         decision_id = DecisionLogger.log_decision(action, raw_llm)
@@ -319,12 +406,66 @@ class TradingPipelineService:
                 else "HOLD"
             )
             context["dossier_signal"] = dossier_sig
+
+            # Extract quant flags for risk override rules
+            sc_flags = sc.get("flags", [])
+            if isinstance(sc_flags, str):
+                import json as _json
+                try:
+                    sc_flags = _json.loads(sc_flags)
+                except Exception:
+                    sc_flags = []
+            context["quant_flags"] = sc_flags if isinstance(sc_flags, list) else []
         else:
             context["technical_summary"] = ""
             context["quant_summary"] = ""
             context["news_summary"] = ""
             context["dossier_conviction"] = 0
             context["dossier_signal"] = "UNKNOWN"
+            context["quant_flags"] = []
+
+        # ── RAG context (retrieved from embedded data) ────────
+        try:
+            from app.config import settings as _cfg
+
+            if getattr(_cfg, "RAG_ENABLED", True):
+                from app.services.retrieval_service import RetrievalService
+
+                rag_svc = RetrievalService()
+                cached_vec = self._query_vector_cache.get(ticker)
+                if cached_vec:
+                    logger.info(
+                        "[TradingPipeline] RAG: using cached vector for %s",
+                        ticker,
+                    )
+                else:
+                    logger.info(
+                        "[TradingPipeline] RAG: no cached vector for %s, "
+                        "attempting live embed",
+                        ticker,
+                    )
+                context["rag_context"] = await rag_svc.retrieve_for_trading(
+                    ticker,
+                    query_vector=cached_vec,
+                )
+                if context["rag_context"]:
+                    logger.info(
+                        "[TradingPipeline] RAG: injected %d chars for %s",
+                        len(context["rag_context"]), ticker,
+                    )
+                else:
+                    logger.info(
+                        "[TradingPipeline] RAG: no relevant context for %s",
+                        ticker,
+                    )
+            else:
+                context["rag_context"] = ""
+        except Exception as exc:
+            logger.warning(
+                "[TradingPipeline] RAG retrieval failed for %s: %s",
+                ticker, exc,
+            )
+            context["rag_context"] = ""
 
         # ── Portfolio context ─────────────────────────────────
         context["portfolio_cash"] = portfolio.get("cash_balance", 0)

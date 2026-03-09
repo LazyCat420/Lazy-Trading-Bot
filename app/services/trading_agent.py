@@ -26,6 +26,13 @@ RULES:
 - If the context does not support a clear trade, you MUST output HOLD.
 - Do NOT suggest further research. Make a call now.
 
+RISK OVERRIDE RULES (mandatory — these override all other reasoning):
+- If QUANT VERDICT is SELL, you MUST output HOLD or SELL. Never BUY against a SELL verdict.
+- If RISK FLAGS include "bankruptcy_risk_high", confidence MUST be below 0.50.
+- If RISK FLAGS include "drawdown_exceeds_20pct" AND "negative_sortino", output SELL.
+- If QUANT VERDICT conviction < 35%, you MUST output HOLD or SELL.
+- If RISK FLAGS include "piotroski_weak", confidence MUST be below 0.60.
+
 OUTPUT FORMAT (JSON only, no markdown):
 {
   "action": "BUY" | "SELL" | "HOLD",
@@ -151,6 +158,14 @@ class TradingAgent:
         if news:
             parts.append(f"\nNEWS DIGEST:\n{news}")
 
+        # RAG-retrieved market intelligence
+        rag = ctx.get("rag_context", "")
+        if rag:
+            parts.append(
+                f"\nMARKET INTELLIGENCE (retrieved context from recent "
+                f"market sources):\n{rag}"
+            )
+
         # Portfolio context
         cash = ctx.get("portfolio_cash", 0)
         pv = ctx.get("portfolio_value", 0)
@@ -164,6 +179,11 @@ class TradingAgent:
         sig = ctx.get("dossier_signal", "UNKNOWN")
         if conv or sig != "UNKNOWN":
             parts.append(f"\nQUANT VERDICT: {sig} (conviction={conv:.0%})")
+
+        # Risk flags from quant scorecard
+        flags = ctx.get("quant_flags", [])
+        if flags:
+            parts.append(f"RISK FLAGS: {', '.join(flags)}")
 
         # Existing position
         pos = ctx.get("existing_position", {})

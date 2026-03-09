@@ -188,7 +188,10 @@ class YouTubeCollector:
         new_videos = []
         for vid in recent_videos:
             existing = db.execute(
-                "SELECT 1 FROM youtube_transcripts WHERE video_id = ?",
+                "SELECT 1 FROM youtube_transcripts "
+                "WHERE video_id = ? "
+                "AND raw_transcript IS NOT NULL "
+                "AND LENGTH(raw_transcript) > 50",
                 [vid["id"]],
             ).fetchone()
             if not existing:
@@ -249,6 +252,13 @@ class YouTubeCollector:
                 raw_transcript=transcript_text,
             )
             transcripts.append(yt)
+
+            # Remove any stale empty-transcript row (from a prior failed attempt)
+            db.execute(
+                "DELETE FROM youtube_transcripts "
+                "WHERE video_id = ? AND (raw_transcript IS NULL OR raw_transcript = '')",
+                [yt.video_id],
+            )
 
             # Persist to DB (accumulates over time)
             db.execute(
@@ -356,7 +366,9 @@ class YouTubeCollector:
         for vid in long_videos:
             existing_vid = db.execute(
                 "SELECT 1 FROM youtube_transcripts "
-                "WHERE video_id = ?",
+                "WHERE video_id = ? "
+                "AND raw_transcript IS NOT NULL "
+                "AND LENGTH(raw_transcript) > 50",
                 [vid["id"]],
             ).fetchone()
             if not existing_vid:
@@ -408,6 +420,13 @@ class YouTubeCollector:
                 raw_transcript=transcript_text,
             )
             transcripts.append(yt)
+
+            # Remove any stale empty-transcript row (from a prior failed attempt)
+            db.execute(
+                "DELETE FROM youtube_transcripts "
+                "WHERE video_id = ? AND (raw_transcript IS NULL OR raw_transcript = '')",
+                [yt.video_id],
+            )
 
             db.execute(
                 """

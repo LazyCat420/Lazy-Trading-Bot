@@ -757,6 +757,25 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── RAG: Embedding vectors for retrieval-augmented generation ──
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS embeddings_seq START 1;
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id          INTEGER PRIMARY KEY DEFAULT nextval('embeddings_seq'),
+            source_type VARCHAR NOT NULL,
+            source_id   VARCHAR NOT NULL,
+            ticker      VARCHAR,
+            chunk_index INTEGER NOT NULL,
+            chunk_text  TEXT NOT NULL,
+            embedding   FLOAT[] NOT NULL,
+            metadata    VARCHAR DEFAULT '',
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (source_type, source_id, chunk_index)
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----

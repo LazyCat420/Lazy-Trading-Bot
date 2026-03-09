@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\services\embedding_service.py
+# hypothesis_version: 6.151.9
+
+[0.1, 120.0, 200, 300, 2048, '/', 'RAG_EMBEDDING_MODEL', 'by_type', 'channel', 'chunks', 'embedded', 'embeddings', 'input', 'model', 'raw_transcript', 'skipped', 'sources', 'title', 'total_chunks', 'total_sources', 'video_id', 'youtube']

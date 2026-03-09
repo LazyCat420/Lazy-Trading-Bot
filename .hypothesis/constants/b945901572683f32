@@ -1,0 +1,4 @@
+# file: D:\Github\Lazy-Trading-Bot\app\config.py
+# hypothesis_version: 6.151.9
+
+[3000, '/', '0', '0.0.0.0', '0.3', '0.6', '1.0', '180', '512', '8000', '8192', 'DRY_RUN_TRADES', 'HOST', 'LLM_CONTEXT_SIZE', 'LLM_EVAL_BATCH_SIZE', 'LLM_FLASH_ATTENTION', 'LLM_GPU_OFFLOAD', 'LLM_MAX_TOKENS', 'LLM_MODEL', 'LLM_NUM_EXPERTS', 'LLM_TEMPERATURE', 'LLM_TOP_P', 'MOCK_DATA', 'OLLAMA_URL', 'PORT', 'SEC_USER_AGENT', 'SYSTEM_TOTAL_VRAM_GB', 'USE_NEW_PIPELINE', 'cache', 'context_size', 'data', 'embedding_model', 'eval_batch_size', 'false', 'flash_attention', 'gemma3:27b', 'gpu_offload', 'last_measured_ctx', 'llm_config.json', 'logs', 'max_proven_ctx', 'max_tokens', 'model', 'model_name', 'model_stats', 'num_experts', 'ollama_url', 'prompts', 'proven_max_ctx', 'rag_enabled', 'rag_max_chars', 'rag_top_k', 'reports', 'system_total_vram_gb', 'temperature', 'top_p', 'trading_bot.duckdb', 'trading_temperature', 'true', 'user_config', 'utf-8', 'vram_measurements']

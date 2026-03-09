@@ -542,7 +542,9 @@ async def get_vram_estimate(model: str = "") -> dict:
             if cached:
                 if "proven_max_ctx" in cached:
                     result["is_audited"] = True
-                    result["proven_max_ctx"] = cached["proven_max_ctx"]
+                    # Floor at 8192 — the backend never loads below 8k,
+                    # so the UI slider/badge should reflect the real floor
+                    result["proven_max_ctx"] = max(cached["proven_max_ctx"], 8192)
                 
                 if cached.get("real_kv_rate"):
                     cached_rate = cached["real_kv_rate"]

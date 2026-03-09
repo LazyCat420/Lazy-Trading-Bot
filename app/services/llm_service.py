@@ -281,23 +281,43 @@ class LLMService:
         elif response_format == "json":
             payload["format"] = "json"
 
+        # ── num_predict: cap generation length to prevent runaway thinking ──
+        # Large thinking models (olmo-3:32b) can spend 5K-9K chars thinking,
+        # burning through the timeout. Default caps: 2048 for structured JSON
+        # output (trade decisions only need ~200 tokens), 4096 for free-form.
         if max_tokens:
             payload["options"]["num_predict"] = max_tokens
-
-        logger.info(
-            "Ollama request START -> %s model=%s format=%s ctx=%d",
-            url,
-            self.model,
-            response_format,
-            effective_ctx,
-        )
-        t0 = time.perf_counter()
+        else:
+            # Default cap based on output mode
+            default_predict = 2048 if response_format == "json" or schema else 4096
+            payload["options"]["num_predict"] = default_predict
 
         # Derive a short context label from the system prompt
         _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
 
-        # Hard timeout ceiling (configurable, default 180s)
-        _timeout = settings.LLM_CALL_TIMEOUT_SECONDS
+        # ── Dynamic timeout based on model size ──────────────────
+        # Large models (>15GB, e.g. olmo-3:32b at 18GB) generate tokens
+        # slower on Jetson. Give them 300s instead of the default 180s.
+        _base_timeout = settings.LLM_CALL_TIMEOUT_SECONDS
+        _measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
+        _file_size = _measurement.get("model_file_size", 0)
+        _model_file_gb = _file_size / (1024**3) if _file_size else 0
+        _timeout = (
+            max(_base_timeout, 300) if _model_file_gb > 15 else _base_timeout
+        )
+
+        logger.info(
+            "Ollama request START -> %s model=%s format=%s ctx=%d "
+            "num_predict=%d timeout=%ds",
+            url,
+            self.model,
+            response_format,
+            effective_ctx,
+            payload["options"].get("num_predict", 0),
+            _timeout,
+        )
+        t0 = time.perf_counter()
+
 
         try:
             client = await _get_shared_client()
@@ -320,6 +340,30 @@ class LLMService:
                 timed_out=True,
             )
             raise
+        except httpx.HTTPStatusError as exc:
+            # Non-200 response — capture the actual error body from Ollama
+            elapsed = time.perf_counter() - t0
+            error_body = ""
+            try:
+                error_body = exc.response.text[:500]
+            except Exception:
+                pass
+            logger.warning(
+                "Ollama request FAILED -> %.1fs: HTTP %d — %s",
+                elapsed,
+                exc.response.status_code,
+                error_body or str(exc)[:120],
+            )
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
+            )
+            # Return empty string for 500 errors so the retry can kick in
+            if exc.response.status_code >= 500:
+                return ""
+            raise
         except Exception as exc:
             elapsed = time.perf_counter() - t0
             logger.warning(
@@ -333,10 +377,6 @@ class LLMService:
                 duration_seconds=elapsed,
                 error=str(exc)[:120],
             )
-            # Return empty string for 500 errors so the retry can kick in
-            # instead of crashing the whole pipeline
-            if "500" in str(exc):
-                return ""
             raise
 
         data = resp.json()
@@ -718,6 +758,74 @@ class LLMService:
         }
 
     @staticmethod
+    def calculate_compute_optimal_ctx(
+        model_file_size: int,
+        kv_bytes_per_token: int,
+        safe_ceiling_bytes: int,
+        *,
+        compute_reserve_pct: float = 0.30,
+    ) -> int:
+        """Calculate optimal context length that leaves VRAM headroom for compute.
+
+        Instead of maximizing ctx until OOM, this reserves a percentage of
+        usable VRAM for inference throughput (attention buffers, activation
+        tensors, CUDA workspace).
+
+        Formula:
+            compute_reserve = safe_ceiling * compute_reserve_pct
+            kv_budget = safe_ceiling - weights - graph - compute_reserve
+            optimal_ctx = kv_budget / kv_bytes_per_token
+
+        Args:
+            model_file_size: Model weights in bytes.
+            kv_bytes_per_token: KV cache bytes per context token.
+            safe_ceiling_bytes: Total usable VRAM (after OS reserve).
+            compute_reserve_pct: Fraction of safe ceiling to reserve
+                for compute (default 0.30 = 30%).
+
+        Returns:
+            Optimal context length (clamped to [2048, 131072]).
+        """
+        if kv_bytes_per_token <= 0 or safe_ceiling_bytes <= 0:
+            return 16384  # Safe default when VRAM info unavailable
+
+        _GRAPH_OVERHEAD = int(0.5 * (1024**3))  # 0.5 GiB
+        compute_reserve = int(safe_ceiling_bytes * compute_reserve_pct)
+        kv_budget = (
+            safe_ceiling_bytes - model_file_size
+            - _GRAPH_OVERHEAD - compute_reserve
+        )
+
+        if kv_budget <= 0:
+            logger.warning(
+                "[LLM] Model weights (%.1f GiB) + compute reserve "
+                "(%.1f GiB) exceed safe ceiling (%.1f GiB). "
+                "Using minimum ctx=8192.",
+                model_file_size / (1024**3),
+                compute_reserve / (1024**3),
+                safe_ceiling_bytes / (1024**3),
+            )
+            return 8192
+
+        optimal = int(kv_budget / kv_bytes_per_token)
+        # Round down to nearest 1024 for clean alignment
+        optimal = (optimal // 1024) * 1024
+        optimal = max(8192, min(optimal, 131072))
+
+        logger.info(
+            "[LLM] Compute-optimal ctx=%d "
+            "(ceiling=%.1fG, weights=%.1fG, "
+            "reserve=%.1fG [%d%%], kv_budget=%.1fG)",
+            optimal,
+            safe_ceiling_bytes / (1024**3),
+            model_file_size / (1024**3),
+            compute_reserve / (1024**3),
+            int(compute_reserve_pct * 100),
+            kv_budget / (1024**3),
+        )
+        return optimal
+
+    @staticmethod
     async def verify_and_warm_ollama_model(
         base_url: str,
         model: str,
@@ -868,20 +976,29 @@ class LLMService:
                 proven_max_ctx = cached.get("proven_max_ctx", 0)
 
                 if proven_max_ctx > 0:
-                    # â•â•â• FAST PATH: Audited model â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-                    load_ctx = min(desired_ctx, proven_max_ctx)
-                    load_ctx = max(load_ctx, 2048)
+                    # ═══ FAST PATH: Audited model ═══════════════
+                    # Cap to compute-optimal (leave 30% for throughput)
+                    compute_optimal = LLMService.calculate_compute_optimal_ctx(
+                        model_file_size, kv_per_tok,
+                        safe_ceiling,
+                    )
+                    load_ctx = min(desired_ctx, proven_max_ctx, compute_optimal)
+                    load_ctx = max(load_ctx, 8192)
                     clamped = load_ctx < desired_ctx
 
                     CalibrationTracker.update_progress(
                         f"Fast path: loading {model} at "
-                        f"ctx={load_ctx} (limit={proven_max_ctx})",
+                        f"ctx={load_ctx} "
+                        f"(optimal={compute_optimal}, "
+                        f"limit={proven_max_ctx})",
                         70,
                     )
                     logger.info(
-                        "[LLM] âš¡ FAST PATH: %s audited limit=%d. "
+                        "[LLM] ⚡ FAST PATH: %s "
+                        "compute_optimal=%d, audited_limit=%d. "
                         "Loading at ctx=%d (desired=%d)",
                         model,
+                        compute_optimal,
                         proven_max_ctx,
                         load_ctx,
                         desired_ctx,
@@ -981,33 +1098,36 @@ class LLMService:
                     return result
 
                 else:
-                    # â•â•â• AUDIT PATH: First-time model test â•â•â•â•â•â•
+                    # ═══ AUDIT PATH: Compute-aware first-time test ══
+                    # Calculate optimal ctx that leaves 30% VRAM for compute
+                    compute_optimal = LLMService.calculate_compute_optimal_ctx(
+                        model_file_size, kv_per_tok,
+                        safe_ceiling,
+                    )
+                    target_ctx = min(desired_ctx, compute_optimal)
+                    target_ctx = max(target_ctx, 8192)
+
                     logger.info(
-                        "[LLM] ðŸ” MEMORY AUDIT: First time loading "
-                        "%s. Testing hardware limits...",
-                        model,
+                        "[LLM] 🔍 COMPUTE-AWARE AUDIT: %s "
+                        "compute_optimal=%d, desired=%d. "
+                        "Testing load at ctx=%d...",
+                        model, compute_optimal, desired_ctx, target_ctx,
                     )
 
                     CalibrationTracker.update_progress(
-                        f"Memory audit: testing hardware limits for {model}...", 55,
+                        f"Compute-aware audit: testing {model} "
+                        f"at ctx={target_ctx:,} "
+                        f"(optimal for throughput)...",
+                        55,
                     )
-                    # Define stepped context sizes to test
-                    audit_steps = [
-                        2048,
-                        4096,
-                        8192,
-                        16384,
-                        24576,
-                        32768,
-                        49152,
-                        65536,
-                        98304,
-                        131072,
-                    ]
-                    # Only test up to what the user wants
-                    audit_steps = [s for s in audit_steps if s <= desired_ctx]
-                    if desired_ctx not in audit_steps:
-                        audit_steps.append(desired_ctx)
+
+                    # Build a short list: [target_ctx] + fallback steps
+                    # If optimal fails, step down gracefully
+                    _FALLBACK_STEPS = [32768, 24576, 16384, 8192, 4096, 2048]
+                    audit_steps = [target_ctx]
+                    for fb in _FALLBACK_STEPS:
+                        if fb < target_ctx:
+                            audit_steps.append(fb)
 
                     last_successful_ctx = 0
 
@@ -1088,7 +1208,7 @@ class LLMService:
                             ),
                         }
 
-                    proven_max_ctx = last_successful_ctx
+                    proven_max_ctx = max(last_successful_ctx, 8192)
                     logger.info(
                         "[LLM] ðŸ AUDIT COMPLETE! %s proven limit: ctx=%d",
                         model,
@@ -1105,6 +1225,8 @@ class LLMService:
 
                     _cfg.LLM_VRAM_MEASUREMENTS[model] = {
                         "proven_max_ctx": proven_max_ctx,
+                        "compute_optimal_ctx": compute_optimal,
+                        "model_file_size": model_file_size,
                         "vram_usage_gb": vram_usage_gb,
                         "last_audited": time.time(),
                         "status": "calibrated"
@@ -1132,8 +1254,8 @@ class LLMService:
 
                     # Reload at proven limit (audit may have ended
                     # on a failure, leaving model unloaded)
-                    load_ctx = min(desired_ctx, proven_max_ctx)
-                    load_ctx = max(load_ctx, 2048)
+                    load_ctx = min(desired_ctx, proven_max_ctx, compute_optimal)
+                    load_ctx = max(load_ctx, 8192)
 
                     await LLMService.unload_ollama_model(
                         base_url,

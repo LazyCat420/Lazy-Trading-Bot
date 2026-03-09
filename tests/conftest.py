@@ -13,3 +13,21 @@ def use_test_db(tmp_path_factory):
     
     # Let tests run
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_embeddings_between_tests():
+    """Clear embeddings table before each test for isolation.
+
+    Without this, RAG integration tests leak data into unit tests
+    when running the full suite (session-scoped DuckDB).
+    """
+    yield
+    try:
+        from app.database import get_db
+        db = get_db()
+        db.execute("DELETE FROM embeddings")
+        db.commit()
+    except Exception:
+        pass
+

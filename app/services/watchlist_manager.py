@@ -84,6 +84,16 @@ class WatchlistManager:
             for r in rows
         ]
 
+    def get_ticker_signals(self) -> dict[str, str]:
+        """Return {ticker: signal} for all active tickers (for priority sorting)."""
+        db = get_db()
+        rows = db.execute(
+            "SELECT ticker, signal FROM watchlist "
+            "WHERE status = 'active' AND bot_id = ?",
+            [self.bot_id],
+        ).fetchall()
+        return {str(r[0]): str(r[1]) for r in rows}
+
     def get_summary(self) -> dict:
         """Return aggregate stats for the frontend header."""
         db = get_db()

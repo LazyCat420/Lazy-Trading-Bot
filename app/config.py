@@ -58,6 +58,12 @@ class Settings:
     # Override for unified-memory systems like Jetson if auto-detect fails.
     SYSTEM_TOTAL_VRAM_GB: int = int(os.getenv("SYSTEM_TOTAL_VRAM_GB", "0"))
 
+    # ── RAG (Retrieval-Augmented Generation) ────────────────────
+    RAG_EMBEDDING_MODEL: str = "nomic-embed-text:latest"
+    RAG_ENABLED: bool = True
+    RAG_TOP_K: int = 5
+    RAG_MAX_CHARS: int = 3000
+
     # SEC EDGAR API — required User-Agent header
     SEC_USER_AGENT: str = os.getenv(
         "SEC_USER_AGENT",
@@ -135,6 +141,15 @@ class Settings:
             data["vram_measurements"], dict,
         ):
             self.LLM_VRAM_MEASUREMENTS = data["vram_measurements"]
+        # RAG settings
+        if "embedding_model" in data:
+            self.RAG_EMBEDDING_MODEL = str(data["embedding_model"])
+        if "rag_enabled" in data:
+            self.RAG_ENABLED = bool(data["rag_enabled"])
+        if "rag_top_k" in data:
+            self.RAG_TOP_K = int(data["rag_top_k"])
+        if "rag_max_chars" in data:
+            self.RAG_MAX_CHARS = int(data["rag_max_chars"])
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.

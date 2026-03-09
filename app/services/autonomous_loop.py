@@ -190,6 +190,23 @@ class AutonomousLoop:
         )
         report["phases"]["collection"] = collection_result
 
+        # ── Step 2.7: RAG Embedding (embed new data for retrieval) ──
+        embedding_result = await self._run_phase(
+            "embedding",
+            "Embedding collected data for RAG retrieval…",
+            self._do_embedding,
+        )
+        report["phases"]["embedding"] = embedding_result
+
+        # Health check: embeddings generated?
+        embed_chunks = embedding_result.get("total_chunks", 0)
+        self._health.record_check(
+            "RAG embeddings generated",
+            passed=True,  # Not critical — zero is fine if nothing new
+            detail=f"{embed_chunks} new chunks"
+            if embed_chunks else "no new data to embed",
+        )
+
         # ── Step 3: Deep Analysis (all active tickers) ────────────
         analysis_result = await self._run_phase(
             "analysis",
@@ -411,6 +428,60 @@ class AutonomousLoop:
         )
         return {"collected": len(succeeded), "total": len(tickers), "tickers": succeeded}
 
+    async def _do_embedding(self) -> dict:
+        """Step 2.7: Embed newly collected data for RAG retrieval.
+
+        Non-critical: if embedding fails, log warning and return zeroes.
+        """
+        from app.config import settings
+
+        if not getattr(settings, "RAG_ENABLED", True):
+            self._log("RAG disabled — skipping embedding")
+            return {"skipped": True, "reason": "RAG disabled"}
+
+        try:
+            from app.services.embedding_service import EmbeddingService
+
+            svc = EmbeddingService()
+
+            # Ensure the embedding model is available (auto-pull if needed)
+            model_ok = await svc.ensure_model_loaded()
+            if not model_ok:
+                self._log("⚠️ Embedding model not available — skipping")
+                return {"error": "model_not_available", "total_chunks": 0}
+
+            # Embed all sources: YouTube + Reddit + News + Decisions
+            result = await svc.embed_all_sources()
+
+            total_chunks = result.get("total_chunks", 0)
+            total_embedded = result.get("total_embedded", 0)
+
+            self._log(
+                f"📎 Embedded {total_embedded} sources → "
+                f"{total_chunks} chunks"
+            )
+
+            # Pre-compute query vectors for all active tickers
+            # while the embedding model is still loaded in VRAM
+            active_tickers = self.watchlist.get_active_tickers()
+            if active_tickers:
+                self._query_vector_cache = await svc.precompute_query_vectors(
+                    active_tickers,
+                )
+                result["cached_query_vectors"] = len(self._query_vector_cache)
+                self._log(
+                    f"🔍 Pre-computed {len(self._query_vector_cache)} "
+                    f"query vectors for trading"
+                )
+            else:
+                self._query_vector_cache = {}
+
+            return result
+        except Exception as exc:
+            logger.warning("[AutoLoop] Embedding phase failed: %s", exc)
+            self._log(f"⚠️ Embedding failed: {exc}")
+            return {"error": str(exc), "total_chunks": 0}
+
     async def _do_deep_analysis(self) -> dict:
         """Step 3: Run 4-layer analysis on every active watchlist ticker.
 
@@ -538,6 +609,31 @@ class AutonomousLoop:
             )
             return {"orders": 0, "tickers": []}
 
+        # ── Cash pre-check ─────────────────────────────────────
+        # If cash is below minimum trade value AND no existing positions,
+        # skip the trading phase entirely instead of burning LLM turns
+        # trying to buy stocks the bot can't afford.
+        _MIN_TRADE_CASH = 50.0
+        cash = self.paper_trader.get_cash_balance()
+        positions = self.paper_trader.get_positions()
+        if cash < _MIN_TRADE_CASH and not positions:
+            self._log(
+                f"Skipping trading: cash=${cash:.2f} below "
+                f"minimum ${_MIN_TRADE_CASH:.0f} and no positions"
+            )
+            log_event(
+                "trading",
+                "trading_skip",
+                f"Insufficient cash (${cash:.2f}) and no positions",
+                status="skipped",
+                metadata={"cash": cash},
+            )
+            return {"orders": 0, "tickers": [], "skipped": "insufficient_cash"}
+        elif cash < _MIN_TRADE_CASH:
+            self._log(
+                f"Low cash (${cash:.2f}) — SELL/HOLD decisions only"
+            )
+
         # ---- Check price triggers first ----
         triggered = await self.price_monitor.check_triggers()
         if triggered:
@@ -567,6 +663,7 @@ class AutonomousLoop:
                 paper_trader=self.paper_trader,
                 dry_run=settings.DRY_RUN_TRADES,
                 bot_id=self.bot_id,
+                query_vector_cache=getattr(self, "_query_vector_cache", None),
             )
 
             try:
