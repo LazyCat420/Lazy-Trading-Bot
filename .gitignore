@@ -12,10 +12,13 @@ data/
 *.duckdb
 *.duckdb.wal
 *.db
+*.sqlite
+*.sqlite3
 
 # ── Logs & Reports ─────────────────────────────────
 logs/
 reports/
+*.log
 
 # ── Python ─────────────────────────────────────────
 __pycache__/
@@ -28,24 +31,69 @@ build/
 venv/
 .venv/
 *.whl
+pip-wheel-metadata/
 
-# ── Testing / Debug Artifacts ──────────────────────
+# ── Testing / Linting Caches ──────────────────────
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.hypothesis/
 htmlcov/
 .coverage
+.coverage.*
+coverage.xml
+results.xml
+
+# ── Debug / Output Artifacts (root-level junk) ────
+# Catch-all patterns for temp output dumped in root
 *.tmp
+*.out
 *_output*.txt
+*_out*.txt
 debug_log.txt
 ruff_output.txt
 smoke_test_out.txt
-test_results.tmp
+error_grep.txt
+exec_error.txt
+schema.txt
+schema_out.txt
+pks.txt
+pks_utf8.txt
+mypy_utf8.txt
+install_audit.txt
+layout_debug.txt
+audit_out.txt
+audit_results.txt
+final_audit_results.txt
+audit_results.json
+diag_results.json
+failures.json
+failures.md
+robot_temp.md
+test_results.json
+test_results.txt
+test_result.txt
+test_result_json_fix.txt
+test_freeze_results.txt
 
-# ── Temporary reproduce / verify scripts ───────────
+# ── Temporary reproduce / verify / dump scripts ───
 reproduce_*.py
 verify_*.py
+dump_errs*.py
+parse_results.py
 db_check_output.txt
+
+# ── Windows batch files (not needed on WSL) ───────
+*.bat
+
+# ── User Config (local watchlists, LLM settings) ──
+# These contain user-specific local preferences
+app/user_config/llm_config.json
+app/user_config/watchlist.json
+app/user_config/risk_params.json
+
+# ── Example / Reference repos (heavy) ─────────────
+example_repos/
 
 # ── IDE / Editor ───────────────────────────────────
 .vscode/
@@ -62,8 +110,16 @@ Thumbs.db
 Desktop.ini
 ehthumbs.db
 
-# ── User Config (local watchlists, LLM config) ────
-app/user_config/llm_config.json
+# ── Keys / Certs (safety net) ─────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
 
-# ── Example / Reference repos (heavy) ─────────────
-example_repos/
+# ── Antigravity agent outputs ─────────────────────
+.antigravity-outputs/
+
+# ── Node (for example_repos subprojects) ──────────
+node_modules/
