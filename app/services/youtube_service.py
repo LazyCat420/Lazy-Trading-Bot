@@ -17,7 +17,7 @@ import json
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.database import get_db
@@ -76,7 +76,10 @@ class YouTubeCollector:
     # ──────────────────────────────────────────────────────────────
 
     async def collect(
-        self, ticker: str, max_videos: int = 3, *,
+        self,
+        ticker: str,
+        max_videos: int = 3,
+        *,
         discovery_mode: bool = False,
         min_duration_secs: int = 0,
     ) -> list[YouTubeTranscript]:
@@ -95,24 +98,27 @@ class YouTubeCollector:
         # Daily guard — skip if already scraped today (skipped in discovery mode)
         db = get_db()
         if not discovery_mode:
-            today_start = datetime.now(tz=timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0,
+            today_start = datetime.now(tz=UTC).replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
             )
             existing = db.execute(
-                "SELECT COUNT(*) FROM youtube_transcripts "
-                "WHERE ticker = ? AND collected_at >= ?",
+                "SELECT COUNT(*) FROM youtube_transcripts WHERE ticker = ? AND collected_at >= ?",
                 [ticker, today_start],
             ).fetchone()
             if existing and existing[0] > 0:
                 logger.info(
                     "YouTube for %s already scraped today (%d transcripts), skipping",
-                    ticker, existing[0],
+                    ticker,
+                    existing[0],
                 )
                 return []
 
         mode_label = "discovery" if discovery_mode else "24h filter"
         logger.info("Collecting YouTube transcripts for %s (%s)", ticker, mode_label)
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+        cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
 
         # Step 1: Multi-query search (full metadata for duration filtering)
         all_videos: list[dict] = []
@@ -137,14 +143,15 @@ class YouTubeCollector:
         # Step 1b: Filter by minimum duration (skip short clips)
         effective_min = min_duration_secs or self.MIN_DURATION_SECS
         if effective_min > 0:
-            long_videos = [
-                v for v in all_videos if v.get("duration", 0) >= effective_min
-            ]
+            long_videos = [v for v in all_videos if v.get("duration", 0) >= effective_min]
             short_count = len(all_videos) - len(long_videos)
             if short_count > 0:
                 logger.info(
                     "Filtered out %d short videos (< %ds) for %s, %d remain",
-                    short_count, effective_min, ticker, len(long_videos),
+                    short_count,
+                    effective_min,
+                    ticker,
+                    len(long_videos),
                 )
             all_videos = long_videos
 
@@ -153,7 +160,8 @@ class YouTubeCollector:
             recent_videos = all_videos
             logger.info(
                 "Discovery mode: accepting all %d videos for %s",
-                len(all_videos), ticker,
+                len(all_videos),
+                ticker,
             )
         else:
             recent_videos = []
@@ -214,25 +222,23 @@ class YouTubeCollector:
                     vid.get("title", ""),
                 )
                 # Record the failed attempt so we never retry this video
-                try:
-                    db.execute(
-                        """
-                        INSERT INTO youtube_transcripts
-                            (ticker, video_id, title, channel, published_at,
-                             duration_seconds, raw_transcript)
-                        VALUES (?, ?, ?, ?, ?, ?, '')
-                        """,
-                        [
-                            ticker,
-                            vid["id"],
-                            vid.get("title", ""),
-                            vid.get("channel", ""),
-                            vid.get("published_at"),
-                            vid.get("duration", 0),
-                        ],
-                    )
-                except Exception:
-                    pass  # Ignore if already exists
+                db.execute(
+                    """
+                    INSERT INTO youtube_transcripts
+                        (ticker, video_id, title, channel, published_at,
+                         duration_seconds, raw_transcript)
+                    VALUES (?, ?, ?, ?, ?, ?, '')
+                    ON CONFLICT (ticker, video_id) DO NOTHING
+                    """,
+                    [
+                        ticker,
+                        vid["id"],
+                        vid.get("title", ""),
+                        vid.get("channel", ""),
+                        vid.get("published_at"),
+                        vid.get("duration", 0),
+                    ],
+                )
                 continue
 
             # Log preview for debugging
@@ -267,6 +273,7 @@ class YouTubeCollector:
                     (ticker, video_id, title, channel, published_at,
                      duration_seconds, raw_transcript)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ticker, video_id) DO NOTHING
                 """,
                 [
                     yt.ticker,
@@ -288,7 +295,9 @@ class YouTubeCollector:
         return transcripts
 
     async def collect_general_market(
-        self, max_videos: int = 3, min_duration_secs: int = 900,
+        self,
+        max_videos: int = 3,
+        min_duration_secs: int = 900,
     ) -> list[YouTubeTranscript]:
         """Scrape general market news videos to discover NEW tickers.
 
@@ -304,8 +313,11 @@ class YouTubeCollector:
         db = get_db()
 
         # Daily guard for general market scrapes
-        today_start = datetime.now(tz=timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0,
+        today_start = datetime.now(tz=UTC).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
         )
         existing = db.execute(
             "SELECT COUNT(*) FROM youtube_transcripts "
@@ -314,15 +326,13 @@ class YouTubeCollector:
         ).fetchone()
         if existing and existing[0] > 0:
             logger.info(
-                "General market YouTube already scraped today "
-                "(%d transcripts), skipping",
+                "General market YouTube already scraped today (%d transcripts), skipping",
                 existing[0],
             )
             return []
 
         logger.info(
-            "Collecting general market YouTube transcripts "
-            "(%d queries, min duration %ds)...",
+            "Collecting general market YouTube transcripts (%d queries, min duration %ds)...",
             len(self.GENERAL_MARKET_QUERIES),
             min_duration_secs,
         )
@@ -340,22 +350,22 @@ class YouTubeCollector:
                     all_videos.append(vid)
 
         logger.info(
-            "Found %d unique general market videos", len(all_videos),
+            "Found %d unique general market videos",
+            len(all_videos),
         )
 
         if not all_videos:
             return []
 
         # Step 2: Filter by minimum duration (15+ min = in-depth content)
-        long_videos = [
-            v for v in all_videos
-            if v.get("duration", 0) >= min_duration_secs
-        ]
+        long_videos = [v for v in all_videos if v.get("duration", 0) >= min_duration_secs]
         short_count = len(all_videos) - len(long_videos)
         if short_count > 0:
             logger.info(
                 "Filtered out %d short videos (< %ds), %d remain",
-                short_count, min_duration_secs, len(long_videos),
+                short_count,
+                min_duration_secs,
+                len(long_videos),
             )
         if not long_videos:
             logger.info("No videos meet the %ds minimum duration", min_duration_secs)
@@ -380,7 +390,8 @@ class YouTubeCollector:
 
         logger.info(
             "%d new general market videos to process (>= %ds)",
-            len(new_videos), min_duration_secs,
+            len(new_videos),
+            min_duration_secs,
         )
 
         # Step 4: Extract transcripts and persist
@@ -389,25 +400,23 @@ class YouTubeCollector:
             transcript_text = self._get_transcript(vid["id"])
             if not transcript_text:
                 # Record failed attempt so we never retry this video
-                try:
-                    db.execute(
-                        """
-                        INSERT INTO youtube_transcripts
-                            (ticker, video_id, title, channel, published_at,
-                             duration_seconds, raw_transcript)
-                        VALUES (?, ?, ?, ?, ?, ?, '')
-                        """,
-                        [
-                            "__MARKET__",
-                            vid["id"],
-                            vid.get("title", ""),
-                            vid.get("channel", ""),
-                            vid.get("published_at"),
-                            vid.get("duration", 0),
-                        ],
-                    )
-                except Exception:
-                    pass  # Ignore if already exists
+                db.execute(
+                    """
+                    INSERT INTO youtube_transcripts
+                        (ticker, video_id, title, channel, published_at,
+                         duration_seconds, raw_transcript)
+                    VALUES (?, ?, ?, ?, ?, ?, '')
+                    ON CONFLICT (ticker, video_id) DO NOTHING
+                    """,
+                    [
+                        "__MARKET__",
+                        vid["id"],
+                        vid.get("title", ""),
+                        vid.get("channel", ""),
+                        vid.get("published_at"),
+                        vid.get("duration", 0),
+                    ],
+                )
                 continue
 
             yt = YouTubeTranscript(
@@ -434,6 +443,7 @@ class YouTubeCollector:
                     (ticker, video_id, title, channel, published_at,
                      duration_seconds, raw_transcript)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ticker, video_id) DO NOTHING
                 """,
                 [
                     yt.ticker,
@@ -448,13 +458,12 @@ class YouTubeCollector:
 
         logger.info(
             "Collected %d general market transcripts (>= %ds)",
-            len(transcripts), min_duration_secs,
+            len(transcripts),
+            min_duration_secs,
         )
         return transcripts
 
-    async def get_all_historical(
-        self, ticker: str, limit: int = 50
-    ) -> list[YouTubeTranscript]:
+    async def get_all_historical(self, ticker: str, limit: int = 50) -> list[YouTubeTranscript]:
         """Retrieve ALL stored transcripts for a ticker from the database.
 
         This is the key method for leveraging accumulated data — agents
@@ -527,9 +536,7 @@ class YouTubeCollector:
             return self._parse_yt_dlp_output(result.stdout)
 
         except FileNotFoundError:
-            logger.warning(
-                "yt-dlp not found — install it: pip install yt-dlp"
-            )
+            logger.warning("yt-dlp not found — install it: pip install yt-dlp")
             return []
         except subprocess.TimeoutExpired:
             logger.warning("yt-dlp search timed out for: %s", query)
@@ -564,9 +571,7 @@ class YouTubeCollector:
             return self._parse_yt_dlp_output(result.stdout)
 
         except FileNotFoundError:
-            logger.warning(
-                "yt-dlp not found — install it: pip install yt-dlp"
-            )
+            logger.warning("yt-dlp not found — install it: pip install yt-dlp")
             return []
         except subprocess.TimeoutExpired:
             logger.warning("yt-dlp full search timed out for: %s", query)
@@ -591,9 +596,7 @@ class YouTubeCollector:
                 upload = data.get("upload_date")
                 if upload:
                     try:
-                        pub_date = datetime.strptime(upload, "%Y%m%d").replace(
-                            tzinfo=timezone.utc
-                        )
+                        pub_date = datetime.strptime(upload, "%Y%m%d").replace(tzinfo=UTC)
                     except ValueError:
                         pass
 
@@ -659,21 +662,15 @@ class YouTubeCollector:
 
             api = YouTubeTranscriptApi()
             transcript = api.fetch(video_id)
-            full_text = " ".join(
-                snippet.text for snippet in transcript
-            )
+            full_text = " ".join(snippet.text for snippet in transcript)
             full_text = full_text.replace("\n", " ").strip()
 
             if len(full_text) < 50:
-                logger.debug(
-                    "Transcript too short for %s (%d chars)", video_id, len(full_text)
-                )
+                logger.debug("Transcript too short for %s (%d chars)", video_id, len(full_text))
                 return ""
 
             # NO TRUNCATION — store full transcript for historical value
-            logger.info(
-                "Library transcript OK for %s (%d chars)", video_id, len(full_text)
-            )
+            logger.info("Library transcript OK for %s (%d chars)", video_id, len(full_text))
             return full_text
 
         except ImportError:
@@ -682,9 +679,7 @@ class YouTubeCollector:
             )
             return ""
         except Exception as e:
-            logger.debug(
-                "Library transcript failed for %s: %s", video_id, e
-            )
+            logger.debug("Library transcript failed for %s: %s", video_id, e)
             return ""
 
     def _get_transcript_ytdlp(self, video_id: str) -> str:
@@ -704,9 +699,12 @@ class YouTubeCollector:
                         "yt-dlp",
                         "--skip-download",
                         "--write-auto-subs",
-                        "--sub-lang", "en",
-                        "--sub-format", "vtt",
-                        "--output", output_template,
+                        "--sub-lang",
+                        "en",
+                        "--sub-format",
+                        "vtt",
+                        "--output",
+                        output_template,
                         url,
                     ],
                     capture_output=True,
@@ -717,9 +715,7 @@ class YouTubeCollector:
                 # Find the subtitle file
                 sub_files = list(Path(tmpdir).glob("*.vtt"))
                 if not sub_files:
-                    logger.debug(
-                        "yt-dlp found no subtitles for %s", video_id
-                    )
+                    logger.debug("yt-dlp found no subtitles for %s", video_id)
                     return ""
 
                 # Parse VTT to plain text

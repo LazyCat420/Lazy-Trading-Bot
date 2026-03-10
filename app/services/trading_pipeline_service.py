@@ -105,6 +105,7 @@ class TradingPipelineService:
         _SIGNAL_PRIORITY = {"BUY": 0, "PENDING": 1, "HOLD": 2, "SELL": 3}
         try:
             from app.services.watchlist_manager import WatchlistManager
+
             wm = WatchlistManager(bot_id=self._bot_id)
             signals = wm.get_ticker_signals()  # {ticker: signal}
             valid_tickers.sort(
@@ -132,10 +133,9 @@ class TradingPipelineService:
             try:
                 result = await self._process_ticker(ticker, portfolio, cycle_dir, cycle_id)
                 results.append(result)
-                is_order = (
-                    result.get("exec_status") in ("executed", "dry_run")
-                    and result.get("action") in ("BUY", "SELL")
-                )
+                is_order = result.get("exec_status") in ("executed", "dry_run") and result.get(
+                    "action"
+                ) in ("BUY", "SELL")
                 if is_order:
                     orders_this_cycle += 1
             except Exception as exc:
@@ -212,24 +212,17 @@ class TradingPipelineService:
             override_reason = ""
             # Rule: Can't BUY against a SELL verdict
             if dossier_sig == "SELL":
-                override_reason = (
-                    f"quant verdict is SELL (conviction={conviction:.0%})"
-                )
+                override_reason = f"quant verdict is SELL (conviction={conviction:.0%})"
             # Rule: Bankruptcy risk = forced HOLD
             elif "bankruptcy_risk_high" in flags:
                 override_reason = "bankruptcy_risk_high flag present"
             # Rule: Drawdown + negative Sortino = forced SELL
-            elif (
-                "drawdown_exceeds_20pct" in flags
-                and "negative_sortino" in flags
-            ):
-                override_reason = (
-                    "drawdown_exceeds_20pct + negative_sortino"
-                )
+            elif "drawdown_exceeds_20pct" in flags and "negative_sortino" in flags:
+                override_reason = "drawdown_exceeds_20pct + negative_sortino"
                 action.action = "SELL"
                 action.confidence = min(action.confidence, 0.40)
             # Rule: Low conviction = forced HOLD
-            elif conviction < 0.35 and action.confidence > 0.60:
+            elif conviction < 0.25 and action.confidence > 0.60:
                 override_reason = (
                     f"conviction={conviction:.0%} too low for "
                     f"BUY confidence={action.confidence:.0%}"
@@ -238,19 +231,37 @@ class TradingPipelineService:
             if override_reason and action.action == "BUY":
                 logger.warning(
                     "[TradingPipeline] BUY override for %s → HOLD: %s",
-                    ticker, override_reason,
+                    ticker,
+                    override_reason,
                 )
                 action.action = "HOLD"
                 action.confidence = min(action.confidence, 0.40)
                 action.risk_notes = (
-                    f"[GUARDRAIL] {override_reason}. "
-                    f"Original: BUY. {action.risk_notes or ''}"
+                    f"[GUARDRAIL] {override_reason}. Original: BUY. {action.risk_notes or ''}"
                 )
             elif override_reason:
                 # Action was changed to SELL by a specific rule above
                 logger.warning(
                     "[TradingPipeline] BUY override for %s → %s: %s",
-                    ticker, action.action, override_reason,
+                    ticker,
+                    action.action,
+                    override_reason,
+                )
+
+        # ── Post-LLM sanity check: SELL without position ──────
+        if action.action == "SELL":
+            positions = portfolio.get("positions", [])
+            held_tickers = {p["ticker"] for p in positions}
+            if ticker not in held_tickers:
+                logger.warning(
+                    "[TradingPipeline] SELL override for %s → HOLD: no position held",
+                    ticker,
+                )
+                action.action = "HOLD"
+                action.confidence = 0.30
+                action.risk_notes = (
+                    f"[GUARDRAIL] Cannot SELL {ticker} — no position. "
+                    f"Original: SELL. {action.risk_notes or ''}"
                 )
 
         # ── Log decision ──────────────────────────────────────
@@ -411,6 +422,7 @@ class TradingPipelineService:
             sc_flags = sc.get("flags", [])
             if isinstance(sc_flags, str):
                 import json as _json
+
                 try:
                     sc_flags = _json.loads(sc_flags)
                 except Exception:
@@ -440,8 +452,7 @@ class TradingPipelineService:
                     )
                 else:
                     logger.info(
-                        "[TradingPipeline] RAG: no cached vector for %s, "
-                        "attempting live embed",
+                        "[TradingPipeline] RAG: no cached vector for %s, attempting live embed",
                         ticker,
                     )
                 context["rag_context"] = await rag_svc.retrieve_for_trading(
@@ -451,7 +462,8 @@ class TradingPipelineService:
                 if context["rag_context"]:
                     logger.info(
                         "[TradingPipeline] RAG: injected %d chars for %s",
-                        len(context["rag_context"]), ticker,
+                        len(context["rag_context"]),
+                        ticker,
                     )
                 else:
                     logger.info(
@@ -463,7 +475,8 @@ class TradingPipelineService:
         except Exception as exc:
             logger.warning(
                 "[TradingPipeline] RAG retrieval failed for %s: %s",
-                ticker, exc,
+                ticker,
+                exc,
             )
             context["rag_context"] = ""
 

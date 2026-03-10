@@ -22,10 +22,10 @@ from typing import Any
 import requests
 from fake_useragent import UserAgent
 
-from app.services.ticker_validator import TickerValidator
-from app.models.discovery import ScoredTicker
 from app.config import settings
+from app.models.discovery import ScoredTicker
 from app.services.llm_service import LLMService
+from app.services.ticker_validator import TickerValidator
 from app.utils.logger import logger
 
 
@@ -33,13 +33,24 @@ class RedditCollector:
     """Scrapes financial subreddits for trending ticker mentions."""
 
     # Configurable subreddit lists
-    SUBREDDITS_PRIORITY = ["wallstreetbets", "stocks"]
-    SUBREDDITS_TRENDING = ["wallstreetbets", "pennystocks"]
+    SUBREDDITS_PRIORITY = [
+        "wallstreetbets",
+        "stocks",
+        "investing",
+        "StockMarket",
+        "options",
+    ]
+    SUBREDDITS_TRENDING = [
+        "wallstreetbets",
+        "pennystocks",
+        "ShortSqueeze",
+        "options",
+    ]
 
-    # Limit to 1 sub each for debug mode (user requested fast iteration)
-    MAX_POSTS_PER_SUB = 3
-    MAX_COMMENTS_PER_THREAD = 10
-    MAX_THREADS_TO_SCRAPE = 3
+    MAX_POSTS_PER_SUB = 10
+    MAX_COMMENTS_PER_THREAD = 20
+    MAX_THREADS_TO_SCRAPE = 8
+    MAX_RETRIES = 3
 
     def __init__(self) -> None:
         self.validator = TickerValidator()
@@ -101,18 +112,102 @@ class RedditCollector:
 
     # ── Step 3: LLM thread filter ───────────────────────────────────
 
-    async def filter_with_llm(
-        self, candidates: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Ask LLM to pick threads likely discussing stock catalysts."""
+    async def filter_with_llm(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Filter threads likely discussing stock catalysts.
+
+        Uses a fast keyword-based filter first (no LLM needed).
+        Falls back to LLM only if keyword filter finds nothing.
+        """
         if not candidates:
             return []
 
         logger.info(
-            "[Reddit] Step 3: Filtering %d candidates with LLM...",
+            "[Reddit] Step 3: Filtering %d candidates with keywords...",
             len(candidates),
         )
 
+        # Fast keyword filter — no LLM needed
+        selected = self._keyword_filter(candidates)
+
+        if selected:
+            logger.info(
+                "[Reddit]   -> Keyword filter selected %d/%d threads",
+                len(selected),
+                len(candidates),
+            )
+            return selected
+
+        # Fallback: if keyword filter found nothing, try LLM
+        logger.info("[Reddit]   -> Keyword filter found nothing, trying LLM...")
+        return await self._llm_filter(candidates)
+
+    @staticmethod
+    def _keyword_filter(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fast keyword-based thread filter (no LLM dependency).
+
+        Selects threads that mention tickers ($AAPL style), earnings,
+        options plays, or specific financial terms.
+        """
+        # Patterns indicating financial discussion worth scraping
+        _TICKER_RE = re.compile(r"\$[A-Z]{2,5}\b")
+        _FINANCE_KEYWORDS = {
+            "earnings",
+            "buy",
+            "sell",
+            "calls",
+            "puts",
+            "short",
+            "squeeze",
+            "DD",
+            "due diligence",
+            "yolo",
+            "portfolio",
+            "dividend",
+            "bull",
+            "bear",
+            "breakout",
+            "undervalued",
+            "overvalued",
+            "revenue",
+            "guidance",
+            "pe ratio",
+            "eps",
+            "market cap",
+            "shares",
+            "stock",
+            "options",
+            "profit",
+            "p/e",
+            "ipo",
+            "merger",
+            "acquisition",
+        }
+
+        selected = []
+        for thread in candidates:
+            title = thread.get("title", "")
+            body = thread.get("selftext", "")
+            text = f"{title} {body}".lower()
+
+            # Always include stickied threads
+            if thread.get("stickied"):
+                selected.append(thread)
+                continue
+
+            # Include if title has a ticker mention ($AAPL style)
+            if _TICKER_RE.search(title):
+                selected.append(thread)
+                continue
+
+            # Include if contains finance keywords
+            if any(kw in text for kw in _FINANCE_KEYWORDS):
+                selected.append(thread)
+                continue
+
+        return selected
+
+    async def _llm_filter(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """LLM-based thread filter (fallback when keyword filter finds nothing)."""
         titles_text = "\n".join(
             f"{i}. {p['title']} (r/{p['subreddit']})" for i, p in enumerate(candidates)
         )
@@ -131,7 +226,11 @@ If none are relevant, output: []"""
             import json as json_mod
 
             raw = await self.llm.chat(
-                system="You are a financial thread filter. Return ONLY valid JSON.",
+                system=(
+                    "You are a financial thread filter. "
+                    "Return ONLY raw, valid JSON. Do not include markdown "
+                    "formatting, code blocks like ```json, or conversational text."
+                ),
                 user=prompt,
                 response_format="json",
                 temperature=settings.LLM_DISCOVERY_TEMPERATURE,
@@ -212,9 +311,7 @@ If none are relevant, output: []"""
         if not text:
             return []
         raw = re.findall(r"(?:\$|\b)([A-Z]{2,5})\b", text)
-        return list(
-            {t for t in raw if t.isalpha() and t not in TickerValidator.EXCLUSION_LIST}
-        )
+        return list({t for t in raw if t.isalpha() and t not in TickerValidator.EXCLUSION_LIST})
 
     # ── Full pipeline ───────────────────────────────────────────────
 
@@ -226,11 +323,15 @@ If none are relevant, output: []"""
         and starve other collectors running in parallel.
         """
         # ── 4-hour cooldown guard ──
+        # Only count rows with actual reddit context (subreddit names),
+        # not RSS-sourced junk that leaked in as source='reddit'.
         from app.database import get_db
 
         db = get_db()
         last_run = db.execute(
-            "SELECT MAX(discovered_at) FROM discovered_tickers WHERE source = 'reddit'"
+            "SELECT MAX(discovered_at) FROM discovered_tickers "
+            "WHERE source = 'reddit' "
+            "AND source_detail NOT LIKE '%news articles%'"
         ).fetchone()
         if last_run and last_run[0]:
             hours_since = (datetime.now() - last_run[0]).total_seconds() / 3600
@@ -291,9 +392,7 @@ If none are relevant, output: []"""
                     ticker=ticker,
                     discovery_score=float(ticker_counts.get(ticker, 0)),
                     source="reddit",
-                    source_detail=", ".join(
-                        set(t.get("subreddit", "") for t in threads)
-                    ),
+                    source_detail=", ".join(set(t.get("subreddit", "") for t in threads)),
                     sentiment_hint="neutral",  # Could enhance with LLM later
                     context_snippets=[s for s, _u in deduped],
                     source_urls=[u for _s, u in deduped],
@@ -348,15 +447,11 @@ If none are relevant, output: []"""
             # Weighted scoring
             for t in self.extract_tickers(title):
                 ticker_counts[t] = ticker_counts.get(t, 0) + 3
-                ticker_contexts.setdefault(t, []).append(
-                    (f"[title] {title[:80]}", thread_url)
-                )
+                ticker_contexts.setdefault(t, []).append((f"[title] {title[:80]}", thread_url))
 
             for t in self.extract_tickers(body):
                 ticker_counts[t] = ticker_counts.get(t, 0) + 2
-                ticker_contexts.setdefault(t, []).append(
-                    (f"[body] {body[:80]}", thread_url)
-                )
+                ticker_contexts.setdefault(t, []).append((f"[body] {body[:80]}", thread_url))
 
             for comment in comments:
                 for t in self.extract_tickers(comment):
@@ -369,42 +464,75 @@ If none are relevant, output: []"""
 
     # ── Helpers ──────────────────────────────────────────────────────
 
-    def _fetch_subreddit(
-        self, subreddit: str, listing: str, limit: int
-    ) -> list[dict[str, Any]]:
-        """Fetch posts from a subreddit using the public JSON API."""
+    def _fetch_subreddit(self, subreddit: str, listing: str, limit: int) -> list[dict[str, Any]]:
+        """Fetch posts from a subreddit using the public JSON API.
+
+        Retries with exponential backoff on 429 (rate limit) responses.
+        """
         url = f"https://www.reddit.com/r/{subreddit}/{listing}.json?limit={limit}"
-        logger.debug("[Reddit] Fetching %s from r/%s...", listing, subreddit)
+        logger.info("[Reddit] Fetching %s from r/%s...", listing, subreddit)
 
-        try:
-            resp = requests.get(url, headers=self._get_headers(), timeout=10)
-            if resp.status_code == 429:
-                logger.warning("[Reddit] Rate limited, waiting 5s...")
-                time.sleep(5)
-                resp = requests.get(url, headers=self._get_headers(), timeout=10)
-
-            if resp.status_code != 200:
-                logger.warning("[Reddit] r/%s returned %d", subreddit, resp.status_code)
-                return []
-
-            data = resp.json()
-            posts: list[dict[str, Any]] = []
-            if "data" in data and "children" in data["data"]:
-                for child in data["data"]["children"]:
-                    pd = child["data"]
-                    posts.append(
-                        {
-                            "title": pd.get("title", ""),
-                            "subreddit": pd.get("subreddit", ""),
-                            "permalink": pd.get("permalink", ""),
-                            "score": pd.get("score", 0),
-                            "selftext": pd.get("selftext", ""),
-                            "stickied": pd.get("stickied", False),
-                            "id": pd.get("id", ""),
-                        }
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                resp = requests.get(
+                    url,
+                    headers=self._get_headers(),
+                    timeout=15,
+                )
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                    logger.warning(
+                        "[Reddit] Rate limited on r/%s, waiting %ds (attempt %d/%d)",
+                        subreddit,
+                        wait,
+                        attempt + 1,
+                        self.MAX_RETRIES,
                     )
-            return posts
+                    time.sleep(wait)
+                    continue
 
-        except Exception as e:
-            logger.warning("[Reddit] Fetch error for r/%s: %s", subreddit, e)
-            return []
+                if resp.status_code != 200:
+                    logger.warning(
+                        "[Reddit] r/%s returned %d — %s",
+                        subreddit,
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return []
+
+                data = resp.json()
+                posts: list[dict[str, Any]] = []
+                if "data" in data and "children" in data["data"]:
+                    for child in data["data"]["children"]:
+                        pd = child["data"]
+                        posts.append(
+                            {
+                                "title": pd.get("title", ""),
+                                "subreddit": pd.get("subreddit", ""),
+                                "permalink": pd.get("permalink", ""),
+                                "score": pd.get("score", 0),
+                                "selftext": pd.get("selftext", ""),
+                                "stickied": pd.get("stickied", False),
+                                "id": pd.get("id", ""),
+                            }
+                        )
+                logger.info(
+                    "[Reddit] r/%s/%s: %d posts fetched",
+                    subreddit,
+                    listing,
+                    len(posts),
+                )
+                return posts
+
+            except Exception as e:
+                logger.warning(
+                    "[Reddit] Fetch error for r/%s (attempt %d): %s",
+                    subreddit,
+                    attempt + 1,
+                    e,
+                )
+                if attempt < self.MAX_RETRIES - 1:
+                    time.sleep(2**attempt)
+
+        logger.error("[Reddit] All %d attempts failed for r/%s", self.MAX_RETRIES, subreddit)
+        return []

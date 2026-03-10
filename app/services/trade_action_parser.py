@@ -14,7 +14,7 @@ import json
 
 from app.models.trade_action import TradeAction
 from app.services.llm_service import LLMService
-from app.services.symbol_filter import get_filter_pipeline, _log_rejection
+from app.services.symbol_filter import _log_rejection, get_filter_pipeline
 from app.utils.logger import logger
 
 _llm = LLMService()

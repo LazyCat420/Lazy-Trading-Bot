@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 
 from app.config import settings
-from app.services.strategist_audit import StrategistAudit
 from app.services.deep_analysis_service import DeepAnalysisService
 from app.services.llm_service import LLMService
 from app.services.paper_trader import PaperTrader
@@ -26,8 +25,11 @@ from app.services.peer_fetcher import PeerFetcher
 from app.services.research_tools import (
     RESEARCH_TOOL_DESCRIPTIONS,
     RESEARCH_TOOL_NAMES,
+)
+from app.services.research_tools import (
     TOOL_REGISTRY as RESEARCH_TOOL_REGISTRY,
 )
+from app.services.strategist_audit import StrategistAudit
 from app.services.yfinance_service import YFinanceCollector
 from app.utils.logger import logger
 
@@ -348,9 +350,7 @@ class PortfolioStrategist:
             result = await self._execute_action(action_name, params)
 
             # Track orders and triggers
-            if action_name == "place_buy" and result.get("status") == "filled":
-                orders_placed.append(result)
-            elif action_name == "place_sell" and result.get("status") == "filled":
+            if (action_name == "place_buy" and result.get("status") == "filled") or (action_name == "place_sell" and result.get("status") == "filled"):
                 orders_placed.append(result)
             elif action_name == "set_triggers" and result.get("status") == "ok":
                 triggers_set.append(result)

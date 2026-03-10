@@ -66,9 +66,6 @@ app/user_config/llm_config.json
 app/user_config/watchlist.json
 app/user_config/risk_params.json
 
-# ── Example / Reference repos (heavy) ─────────────
-example_repos/
-
 # ── IDE / Editor ───────────────────────────────────
 .vscode/
 .idea/

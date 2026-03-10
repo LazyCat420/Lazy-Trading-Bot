@@ -223,7 +223,11 @@ class TickerScanner:
 
         try:
             raw = await self.llm.chat(
-                system=("You are a stock ticker extraction tool. Return ONLY valid JSON."),
+                system=(
+                    "You are a stock ticker extraction tool. "
+                    "Return ONLY raw, valid JSON. Do not include markdown "
+                    "formatting, code blocks like ```json, or conversational text."
+                ),
                 user=prompt,
                 response_format="json",
                 temperature=settings.LLM_DISCOVERY_TEMPERATURE,

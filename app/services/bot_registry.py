@@ -129,7 +129,7 @@ class BotRegistry:
             ):
                 try:
                     conn.execute(
-                        f"DELETE FROM {table} WHERE bot_id = ?",  # noqa: S608
+                        f"DELETE FROM {table} WHERE bot_id = ?",
                         [bot_id],
                     )
                 except Exception:

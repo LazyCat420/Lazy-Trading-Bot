@@ -5,6 +5,7 @@ import json
 from app.models.market_data import FundamentalSnapshot
 from app.services.llm_service import LLMService
 
+
 class PeerFetcher:
     """Uses LLM to identify 3 industry peers for a given stock, based on its fundamentals."""
 

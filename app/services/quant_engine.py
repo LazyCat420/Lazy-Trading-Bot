@@ -30,7 +30,6 @@ from app.database import get_db
 from app.models.dossier import QuantScorecard
 from app.utils.logger import logger
 
-
 # ---------------------------------------------------------------------------
 # Market cap tier classification
 # ---------------------------------------------------------------------------
@@ -828,7 +827,7 @@ class QuantSignalEngine:
 
     # -------------------------------------------------------------------
     @staticmethod
-    def _store(db, sc: QuantScorecard) -> None:  # noqa: ANN001
+    def _store(db, sc: QuantScorecard) -> None:
         """Persist a scorecard row in DuckDB."""
         sc_id = str(uuid.uuid4())
         db.execute(

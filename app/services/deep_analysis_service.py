@@ -18,11 +18,11 @@ from datetime import datetime
 from typing import Any
 
 from app.database import get_db
-from app.services.quant_engine import QuantSignalEngine
-from app.services.data_distiller import DataDistiller
 from app.models.dossier import TickerDossier
-from app.utils.logger import logger
+from app.services.data_distiller import DataDistiller
 from app.services.event_logger import log_event
+from app.services.quant_engine import QuantSignalEngine
+from app.utils.logger import logger
 
 
 class DeepAnalysisService:

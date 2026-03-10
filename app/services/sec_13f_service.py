@@ -38,6 +38,19 @@ SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 RATE_LIMIT_SECS = 0.15  # 6-7 req/sec, well within 10/s limit
 MAX_HOLDINGS_PER_FILER = 500  # Cap to prevent massive saves (Elliott=34K+)
 PER_FILER_TIMEOUT_SECS = 60  # Skip filers that take too long
+DEFAULT_BACKFILL_QUARTERS = 8  # ~2 years of history
+
+# 13F filing schedule: filed ~45 days after quarter end
+# Q4 (Dec 31) → due ~Feb 14
+# Q1 (Mar 31) → due ~May 15
+# Q2 (Jun 30) → due ~Aug 14
+# Q3 (Sep 30) → due ~Nov 14
+_QUARTER_FILING_DEADLINES = {
+    1: (5, 15),   # Q1 holdings → due May 15
+    2: (8, 14),   # Q2 holdings → due Aug 14
+    3: (11, 14),  # Q3 holdings → due Nov 14
+    4: (2, 14),   # Q4 holdings → due Feb 14 (of next year)
+}
 
 # ── Default watchlist of major institutional filers ─────────────────
 # CIK numbers for well-known hedge funds / institutional investors.
@@ -113,6 +126,67 @@ class SEC13FCollector:
 
         self._last_scraped_at = time.time()
         return self._tickers_from_db()
+
+    async def backfill_history(
+        self,
+        max_quarters: int = DEFAULT_BACKFILL_QUARTERS,
+    ) -> dict[str, Any]:
+        """Backfill historical 13F filings for all active filers.
+
+        Scrapes up to `max_quarters` past filings per filer, skipping
+        quarters already in the database.
+        Returns summary stats: {filers_processed, quarters_added, total_holdings}.
+        """
+        db = get_db()
+        self._ensure_filers(db)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, self._backfill_all_filers, db, max_quarters,
+        )
+        return result
+
+    def _backfill_all_filers(
+        self, db: Any, max_quarters: int,
+    ) -> dict[str, Any]:
+        """Synchronous backfill of historical filings (runs in executor)."""
+        filers = db.execute(
+            "SELECT cik, filer_name FROM sec_13f_filers WHERE is_active = TRUE"
+        ).fetchall()
+
+        logger.info(
+            "[SEC 13F] Starting historical backfill for %d filers "
+            "(%d quarters each)",
+            len(filers), max_quarters,
+        )
+
+        total_saved = 0
+        filers_done = 0
+        quarters_added = 0
+
+        for cik, name in filers:
+            try:
+                saved, qs = self._scrape_filer_history(
+                    db, cik, name, max_quarters,
+                )
+                total_saved += saved
+                quarters_added += qs
+                filers_done += 1
+            except Exception as e:
+                logger.error(
+                    "[SEC 13F] Backfill failed for %s: %s", name, e,
+                )
+
+        logger.info(
+            "[SEC 13F] Backfill complete: %d filers, %d new quarters, "
+            "%d total holdings",
+            filers_done, quarters_added, total_saved,
+        )
+        return {
+            "filers_processed": filers_done,
+            "quarters_added": quarters_added,
+            "total_holdings_saved": total_saved,
+        }
 
     def _scrape_all_filers(self, db: Any) -> None:
         """Synchronous method that scrapes all filers (runs in thread executor)."""
@@ -197,18 +271,55 @@ class SEC13FCollector:
                 pass  # Already exists
 
     def _scrape_filer(self, db: Any, cik: str, name: str) -> int:
-        """Scrape 13F-HR for a single filer. Returns number of holdings saved."""
+        """Scrape 13F-HR for a single filer. Returns number of holdings saved.
+
+        Skips the SEC API call entirely if the next expected filing date
+        hasn't been reached yet (filings are quarterly, ~45 days after
+        quarter end).
+        """
+        # ── Filing-schedule skip: don't hit SEC until next filing is due ──
+        sched_row = db.execute(
+            "SELECT next_expected_filing, latest_quarter "
+            "FROM sec_13f_filers WHERE cik = ?",
+            [cik],
+        ).fetchone()
+        if sched_row and sched_row[0]:
+            next_date = sched_row[0]
+            if hasattr(next_date, "date"):
+                next_date = next_date.date()
+            from datetime import date as date_type
+            today = date_type.today()
+            if today < next_date:
+                logger.info(
+                    "[SEC 13F] Skipping %s — next filing expected %s (latest: %s)",
+                    name, next_date, sched_row[1] or "?",
+                )
+                # Still update last_checked so the UI shows we tried
+                db.execute(
+                    "UPDATE sec_13f_filers SET last_checked = CURRENT_TIMESTAMP WHERE cik = ?",
+                    [cik],
+                )
+                return 0
+
         logger.info("[SEC 13F] Scraping %s (CIK: %s)", name, cik)
 
         # Get submissions index
         submissions = self._get_submissions(cik)
         if not submissions:
+            db.execute(
+                "UPDATE sec_13f_filers SET last_checked = CURRENT_TIMESTAMP WHERE cik = ?",
+                [cik],
+            )
             return 0
 
         # Find latest 13F-HR filing
         filing = self._find_latest_13f(submissions, cik)
         if not filing:
             logger.info("[SEC 13F] No 13F-HR found for %s", name)
+            db.execute(
+                "UPDATE sec_13f_filers SET last_checked = CURRENT_TIMESTAMP WHERE cik = ?",
+                [cik],
+            )
             return 0
 
         quarter = filing["quarter"]
@@ -226,12 +337,26 @@ class SEC13FCollector:
                 quarter,
                 existing[0],
             )
+            # Set next_expected_filing so we skip until a new quarter is due
+            next_filing = self._next_filing_date(quarter)
+            db.execute(
+                "UPDATE sec_13f_filers "
+                "SET last_checked = CURRENT_TIMESTAMP, "
+                "    latest_quarter = ?, "
+                "    next_expected_filing = ? "
+                "WHERE cik = ?",
+                [quarter, next_filing, cik],
+            )
             return 0
 
         # Fetch and parse the information table
         holdings = self._get_holdings(filing, cik)
         if not holdings:
             logger.warning("[SEC 13F] No holdings parsed for %s", name)
+            db.execute(
+                "UPDATE sec_13f_filers SET last_checked = CURRENT_TIMESTAMP WHERE cik = ?",
+                [cik],
+            )
             return 0
 
         # Filter out holdings with no ticker resolved
@@ -280,20 +405,65 @@ class SEC13FCollector:
             except Exception as e:
                 logger.debug("[SEC 13F] Insert failed for %s: %s", h.get("ticker"), e)
 
-        # Update filer last_checked
+        # Update filer: last_checked, latest_quarter, next_expected_filing
+        next_filing = self._next_filing_date(quarter)
         db.execute(
-            "UPDATE sec_13f_filers SET last_checked = CURRENT_TIMESTAMP WHERE cik = ?",
-            [cik],
+            "UPDATE sec_13f_filers "
+            "SET last_checked = CURRENT_TIMESTAMP, "
+            "    latest_quarter = ?, "
+            "    next_expected_filing = ? "
+            "WHERE cik = ?",
+            [quarter, next_filing, cik],
         )
 
         logger.info(
-            "[SEC 13F] Saved %d/%d holdings for %s (%s)",
+            "[SEC 13F] Saved %d/%d holdings for %s (%s) "
+            "— next check after %s",
             saved,
             len(holdings),
             name,
             quarter,
+            next_filing,
         )
         return saved
+
+    @staticmethod
+    def _next_filing_date(current_quarter: str) -> str:
+        """Calculate the next expected 13F filing date based on the quarter.
+
+        13F filings are due ~45 days after each quarter end:
+          Q4 (Dec 31) → Feb 14     Q1 (Mar 31) → May 15
+          Q2 (Jun 30) → Aug 14     Q3 (Sep 30) → Nov 14
+
+        Args:
+            current_quarter: e.g. "2025Q4"
+
+        Returns:
+            Next filing date as "YYYY-MM-DD" string.
+        """
+        try:
+            year = int(current_quarter[:4])
+            q = int(current_quarter[-1])
+        except (ValueError, IndexError):
+            # Fallback: 45 days from now
+            from datetime import timedelta
+            return (datetime.now() + timedelta(days=45)).strftime("%Y-%m-%d")
+
+        # The NEXT quarter after current_quarter
+        next_q = (q % 4) + 1
+        next_year = year + 1 if next_q <= q else year
+        # Special case: Q4→Q1 of next year, filed in Feb of next_year+1
+        if q == 4:
+            next_year = year + 1
+
+        month, day = _QUARTER_FILING_DEADLINES[next_q]
+        # For Q4 filings (due Feb), the year is current_quarter year + 1
+        if next_q == 4:
+            filing_year = next_year + 1
+        else:
+            filing_year = next_year
+
+        return f"{filing_year}-{month:02d}-{day:02d}"
 
     def _get_submissions(self, cik: str) -> dict[str, Any] | None:
         """Fetch company submissions JSON from SEC EDGAR."""
@@ -318,15 +488,33 @@ class SEC13FCollector:
         submissions: dict[str, Any],
         cik: str,
     ) -> dict[str, Any] | None:
-        """Find the most recent 13F-HR filing from the submissions data."""
+        """Find the most recent 13F-HR filing from submissions."""
+        filings = self._find_13f_filings(submissions, cik, max_filings=1)
+        return filings[0] if filings else None
+
+    def _find_13f_filings(
+        self,
+        submissions: dict[str, Any],
+        cik: str,
+        max_filings: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Find up to `max_filings` 13F-HR filings from submissions.
+
+        Returns a list of filing dicts, most recent first.
+        Deduplicates by quarter (keeps earliest per quarter, which
+        is the original filing rather than an amendment).
+        """
         recent = submissions.get("filings", {}).get("recent", {})
         if not recent:
-            return None
+            return []
 
         forms = recent.get("form", [])
         filing_dates = recent.get("filingDate", [])
         accession_numbers = recent.get("accessionNumber", [])
         primary_docs = recent.get("primaryDocument", [])
+
+        results: list[dict[str, Any]] = []
+        seen_quarters: set[str] = set()
 
         for i in range(len(forms)):
             if forms[i] not in ("13F-HR", "13F-HR/A"):
@@ -336,12 +524,13 @@ class SEC13FCollector:
 
             filing_date_str = filing_dates[i]
             accession = accession_numbers[i]
-            primary_doc = primary_docs[i] if i < len(primary_docs) else ""
+            primary_doc = (
+                primary_docs[i] if i < len(primary_docs) else ""
+            )
 
             # Determine the quarter the filing covers
             try:
                 dt = datetime.strptime(filing_date_str, "%Y-%m-%d")
-                # 13F filings filed in Q1 cover Q4 of prior year, etc.
                 if dt.month <= 3:
                     q_year, q_num = dt.year - 1, 4
                 elif dt.month <= 6:
@@ -353,26 +542,145 @@ class SEC13FCollector:
             except ValueError:
                 continue
 
+            quarter = f"{q_year}Q{q_num}"
+            if quarter in seen_quarters:
+                continue  # Skip amendments for same quarter
+            seen_quarters.add(quarter)
+
             file_accession = accession.replace("-", "")
             stripped_cik = cik.lstrip("0")
 
-            return {
+            results.append({
                 "accession": accession,
                 "filing_date": filing_date_str,
-                "quarter": f"{q_year}Q{q_num}",
+                "quarter": quarter,
                 "primary_doc": primary_doc,
                 "index_url": (
-                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/{file_accession}/"
+                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
+                    f"{file_accession}/"
                     f"{accession}-index.htm"
                 ),
                 "filing_url": (
-                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/{file_accession}/{primary_doc}"
+                    f"{SEC_ARCHIVES_URL}/{stripped_cik}/"
+                    f"{file_accession}/{primary_doc}"
                 ),
                 "cik": stripped_cik,
                 "file_accession": file_accession,
-            }
+            })
 
-        return None
+            if len(results) >= max_filings:
+                break
+
+        return results
+
+    def _scrape_filer_history(
+        self, db: Any, cik: str, name: str, max_quarters: int,
+    ) -> tuple[int, int]:
+        """Scrape up to `max_quarters` historical 13F filings for one filer.
+
+        Skips quarters already in the DB. Returns (total_saved, new_quarters).
+        """
+        logger.info(
+            "[SEC 13F] Backfilling %s (CIK: %s, up to %d quarters)",
+            name, cik, max_quarters,
+        )
+
+        submissions = self._get_submissions(cik)
+        if not submissions:
+            return 0, 0
+
+        filings = self._find_13f_filings(
+            submissions, cik, max_filings=max_quarters,
+        )
+        if not filings:
+            logger.info(
+                "[SEC 13F] No 13F-HR filings found for %s", name,
+            )
+            return 0, 0
+
+        total_saved = 0
+        new_quarters = 0
+
+        for filing in filings:
+            quarter = filing["quarter"]
+            filing_date = filing["filing_date"]
+
+            # Skip if we already have this quarter
+            existing = db.execute(
+                "SELECT COUNT(*) FROM sec_13f_holdings "
+                "WHERE cik = ? AND filing_quarter = ?",
+                [cik, quarter],
+            ).fetchone()
+            if existing and existing[0] > 0:
+                logger.debug(
+                    "[SEC 13F] %s %s already in DB, skipping",
+                    name, quarter,
+                )
+                continue
+
+            # Fetch and parse
+            holdings = self._get_holdings(filing, cik)
+            if not holdings:
+                logger.debug(
+                    "[SEC 13F] No holdings parsed for %s %s",
+                    name, quarter,
+                )
+                continue
+
+            # Filter + cap
+            holdings = [h for h in holdings if h.get("ticker")]
+            if len(holdings) > MAX_HOLDINGS_PER_FILER:
+                holdings.sort(
+                    key=lambda h: h.get("value_usd", 0),
+                    reverse=True,
+                )
+                holdings = holdings[:MAX_HOLDINGS_PER_FILER]
+
+            # Persist
+            saved = 0
+            for h in holdings:
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO sec_13f_holdings
+                            (cik, ticker, name_of_issuer, cusip,
+                             value_usd, shares, share_type,
+                             filing_quarter, filing_date,
+                             collected_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                        ON CONFLICT (cik, ticker, filing_quarter)
+                        DO UPDATE SET
+                            value_usd = EXCLUDED.value_usd,
+                            shares = EXCLUDED.shares,
+                            collected_at = EXCLUDED.collected_at
+                        """,
+                        [
+                            cik,
+                            h.get("ticker", ""),
+                            h.get("name_of_issuer", ""),
+                            h.get("cusip", ""),
+                            h.get("value_usd", 0),
+                            h.get("shares", 0),
+                            h.get("share_type", "SH"),
+                            quarter,
+                            filing_date,
+                        ],
+                    )
+                    saved += 1
+                except Exception as e:
+                    logger.debug(
+                        "[SEC 13F] Insert failed for %s: %s",
+                        h.get("ticker"), e,
+                    )
+
+            total_saved += saved
+            new_quarters += 1
+            logger.info(
+                "[SEC 13F] Backfill: %s %s — saved %d holdings",
+                name, quarter, saved,
+            )
+
+        return total_saved, new_quarters
 
     def _get_holdings(
         self,

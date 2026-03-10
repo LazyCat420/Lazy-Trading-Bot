@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html import unescape
 from urllib.parse import quote_plus
 
@@ -33,7 +33,7 @@ class NewsCollector:
         """
         # Daily guard — skip if already scraped today
         db = get_db()
-        today_start = datetime.now(timezone.utc).replace(
+        today_start = datetime.now(UTC).replace(
             hour=0,
             minute=0,
             second=0,
@@ -192,7 +192,7 @@ class NewsCollector:
                 if pub_ts:
                     try:
                         if isinstance(pub_ts, int | float):
-                            published_at = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
+                            published_at = datetime.fromtimestamp(pub_ts, tz=UTC)
                         else:
                             # Handle ISO strings like "2026-02-27T04:16:29Z"
                             # Replace Z with +00:00 for python fromisoformat
@@ -263,7 +263,7 @@ class NewsCollector:
                 pub_parsed = entry.get("published_parsed")
                 if pub_parsed:
                     try:
-                        published_at = datetime(*pub_parsed[:6], tzinfo=timezone.utc)
+                        published_at = datetime(*pub_parsed[:6], tzinfo=UTC)
                     except (TypeError, ValueError):
                         pass
 
@@ -351,7 +351,7 @@ class NewsCollector:
                     if filed:
                         try:
                             published_at = datetime.strptime(filed, "%Y-%m-%d").replace(
-                                tzinfo=timezone.utc
+                                tzinfo=UTC
                             )
                         except ValueError:
                             pass

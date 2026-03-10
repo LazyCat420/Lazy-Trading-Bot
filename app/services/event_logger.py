@@ -14,7 +14,6 @@ from datetime import datetime
 from app.database import get_db
 from app.utils.logger import logger
 
-
 # Module-level loop_id so every event in the same autonomous-loop run
 # is grouped together.  Set by `start_loop()`.
 _current_loop_id: str | None = None
@@ -26,14 +25,14 @@ _current_model_name: str = ""
 
 def set_bot_context(bot_id: str, model_name: str = "") -> None:
     """Set the bot context used by all subsequent log_event() calls."""
-    global _current_bot_id, _current_model_name  # noqa: PLW0603
+    global _current_bot_id, _current_model_name
     _current_bot_id = bot_id or "default"
     _current_model_name = model_name or ""
 
 
 def start_loop() -> str:
     """Generate a new loop_id and return it."""
-    global _current_loop_id  # noqa: PLW0603
+    global _current_loop_id
     _current_loop_id = uuid.uuid4().hex[:8]
     logger.info("[EventLogger] Loop started: %s", _current_loop_id)
     return _current_loop_id
@@ -41,7 +40,7 @@ def start_loop() -> str:
 
 def end_loop() -> None:
     """Clear the current loop_id."""
-    global _current_loop_id  # noqa: PLW0603
+    global _current_loop_id
     _current_loop_id = None
 
 

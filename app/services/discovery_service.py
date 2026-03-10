@@ -549,25 +549,40 @@ class DiscoveryService:
         now = datetime.now()
 
         for t in tickers:
-            # Save raw discovery record
-            db.execute(
-                """
-                INSERT INTO discovered_tickers
-                    (ticker, source, source_detail, discovery_score,
-                     sentiment_hint, context_snippet, source_url, discovered_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
+            # ── Same-day dedup guard: skip if this ticker+source was
+            #    already discovered today to prevent duplicate rows.
+            already_today = db.execute(
+                "SELECT 1 FROM discovered_tickers "
+                "WHERE ticker = ? AND source = ? "
+                "AND discovered_at >= CURRENT_DATE",
+                [t.ticker, t.source],
+            ).fetchone()
+            if already_today:
+                logger.debug(
+                    "[Discovery] Skipping duplicate insert for %s (source=%s, already today)",
                     t.ticker,
                     t.source,
-                    t.source_detail,
-                    t.discovery_score,
-                    t.sentiment_hint,
-                    t.context_snippets[0] if t.context_snippets else "",
-                    t.source_urls[0] if t.source_urls else "",
-                    now,
-                ],
-            )
+                )
+            else:
+                # Save raw discovery record
+                db.execute(
+                    """
+                    INSERT INTO discovered_tickers
+                        (ticker, source, source_detail, discovery_score,
+                         sentiment_hint, context_snippet, source_url, discovered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        t.ticker,
+                        t.source,
+                        t.source_detail,
+                        t.discovery_score,
+                        t.sentiment_hint,
+                        t.context_snippets[0] if t.context_snippets else "",
+                        t.source_urls[0] if t.source_urls else "",
+                        now,
+                    ],
+                )
 
             # Upsert aggregated score
             reddit_score = t.discovery_score if "reddit" in t.source else 0.0

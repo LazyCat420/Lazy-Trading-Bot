@@ -12,7 +12,7 @@ _connection: duckdb.DuckDBPyConnection | None = None
 
 def get_db() -> duckdb.DuckDBPyConnection:
     """Return the singleton DuckDB connection, creating tables on first call."""
-    global _connection  # noqa: PLW0603
+    global _connection
     if _connection is None:
         db_path = str(settings.DB_PATH)
         logger.info("Opening DuckDB at %s", db_path)
@@ -872,6 +872,10 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
 
     # ---- bots: queue ordering for Run All ----
     _add_col("bots", "queue_order", "INTEGER DEFAULT 0")
+
+    # ---- sec_13f_filers: filing schedule tracking ----
+    _add_col("sec_13f_filers", "latest_quarter", "VARCHAR")
+    _add_col("sec_13f_filers", "next_expected_filing", "DATE")
 
     # ---- Fix contaminated last_analyzed timestamps ----
     # Prior bug: _update_watchlist ran UPDATE WHERE ticker = ? (no bot_id),

@@ -477,4 +477,4 @@ class WatchlistManager:
             "updated_at": str(row[12]) if row[12] else None,
         }
 
-        
+

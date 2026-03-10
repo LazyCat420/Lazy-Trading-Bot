@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
@@ -237,7 +237,7 @@ class RSSNewsCollector:
             pub_parsed = entry.get("published_parsed")
             if pub_parsed:
                 try:
-                    published_at = datetime(*pub_parsed[:6], tzinfo=timezone.utc)
+                    published_at = datetime(*pub_parsed[:6], tzinfo=UTC)
                 except (TypeError, ValueError):
                     pass
 

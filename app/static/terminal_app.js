@@ -33,6 +33,14 @@ const fmt = {
         if (hrs < 24) return `${hrs}h ago`;
         return `${Math.floor(hrs / 24)}d ago`;
     },
+    compactNum: (v) => {
+        if (v == null) return "0";
+        const n = Number(v);
+        if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + "B";
+        if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
+        if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "K";
+        return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    },
 };
 
 const changeColor = (val) => {
@@ -1437,6 +1445,7 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                 <div className="flex-1 overflow-y-auto py-4 px-2 flex flex-col gap-1">
                     <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Navigation</h3>
                     <NavLink to="/" icon="monitoring" label="Watchlist" id="watchlist" />
+                    <NavLink to="/data" icon="database" label="Data" id="data" />
                     <NavLink to="/monitor" icon="precision_manufacturing" label="Autobot Monitor" id="monitor" />
                     <NavLink to="/settings" icon="tune" label="Settings" id="settings" />
                     <NavLink to="/diagnostics" icon="bug_report" label="Diagnostics" id="diagnostics" />
@@ -5778,6 +5787,1452 @@ const DiagnosticsPage = () => {
 };
 
 // ***************************************************************
+// HEDGE FUND TRACKER — Accordion view for 13F holdings
+// ***************************************************************
+
+const HedgeFundTracker = () => {
+    const [funds, setFunds] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [expanded, setExpanded] = useState(new Set());
+    const [holdings, setHoldings] = useState({});  // cik -> holdings[]
+    const [holdingsLoading, setHoldingsLoading] = useState(new Set());
+    const [search, setSearch] = useState("");
+    const [sortBy, setSortBy] = useState("value");
+    const [historyModal, setHistoryModal] = useState(null); // {cik, ticker, filerName}
+    const [historyData, setHistoryData] = useState(null);
+    const [showOverlap, setShowOverlap] = useState(false);
+    const [overlapData, setOverlapData] = useState(null);
+    const [backfilling, setBackfilling] = useState(false);
+    const [backfillResult, setBackfillResult] = useState(null);
+
+    // Backfill historical filings
+    const runBackfill = async () => {
+        setBackfilling(true);
+        setBackfillResult(null);
+        try {
+            const res = await fetch("/api/tracker/backfill", { method: "POST" });
+            const data = await res.json();
+            setBackfillResult(data);
+            fetchFunds(); // Refresh fund list after backfill
+        } catch (e) { console.error("Backfill error:", e); }
+        setBackfilling(false);
+    };
+
+    // Fetch fund list
+    const fetchFunds = useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await fetch(`/api/tracker/funds?sort=${sortBy}&search=${encodeURIComponent(search)}`);
+            const data = await res.json();
+            setFunds(data.funds || []);
+        } catch (e) { console.error("Fund fetch error:", e); }
+        setLoading(false);
+    }, [sortBy, search]);
+
+    useEffect(() => { fetchFunds(); }, [fetchFunds]);
+
+    // Fetch holdings when a card is expanded
+    const toggleExpand = async (cik) => {
+        const next = new Set(expanded);
+        if (next.has(cik)) {
+            next.delete(cik);
+        } else {
+            next.add(cik);
+            if (!holdings[cik]) {
+                setHoldingsLoading(prev => new Set(prev).add(cik));
+                try {
+                    const res = await fetch(`/api/tracker/funds/${cik}/holdings`);
+                    const data = await res.json();
+                    setHoldings(prev => ({ ...prev, [cik]: data }));
+                } catch (e) { console.error("Holdings fetch error:", e); }
+                setHoldingsLoading(prev => {
+                    const s = new Set(prev);
+                    s.delete(cik);
+                    return s;
+                });
+            }
+        }
+        setExpanded(next);
+    };
+
+    // Fetch history for a specific holding
+    const openHistory = async (cik, ticker, filerName) => {
+        setHistoryModal({ cik, ticker, filerName });
+        try {
+            const res = await fetch(`/api/tracker/funds/${cik}/history/${ticker}`);
+            setHistoryData(await res.json());
+        } catch (e) {
+            console.error("History fetch error:", e);
+            setHistoryData(null);
+        }
+    };
+
+    // Fetch overlap data
+    const toggleOverlap = async () => {
+        if (showOverlap) { setShowOverlap(false); return; }
+        setShowOverlap(true);
+        if (!overlapData) {
+            try {
+                const res = await fetch("/api/tracker/funds/overlap?min_funds=2");
+                setOverlapData(await res.json());
+            } catch (e) { console.error("Overlap error:", e); }
+        }
+    };
+
+    const QoqBadge = ({ change }) => {
+        const cls = change?.toLowerCase().replace(/ /g, "_") || "unchanged";
+        const label = change?.replace(/_/g, " ") || "—";
+        return <span className={`qoq-badge ${cls}`}>{label}</span>;
+    };
+
+    const PctBar = ({ pct }) => (
+        <div className="pct-bar">
+            <div className="pct-bar-track">
+                <div className="pct-bar-fill" style={{ width: `${Math.min(pct, 100)}%` }} />
+            </div>
+            <span className="pct-bar-label">{pct}%</span>
+        </div>
+    );
+
+    return (
+        <div className="flex flex-col gap-3 p-4">
+            {/* Toolbar */}
+            <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 flex-1 max-w-sm">
+                    <span className="material-symbols-outlined text-text-muted text-sm">search</span>
+                    <input type="text" placeholder="Search funds…" value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        className="bg-transparent border-none outline-none text-xs text-white flex-1 font-mono" />
+                </div>
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+                    className="bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 text-xs text-white font-mono outline-none cursor-pointer">
+                    <option value="value">Sort: Portfolio Value</option>
+                    <option value="holdings">Sort: # Holdings</option>
+                    <option value="name">Sort: Name</option>
+                </select>
+                <button onClick={toggleOverlap}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${showOverlap
+                        ? "bg-primary-blue/20 text-primary-blue border border-primary-blue/30"
+                        : "bg-border-dark/50 hover:bg-border-dark text-text-secondary hover:text-white"}`}>
+                    <span className="material-symbols-outlined text-sm">hub</span>
+                    Overlap
+                </button>
+                <button onClick={fetchFunds}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary hover:text-white transition">
+                    <span className={`material-symbols-outlined text-sm ${loading ? "animate-spin" : ""}`}>refresh</span>
+                    Refresh
+                </button>
+                <button onClick={runBackfill} disabled={backfilling}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${backfilling
+                        ? "bg-amber-500/20 text-amber-400 border border-amber-500/30 cursor-wait"
+                        : "bg-primary/15 hover:bg-primary/25 text-primary"}`}>
+                    <span className={`material-symbols-outlined text-sm ${backfilling ? "animate-spin" : ""}`}>
+                        {backfilling ? "progress_activity" : "history"}
+                    </span>
+                    {backfilling ? "Backfilling…" : "Backfill History"}
+                </button>
+            </div>
+
+            {/* Overlap Section */}
+            {showOverlap && overlapData && (
+                <div className="glass-card p-4 animate-fadeIn">
+                    <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                        <span className="material-symbols-outlined text-primary-blue text-[18px]">hub</span>
+                        Multi-Fund Holdings ({overlapData.count} tickers held by {overlapData.min_funds}+ funds)
+                    </h3>
+                    <div className="overlap-grid">
+                        {overlapData.overlap?.slice(0, 20).map(item => (
+                            <div key={item.ticker} className="overlap-card">
+                                <div className="flex items-center justify-between mb-1">
+                                    <span className="text-primary font-bold text-sm">{item.ticker}</span>
+                                    <span className="text-xs font-mono text-primary-blue font-bold">{item.fund_count} funds</span>
+                                </div>
+                                <div className="text-[10px] text-text-muted truncate" title={item.fund_names}>
+                                    {item.fund_names}
+                                </div>
+                                <div className="text-[10px] text-text-muted mt-1 font-mono">
+                                    {fmt.usdShort(item.total_value_usd)} total
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Fund Cards */}
+            {loading && funds.length === 0 ? (
+                <div className="flex items-center justify-center py-16">
+                    <span className="material-symbols-outlined text-primary animate-spin text-3xl">progress_activity</span>
+                </div>
+            ) : funds.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-text-muted">
+                    <span className="material-symbols-outlined text-5xl mb-3">account_balance</span>
+                    <p className="text-sm">No 13F filers tracked yet</p>
+                    <p className="text-xs mt-1">Run the SEC scraper to populate fund data</p>
+                </div>
+            ) : (
+                <div className="space-y-2">
+                    {funds.map(fund => (
+                        <div key={fund.cik} className={`tracker-card ${expanded.has(fund.cik) ? "expanded" : ""}`}>
+                            {/* Card Header */}
+                            <div className="tracker-card-header" onClick={() => toggleExpand(fund.cik)}>
+                                <span className={`material-symbols-outlined text-[18px] transition-transform ${expanded.has(fund.cik) ? "rotate-90" : ""}`}
+                                    style={{ color: "var(--color-primary)", transition: "transform 0.2s" }}>
+                                    chevron_right
+                                </span>
+                                <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
+                                    <span className="material-symbols-outlined text-primary text-[16px]">account_balance</span>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-white text-sm font-bold truncate">{fund.name}</div>
+                                    <div className="text-[10px] text-text-muted font-mono">
+                                        CIK {fund.cik} • {fund.latest_quarter || "No filings"}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-4 shrink-0">
+                                    <div className="tracker-stat">
+                                        <span className="tracker-stat-value">{fund.holding_count}</span>
+                                        <span className="tracker-stat-label">Holdings</span>
+                                    </div>
+                                    <div className="tracker-stat">
+                                        <span className="tracker-stat-value text-primary">{fmt.usdShort(fund.total_value_usd)}</span>
+                                        <span className="tracker-stat-label">Total Value</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Card Body — Holdings Table */}
+                            <div className="tracker-card-body">
+                                <div className="tracker-card-body-inner">
+                                    {holdingsLoading.has(fund.cik) ? (
+                                        <div className="flex items-center justify-center py-8">
+                                            <span className="material-symbols-outlined text-primary animate-spin text-xl">progress_activity</span>
+                                        </div>
+                                    ) : holdings[fund.cik] ? (
+                                        <>
+                                            <div className="flex items-center gap-3 py-2 text-[10px] text-text-muted">
+                                                <span>Quarter: <strong className="text-white">{holdings[fund.cik].quarter}</strong></span>
+                                                {holdings[fund.cik].prior_quarter && (
+                                                    <span>vs. <strong className="text-text-secondary">{holdings[fund.cik].prior_quarter}</strong></span>
+                                                )}
+                                                <span className="ml-auto">{holdings[fund.cik].count} positions</span>
+                                            </div>
+                                            <table className="data-grid">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Trend</th>
+                                                        <th>Ticker</th>
+                                                        <th>Company</th>
+                                                        <th>Shares</th>
+                                                        <th>Value ($)</th>
+                                                        <th>% Portfolio</th>
+                                                        <th>QoQ Change</th>
+                                                        <th>Share Δ</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {holdings[fund.cik].holdings?.map(h => {
+                                                        const isAcc = h.trend_direction === "ACCUMULATING";
+                                                        const isDump = h.trend_direction === "DUMPING";
+                                                        const isNew = h.trend_direction === "NEW";
+                                                        const streak = h.trend_streak || 0;
+                                                        const rowStyle = streak >= 3 ? {
+                                                            borderLeft: `3px solid ${isAcc ? "#22c55e" : isDump ? "#ef4444" : "transparent"}`,
+                                                        } : {};
+                                                        return (
+                                                        <tr key={h.ticker} className="cursor-pointer" onClick={() => openHistory(fund.cik, h.ticker, fund.name)} style={rowStyle}>
+                                                            <td>
+                                                                {isAcc ? (
+                                                                    <span className="flex items-center gap-1">
+                                                                        <span className="material-symbols-outlined text-sm" style={{ color: "#22c55e" }}>trending_up</span>
+                                                                        <span style={{ color: "#22c55e", fontSize: "10px", fontWeight: 700 }}>{streak}Q</span>
+                                                                        {h.total_change_pct !== 0 && (
+                                                                            <span style={{ color: "#22c55e80", fontSize: "9px" }}>({h.total_change_pct > 0 ? "+" : ""}{h.total_change_pct}%)</span>
+                                                                        )}
+                                                                    </span>
+                                                                ) : isDump ? (
+                                                                    <span className="flex items-center gap-1">
+                                                                        <span className="material-symbols-outlined text-sm" style={{ color: "#ef4444" }}>trending_down</span>
+                                                                        <span style={{ color: "#ef4444", fontSize: "10px", fontWeight: 700 }}>{streak}Q</span>
+                                                                        {h.total_change_pct !== 0 && (
+                                                                            <span style={{ color: "#ef444480", fontSize: "9px" }}>({h.total_change_pct}%)</span>
+                                                                        )}
+                                                                    </span>
+                                                                ) : isNew ? (
+                                                                    <span className="flex items-center gap-1">
+                                                                        <span className="material-symbols-outlined text-sm" style={{ color: "#06b6d4" }}>auto_awesome</span>
+                                                                        <span style={{ color: "#06b6d4", fontSize: "10px", fontWeight: 700 }}>NEW</span>
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="flex items-center gap-1">
+                                                                        <span className="material-symbols-outlined text-sm" style={{ color: "#5f746b" }}>trending_flat</span>
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td><span className="text-primary font-bold">{h.ticker}</span></td>
+                                                            <td className="text-text-secondary">{h.name_of_issuer || "—"}</td>
+                                                            <td>{h.shares?.toLocaleString() || "—"}</td>
+                                                            <td className="font-bold">{fmt.usdShort(h.value_usd)}</td>
+                                                            <td><PctBar pct={h.pct_of_portfolio} /></td>
+                                                            <td><QoqBadge change={h.qoq_change} /></td>
+                                                            <td className={h.share_change > 0 ? "text-green-400" : h.share_change < 0 ? "text-red-400" : "text-text-muted"}>
+                                                                {h.share_change > 0 ? "+" : ""}{h.share_change?.toLocaleString() || "0"}
+                                                            </td>
+                                                        </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* History Modal */}
+            {historyModal && (
+                <div className="data-modal-overlay" onClick={() => { setHistoryModal(null); setHistoryData(null); }}>
+                    <div className="data-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "600px" }}>
+                        <div className="data-modal-header">
+                            <div>
+                                <h3 className="text-sm font-bold text-white">
+                                    {historyModal.ticker} — Position History
+                                </h3>
+                                <p className="text-[10px] text-text-muted">{historyModal.filerName}</p>
+                            </div>
+                            <button onClick={() => { setHistoryModal(null); setHistoryData(null); }} className="icon-btn">
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
+                        <div className="data-modal-body" style={{ whiteSpace: "normal" }}>
+                            {!historyData ? (
+                                <div className="flex items-center justify-center py-8">
+                                    <span className="material-symbols-outlined text-primary animate-spin text-xl">progress_activity</span>
+                                </div>
+                            ) : historyData.history?.length === 0 ? (
+                                <p className="text-text-muted text-center py-4">No history found</p>
+                            ) : (
+                                <>
+                                    {/* Mini bar chart */}
+                                    <div className="mb-4">
+                                        <div className="text-[10px] text-text-muted uppercase mb-2">Shares Over Time</div>
+                                        <div className="history-chart">
+                                            {(() => {
+                                                const maxShares = Math.max(...historyData.history.map(h => h.shares || 0), 1);
+                                                return historyData.history.map((h, i) => (
+                                                    <div key={i} className="history-bar"
+                                                        style={{ height: `${((h.shares || 0) / maxShares) * 100}%` }}
+                                                        title={`${h.quarter}: ${(h.shares || 0).toLocaleString()} shares`} />
+                                                ));
+                                            })()}
+                                        </div>
+                                        <div className="flex justify-between text-[9px] text-text-muted font-mono mt-1">
+                                            <span>{historyData.history[0]?.quarter}</span>
+                                            <span>{historyData.history[historyData.history.length - 1]?.quarter}</span>
+                                        </div>
+                                    </div>
+                                    {/* History table */}
+                                    <table className="data-grid">
+                                        <thead>
+                                            <tr>
+                                                <th>Quarter</th>
+                                                <th>Shares</th>
+                                                <th>Value</th>
+                                                <th>Change</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {historyData.history.map((h, i) => (
+                                                <tr key={i}>
+                                                    <td className="text-white font-bold">{h.quarter}</td>
+                                                    <td>{(h.shares || 0).toLocaleString()}</td>
+                                                    <td>{fmt.usdShort(h.value_usd)}</td>
+                                                    <td className={h.share_change > 0 ? "text-green-400" : h.share_change < 0 ? "text-red-400" : "text-text-muted"}>
+                                                        {h.share_change != null ? `${h.share_change > 0 ? "+" : ""}${h.share_change.toLocaleString()}` : "—"}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                    <div className="text-center text-[10px] text-text-muted mt-3">
+                                        Held for {historyData.quarters_held} quarter{historyData.quarters_held !== 1 ? "s" : ""}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+
+// ***************************************************************
+// CONGRESS TRACKER — Accordion view for congressional trades
+// ***************************************************************
+
+const CongressTracker = () => {
+    const [members, setMembers] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [expanded, setExpanded] = useState(new Set());
+    const [trades, setTrades] = useState({}); // name -> trades[]
+    const [tradesLoading, setTradesLoading] = useState(new Set());
+    const [search, setSearch] = useState("");
+    const [sortBy, setSortBy] = useState("trades");
+
+    const fetchMembers = useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await fetch(`/api/tracker/congress/members?sort=${sortBy}&search=${encodeURIComponent(search)}`);
+            const data = await res.json();
+            setMembers(data.members || []);
+        } catch (e) { console.error("Congress fetch error:", e); }
+        setLoading(false);
+    }, [sortBy, search]);
+
+    useEffect(() => { fetchMembers(); }, [fetchMembers]);
+
+    const toggleExpand = async (name) => {
+        const next = new Set(expanded);
+        if (next.has(name)) {
+            next.delete(name);
+        } else {
+            next.add(name);
+            if (!trades[name]) {
+                setTradesLoading(prev => new Set(prev).add(name));
+                try {
+                    const res = await fetch(`/api/tracker/congress/members/${encodeURIComponent(name)}/trades`);
+                    const data = await res.json();
+                    setTrades(prev => ({ ...prev, [name]: data.trades || [] }));
+                } catch (e) { console.error("Trades fetch error:", e); }
+                setTradesLoading(prev => {
+                    const s = new Set(prev);
+                    s.delete(name);
+                    return s;
+                });
+            }
+        }
+        setExpanded(next);
+    };
+
+    const DaysBadge = ({ days }) => {
+        if (days == null) return <span className="text-text-muted">—</span>;
+        const cls = days <= 15 ? "fast" : days <= 45 ? "normal" : "slow";
+        return <span className={`days-badge ${cls}`}>{days}d</span>;
+    };
+
+    const TxBadge = ({ type }) => {
+        const isBuy = type && type.toLowerCase().includes("purchase");
+        return <span className={`data-badge ${isBuy ? "buy" : "sell"}`}>{type || "—"}</span>;
+    };
+
+    return (
+        <div className="flex flex-col gap-3 p-4">
+            {/* Toolbar */}
+            <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 flex-1 max-w-sm">
+                    <span className="material-symbols-outlined text-text-muted text-sm">search</span>
+                    <input type="text" placeholder="Search members…" value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        className="bg-transparent border-none outline-none text-xs text-white flex-1 font-mono" />
+                </div>
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+                    className="bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 text-xs text-white font-mono outline-none cursor-pointer">
+                    <option value="trades">Sort: Trade Count</option>
+                    <option value="recent">Sort: Most Recent</option>
+                    <option value="name">Sort: Name</option>
+                </select>
+                <button onClick={fetchMembers}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary hover:text-white transition">
+                    <span className={`material-symbols-outlined text-sm ${loading ? "animate-spin" : ""}`}>refresh</span>
+                    Refresh
+                </button>
+            </div>
+
+            {/* Member Cards */}
+            {loading && members.length === 0 ? (
+                <div className="flex items-center justify-center py-16">
+                    <span className="material-symbols-outlined text-primary animate-spin text-3xl">progress_activity</span>
+                </div>
+            ) : members.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-text-muted">
+                    <span className="material-symbols-outlined text-5xl mb-3">gavel</span>
+                    <p className="text-sm">No congressional trades tracked yet</p>
+                    <p className="text-xs mt-1">Run the Congress scraper to populate trade data</p>
+                </div>
+            ) : (
+                <div className="space-y-2">
+                    {members.map(m => {
+                        const chamberColor = m.chamber === "Senate" ? "text-blue-400" : "text-purple-400";
+                        return (
+                            <div key={m.member_name} className={`tracker-card ${expanded.has(m.member_name) ? "expanded" : ""}`}>
+                                {/* Card Header */}
+                                <div className="tracker-card-header" onClick={() => toggleExpand(m.member_name)}>
+                                    <span className={`material-symbols-outlined text-[18px] transition-transform ${expanded.has(m.member_name) ? "rotate-90" : ""}`}
+                                        style={{ color: "var(--color-primary)", transition: "transform 0.2s" }}>
+                                        chevron_right
+                                    </span>
+                                    <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
+                                        <span className="material-symbols-outlined text-primary text-[16px]">gavel</span>
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-white text-sm font-bold truncate">{m.member_name}</div>
+                                        <div className="text-[10px] font-mono flex items-center gap-2">
+                                            <span className={chamberColor}>{m.chamber}</span>
+                                            {m.last_trade_date && <span className="text-text-muted">Last: {m.last_trade_date}</span>}
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-4 shrink-0">
+                                        <div className="tracker-stat">
+                                            <span className="tracker-stat-value">{m.trade_count}</span>
+                                            <span className="tracker-stat-label">Trades</span>
+                                        </div>
+                                        <div className="tracker-stat">
+                                            <span className="tracker-stat-value text-green-400">{m.buys}</span>
+                                            <span className="tracker-stat-label">Buys</span>
+                                        </div>
+                                        <div className="tracker-stat">
+                                            <span className="tracker-stat-value text-red-400">{m.sells}</span>
+                                            <span className="tracker-stat-label">Sells</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Card Body — Trades Table */}
+                                <div className="tracker-card-body">
+                                    <div className="tracker-card-body-inner">
+                                        {tradesLoading.has(m.member_name) ? (
+                                            <div className="flex items-center justify-center py-8">
+                                                <span className="material-symbols-outlined text-primary animate-spin text-xl">progress_activity</span>
+                                            </div>
+                                        ) : trades[m.member_name] ? (
+                                            <table className="data-grid" style={{ marginTop: "0.5rem" }}>
+                                                <thead>
+                                                    <tr>
+                                                        <th>Date</th>
+                                                        <th>Ticker</th>
+                                                        <th>Asset</th>
+                                                        <th>Type</th>
+                                                        <th>Amount</th>
+                                                        <th>Days to Report</th>
+                                                        <th>Filed</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {trades[m.member_name].map(t => (
+                                                        <tr key={t.id}>
+                                                            <td className="text-white font-bold">{t.tx_date || "—"}</td>
+                                                            <td><span className="text-primary font-bold">{t.ticker || "—"}</span></td>
+                                                            <td className="text-text-secondary max-w-[200px] truncate" title={t.asset_name}>{t.asset_name || "—"}</td>
+                                                            <td><TxBadge type={t.tx_type} /></td>
+                                                            <td className="font-mono text-xs">{t.amount_range || "—"}</td>
+                                                            <td><DaysBadge days={t.days_to_report} /></td>
+                                                            <td className="text-text-muted">{t.filed_date || "—"}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+};
+
+
+// ***************************************************************
+// TICKER TRACKER — Multi-fund timeline view for a single ticker
+// ***************************************************************
+
+const FUND_COLORS = [
+    "#13ec99", "#137fec", "#f59e0b", "#ef4444", "#a855f7",
+    "#22c55e", "#ec4899", "#06b6d4", "#f97316", "#8b5cf6",
+    "#14b8a6", "#e879f9", "#fb923c", "#6366f1", "#2dd4bf",
+];
+
+const TickerTracker = () => {
+    const [search, setSearch] = useState("");
+    const [suggestions, setSuggestions] = useState([]);
+    const [activeTicker, setActiveTicker] = useState(null);
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [visibleFunds, setVisibleFunds] = useState(new Set());
+    const canvasRef = useRef(null);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+
+    // Autocomplete search
+    useEffect(() => {
+        if (search.length < 1) { setSuggestions([]); return; }
+        const timer = setTimeout(async () => {
+            try {
+                const res = await fetch(`/api/tracker/tickers?search=${encodeURIComponent(search)}&limit=15`);
+                const d = await res.json();
+                setSuggestions(d.tickers || []);
+                setShowSuggestions(true);
+            } catch (e) { console.error(e); }
+        }, 200);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+    // Fetch ticker data
+    const loadTicker = async (ticker) => {
+        setActiveTicker(ticker);
+        setSearch(ticker);
+        setShowSuggestions(false);
+        setLoading(true);
+        try {
+            const res = await fetch(`/api/tracker/ticker/${ticker}/funds`);
+            const d = await res.json();
+            setData(d);
+            // Show all funds by default
+            setVisibleFunds(new Set(d.funds?.map(f => f.cik) || []));
+        } catch (e) { console.error(e); }
+        setLoading(false);
+    };
+
+    // Canvas chart rendering
+    useEffect(() => {
+        if (!data || !canvasRef.current) return;
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext("2d");
+        const dpr = window.devicePixelRatio || 1;
+
+        // Size the canvas
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = 280 * dpr;
+        canvas.style.width = rect.width + "px";
+        canvas.style.height = "280px";
+        ctx.scale(dpr, dpr);
+
+        const W = rect.width;
+        const H = 280;
+        const PAD_LEFT = 80;
+        const PAD_RIGHT = 20;
+        const PAD_TOP = 30;
+        const PAD_BOTTOM = 40;
+        const chartW = W - PAD_LEFT - PAD_RIGHT;
+        const chartH = H - PAD_TOP - PAD_BOTTOM;
+
+        // Clear
+        ctx.clearRect(0, 0, W, H);
+
+        const quarters = data.quarters || [];
+        const funds = data.funds?.filter(f => visibleFunds.has(f.cik)) || [];
+
+        if (quarters.length === 0 || funds.length === 0) {
+            ctx.fillStyle = "#5f746b";
+            ctx.font = "13px 'Inter', sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(funds.length === 0 ? "Toggle on some funds to see the chart" : "No data", W / 2, H / 2);
+            return;
+        }
+
+        // Find max shares across visible funds
+        let maxShares = 0;
+        for (const f of funds) {
+            for (const t of f.timeline) {
+                if (t.shares > maxShares) maxShares = t.shares;
+            }
+        }
+        if (maxShares === 0) maxShares = 1;
+
+        // Draw grid
+        ctx.strokeStyle = "rgba(40, 57, 50, 0.4)";
+        ctx.lineWidth = 1;
+        const gridLines = 5;
+        for (let i = 0; i <= gridLines; i++) {
+            const y = PAD_TOP + (chartH / gridLines) * i;
+            ctx.beginPath();
+            ctx.moveTo(PAD_LEFT, y);
+            ctx.lineTo(W - PAD_RIGHT, y);
+            ctx.stroke();
+
+            // Y-axis labels
+            const val = maxShares - (maxShares / gridLines) * i;
+            ctx.fillStyle = "#5f746b";
+            ctx.font = "10px 'JetBrains Mono', monospace";
+            ctx.textAlign = "right";
+            ctx.fillText(fmt.compactNum(val), PAD_LEFT - 8, y + 4);
+        }
+
+        // X-axis: quarters
+        const xStep = chartW / Math.max(quarters.length - 1, 1);
+        ctx.fillStyle = "#5f746b";
+        ctx.font = "10px 'JetBrains Mono', monospace";
+        ctx.textAlign = "center";
+        for (let i = 0; i < quarters.length; i++) {
+            const x = PAD_LEFT + xStep * i;
+            // Vertical grid line
+            ctx.strokeStyle = "rgba(40, 57, 50, 0.25)";
+            ctx.beginPath();
+            ctx.moveTo(x, PAD_TOP);
+            ctx.lineTo(x, PAD_TOP + chartH);
+            ctx.stroke();
+            // Label
+            ctx.fillStyle = "#5f746b";
+            ctx.fillText(quarters[i], x, H - PAD_BOTTOM + 18);
+        }
+
+        // Draw fund lines
+        for (let fi = 0; fi < funds.length; fi++) {
+            const fund = funds[fi];
+            const color = FUND_COLORS[fi % FUND_COLORS.length];
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.lineJoin = "round";
+            ctx.beginPath();
+
+            for (let qi = 0; qi < quarters.length; qi++) {
+                const entry = fund.timeline[qi];
+                const shares = entry?.shares || 0;
+                const x = PAD_LEFT + xStep * qi;
+                const y = PAD_TOP + chartH - (shares / maxShares) * chartH;
+
+                if (qi === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // Draw dots at each data point
+            for (let qi = 0; qi < quarters.length; qi++) {
+                const entry = fund.timeline[qi];
+                const shares = entry?.shares || 0;
+                if (shares === 0 && entry?.status === "NOT_HELD") continue;
+                const x = PAD_LEFT + xStep * qi;
+                const y = PAD_TOP + chartH - (shares / maxShares) * chartH;
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+    }, [data, visibleFunds]);
+
+    const toggleFund = (cik) => {
+        setVisibleFunds(prev => {
+            const next = new Set(prev);
+            next.has(cik) ? next.delete(cik) : next.add(cik);
+            return next;
+        });
+    };
+
+    const toggleAll = () => {
+        if (visibleFunds.size === data?.funds?.length) {
+            setVisibleFunds(new Set());
+        } else {
+            setVisibleFunds(new Set(data?.funds?.map(f => f.cik) || []));
+        }
+    };
+
+    return (
+        <div className="flex flex-col gap-3 p-4">
+            {/* Search bar */}
+            <div className="flex items-center gap-3 flex-wrap">
+                <div className="relative flex-1 max-w-md">
+                    <div className="flex items-center gap-2 bg-onyx-black border border-border-dark rounded-lg px-3 py-2">
+                        <span className="material-symbols-outlined text-text-muted text-sm">search</span>
+                        <input type="text" placeholder="Search ticker (e.g. MSFT, AAPL)…"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value.toUpperCase())}
+                            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && search.length > 0) loadTicker(search);
+                            }}
+                            className="bg-transparent border-none outline-none text-sm text-white flex-1 font-mono" />
+                        {search && (
+                            <button onClick={() => { setSearch(""); setSuggestions([]); }}
+                                className="text-text-muted hover:text-white transition">
+                                <span className="material-symbols-outlined text-sm">close</span>
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Autocomplete dropdown */}
+                    {showSuggestions && suggestions.length > 0 && (
+                        <div className="absolute top-full left-0 right-0 mt-1 bg-onyx-panel border border-border-dark rounded-lg overflow-hidden z-50 shadow-xl max-h-60 overflow-y-auto">
+                            {suggestions.map(t => (
+                                <button key={t} onClick={() => loadTicker(t)}
+                                    className="w-full text-left px-4 py-2 text-sm font-mono text-text-secondary hover:bg-primary/10 hover:text-primary transition flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-xs">trending_up</span>
+                                    {t}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {search && (
+                    <button onClick={() => loadTicker(search)}
+                        className="px-4 py-2 rounded-lg bg-primary/15 hover:bg-primary/25 text-primary text-sm font-bold transition flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">query_stats</span>
+                        Track {search}
+                    </button>
+                )}
+            </div>
+
+            {/* No ticker selected state */}
+            {!activeTicker && !loading && (
+                <div className="flex flex-col items-center justify-center py-20 text-text-muted">
+                    <span className="material-symbols-outlined text-6xl mb-4" style={{ opacity: 0.3 }}>query_stats</span>
+                    <p className="text-sm font-bold">Search for a ticker to start tracking</p>
+                    <p className="text-xs mt-1">See which funds bought, sold, or held a stock across all quarters</p>
+                </div>
+            )}
+
+            {/* Loading */}
+            {loading && (
+                <div className="flex items-center justify-center py-16">
+                    <span className="material-symbols-outlined text-primary animate-spin text-3xl">progress_activity</span>
+                </div>
+            )}
+
+            {/* Results */}
+            {activeTicker && data && !loading && (
+                <>
+                    {/* Header */}
+                    <div className="flex items-center gap-3">
+                        <span className="text-primary text-2xl font-bold font-mono">{data.ticker}</span>
+                        <span className="text-text-muted text-sm">{data.count} fund{data.count !== 1 ? "s" : ""} • {data.quarters?.length || 0} quarter{data.quarters?.length !== 1 ? "s" : ""}</span>
+                    </div>
+
+                    {data.count === 0 ? (
+                        <div className="glass-card p-8 text-center">
+                            <span className="material-symbols-outlined text-4xl text-text-muted mb-2">search_off</span>
+                            <p className="text-sm text-text-muted">No funds found holding <strong className="text-white">{data.ticker}</strong></p>
+                            <p className="text-xs text-text-muted mt-1">This ticker may not have been in any tracked 13F filings</p>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Chart */}
+                            <div className="glass-card p-4">
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">Shares Held Over Time</h3>
+                                </div>
+                                <div style={{ width: "100%" }}>
+                                    <canvas ref={canvasRef} style={{ width: "100%", height: "280px" }} />
+                                </div>
+                            </div>
+
+                            {/* Fund toggles */}
+                            <div className="glass-card p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-bold text-text-muted uppercase tracking-wider">Fund Filters</span>
+                                    <button onClick={toggleAll}
+                                        className="text-[10px] text-primary hover:text-primary-dark transition font-bold">
+                                        {visibleFunds.size === data.funds.length ? "Hide All" : "Show All"}
+                                    </button>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {data.funds.map((f, i) => {
+                                        const color = FUND_COLORS[i % FUND_COLORS.length];
+                                        const active = visibleFunds.has(f.cik);
+                                        return (
+                                            <button key={f.cik}
+                                                onClick={() => toggleFund(f.cik)}
+                                                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono transition"
+                                                style={{
+                                                    background: active ? `${color}15` : "rgba(40,57,50,0.3)",
+                                                    border: `1px solid ${active ? color + "40" : "rgba(40,57,50,0.5)"}`,
+                                                    color: active ? color : "#5f746b",
+                                                    opacity: active ? 1 : 0.6,
+                                                }}>
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: active ? color : "#3a4a44", display: "inline-block" }} />
+                                                {f.name.length > 25 ? f.name.slice(0, 25) + "…" : f.name}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Summary table */}
+                            <div className="glass-card p-4">
+                                <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-3">Fund Positions</h3>
+                                <table className="data-grid">
+                                    <thead>
+                                        <tr>
+                                            <th></th>
+                                            <th>Fund</th>
+                                            <th>Current Shares</th>
+                                            <th>Current Value</th>
+                                            <th>Status</th>
+                                            <th>First Seen</th>
+                                            <th>Last Seen</th>
+                                            <th>Held</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {data.funds.map((f, i) => {
+                                            const color = FUND_COLORS[i % FUND_COLORS.length];
+                                            const latestStatus = f.timeline?.[f.timeline.length - 1]?.status || "—";
+                                            const statusCls = latestStatus === "NEW" ? "new"
+                                                : latestStatus === "ADDED" ? "added"
+                                                : latestStatus === "REDUCED" ? "reduced"
+                                                : latestStatus === "SOLD_OUT" ? "sold_out"
+                                                : "unchanged";
+                                            return (
+                                                <tr key={f.cik}>
+                                                    <td>
+                                                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
+                                                    </td>
+                                                    <td className="text-white font-bold">{f.name}</td>
+                                                    <td className="font-mono">{(f.current_shares || 0).toLocaleString()}</td>
+                                                    <td className="font-mono">{fmt.usdShort(f.current_value)}</td>
+                                                    <td><span className={`qoq-badge ${statusCls}`}>{latestStatus.replace(/_/g, " ")}</span></td>
+                                                    <td className="text-text-muted">{f.first_seen}</td>
+                                                    <td className="text-text-muted">{f.last_seen}</td>
+                                                    <td className="text-text-muted font-mono">{f.quarters_held}Q</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </>
+                    )}
+                </>
+            )}
+        </div>
+    );
+};
+
+
+// ***************************************************************
+// DATA EXPLORER PAGE — Browse, edit, delete all scraped data
+// ***************************************************************
+
+const DATA_TABS = [
+    { id: "youtube", label: "YouTube", icon: "play_circle" },
+    { id: "reddit", label: "Reddit", icon: "forum" },
+    { id: "13f-filers", label: "Tracked Funds", icon: "account_balance" },
+    { id: "13f-holdings", label: "Hedge Fund Holdings", icon: "account_balance" },
+    { id: "ticker-tracker", label: "Ticker Tracker", icon: "query_stats" },
+    { id: "congress", label: "Congress", icon: "gavel" },
+];
+
+const DATA_COLUMNS = {
+    youtube: [
+        { key: "ticker", label: "Ticker", frozen: true, editable: true },
+        { key: "published_at", label: "Scrape Date", format: "date" },
+        { key: "channel", label: "Channel", editable: true },
+        { key: "title", label: "Video Title", editable: true, wide: true },
+        { key: "scanned_for_tickers", label: "Status", format: "scan_status" },
+        { key: "duration_seconds", label: "Duration", format: "duration" },
+        { key: "raw_transcript", label: "Transcript", clickable: true, wide: true },
+    ],
+    reddit: [
+        { key: "ticker", label: "Ticker", frozen: true, editable: true },
+        { key: "discovered_at", label: "Scrape Date", format: "date" },
+        { key: "source_detail", label: "Subreddit", editable: true },
+        { key: "context_snippet", label: "Context", editable: true, wide: true, clickable: true },
+        { key: "discovery_score", label: "Score", format: "number" },
+        { key: "sentiment_hint", label: "Sentiment", format: "sentiment", editable: true },
+        { key: "source_url", label: "URL", format: "link" },
+    ],
+    "13f-filers": [
+        { key: "cik", label: "CIK", frozen: true },
+        { key: "filer_name", label: "Fund Name", editable: true, wide: true },
+        { key: "latest_quarter", label: "Latest Quarter" },
+        { key: "next_expected_filing", label: "Next Filing", format: "date" },
+        { key: "last_checked", label: "Last Checked", format: "date" },
+        { key: "is_active", label: "Active", format: "boolean" },
+    ],
+    "13f-holdings": [
+        { key: "filer_name", label: "Fund", frozen: true, wide: true },
+        { key: "ticker", label: "Ticker", editable: true },
+        { key: "name_of_issuer", label: "Company", editable: true, wide: true },
+        { key: "value_usd", label: "Value ($)", format: "usd" },
+        { key: "shares", label: "Shares", format: "number" },
+        { key: "filing_quarter", label: "Quarter" },
+        { key: "filing_date", label: "Filing Date", format: "date" },
+        { key: "cusip", label: "CUSIP", editable: true },
+    ],
+    congress: [
+        { key: "member_name", label: "Politician", frozen: true, editable: true },
+        { key: "tx_date", label: "Tx Date", format: "date" },
+        { key: "ticker", label: "Ticker", editable: true },
+        { key: "asset_name", label: "Asset", editable: true, wide: true },
+        { key: "tx_type", label: "Type", format: "tx_type", editable: true },
+        { key: "amount_range", label: "Amount", editable: true },
+        { key: "chamber", label: "Chamber" },
+        { key: "filed_date", label: "Filed", format: "date" },
+    ],
+};
+
+const DATA_PK_KEYS = {
+    youtube: ["ticker", "video_id"],
+    reddit: ["rowid"],
+    "13f-filers": ["cik"],
+    "13f-holdings": ["cik", "ticker", "filing_quarter"],
+    congress: ["id"],
+};
+
+// ── Data Detail Modal ──────────────────────────────────────────
+const DataDetailModal = ({ title, content, onClose }) => {
+    useEffect(() => {
+        const onKeyDown = (e) => e.key === "Escape" && onClose();
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [onClose]);
+
+    return (
+        <div className="data-modal-overlay" onClick={onClose}>
+            <div className="data-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="data-modal-header">
+                    <h3 className="text-sm font-bold text-white truncate">{title || "Detail View"}</h3>
+                    <button onClick={onClose} className="icon-btn"><span className="material-symbols-outlined">close</span></button>
+                </div>
+                <div className="data-modal-body">{content || "No content available."}</div>
+            </div>
+        </div>
+    );
+};
+
+// ── Cell Formatter ─────────────────────────────────────────────
+const formatCell = (value, format, row) => {
+    if (value == null || value === "") return <span className="text-text-muted">—</span>;
+    switch (format) {
+        case "date":
+            return <span>{fmt.date(value)}</span>;
+        case "usd":
+            return <span className="font-bold">{fmt.usdShort(value)}</span>;
+        case "number":
+            return <span>{typeof value === "number" ? value.toLocaleString() : value}</span>;
+        case "duration": {
+            const mins = Math.floor(value / 60);
+            const secs = value % 60;
+            return <span>{mins}m {secs}s</span>;
+        }
+        case "scan_status":
+            return value
+                ? <span className="data-badge scanned">Scanned</span>
+                : <span className="data-badge unscanned">Un-scanned</span>;
+        case "boolean":
+            return value
+                ? <span className="data-badge scanned">Yes</span>
+                : <span className="data-badge unscanned">No</span>;
+        case "sentiment":
+            const sentColor = value === "bullish" ? "text-green-400" : value === "bearish" ? "text-red-400" : "text-yellow-400";
+            return <span className={`text-xs font-bold uppercase ${sentColor}`}>{value}</span>;
+        case "tx_type": {
+            const isBuy = value && value.toLowerCase().includes("purchase");
+            return <span className={`data-badge ${isBuy ? "buy" : "sell"}`}>{value}</span>;
+        }
+        case "link":
+            return value ? <a href={value} target="_blank" rel="noopener noreferrer" className="text-primary-blue hover:underline truncate block max-w-[200px]" title={value}>Link</a> : "—";
+        default:
+            return <span>{String(value)}</span>;
+    }
+};
+
+// ── Main Data Explorer Page ────────────────────────────────────
+const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overviewCache }) => {
+    const [expandedRow, setExpandedRow] = useState(null);
+    const [activeTab, setActiveTab] = useState("youtube");
+    const [rows, setRows] = useState([]);
+    const [total, setTotal] = useState(0);
+    const [page, setPage] = useState(1);
+    const [pageSize] = useState(50);
+    const [totalPages, setTotalPages] = useState(1);
+    const [loading, setLoading] = useState(false);
+    const [search, setSearch] = useState("");
+    const [sort, setSort] = useState("");
+    const [order, setOrder] = useState("desc");
+    const [selected, setSelected] = useState(new Set());
+    const [editCell, setEditCell] = useState(null); // { rowIdx, colKey }
+    const [editValue, setEditValue] = useState("");
+    const [modal, setModal] = useState(null); // { title, content }
+    const [cikFilter, setCikFilter] = useState("");
+    const [quarterFilter, setQuarterFilter] = useState("");
+    const [filers, setFilers] = useState([]);  // [{cik, filer_name}]
+    const searchTimeout = useRef(null);
+
+    // Fetch filers list for the fund dropdown
+    useEffect(() => {
+        if (activeTab === "13f-holdings" && filers.length === 0) {
+            fetch("/api/data/13f-filers?page=1&page_size=100")
+                .then(r => r.json())
+                .then(d => setFilers((d.rows || []).map(r => ({ cik: r.cik, name: r.filer_name }))))
+                .catch(() => {});
+        }
+    }, [activeTab]);
+
+    // Fetch data
+    const fetchData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const params = new URLSearchParams({
+                page: String(page),
+                page_size: String(pageSize),
+                search,
+                sort,
+                order,
+            });
+            if (cikFilter && activeTab === "13f-holdings") params.set("cik", cikFilter);
+            if (quarterFilter && activeTab === "13f-holdings") params.set("quarter", quarterFilter);
+
+            const res = await fetch(`/api/data/${activeTab}?${params}`);
+            const data = await res.json();
+            setRows(data.rows || []);
+            setTotal(data.total || 0);
+            setTotalPages(data.total_pages || 1);
+        } catch (e) {
+            console.error("Data fetch error:", e);
+        } finally {
+            setLoading(false);
+        }
+    }, [activeTab, page, pageSize, search, sort, order, cikFilter, quarterFilter]);
+
+    useEffect(() => { fetchData(); }, [fetchData]);
+
+    // Reset page & selection when switching tabs
+    useEffect(() => {
+        setPage(1);
+        setSelected(new Set());
+        setEditCell(null);
+        setSearch("");
+        setSort("");
+        setOrder("desc");
+        setCikFilter("");
+        setQuarterFilter("");
+    }, [activeTab]);
+
+    // Debounced search
+    const handleSearch = (val) => {
+        setSearch(val);
+        clearTimeout(searchTimeout.current);
+        searchTimeout.current = setTimeout(() => { setPage(1); }, 300);
+    };
+
+    // Sort
+    const handleSort = (col) => {
+        if (sort === col) {
+            setOrder(order === "asc" ? "desc" : "asc");
+        } else {
+            setSort(col);
+            setOrder("desc");
+        }
+        setPage(1);
+    };
+
+    // Get primary key for a row
+    const getPk = (row) => {
+        const pkKeys = DATA_PK_KEYS[activeTab] || [];
+        const pk = {};
+        pkKeys.forEach(k => { pk[k] = row[k]; });
+        return pk;
+    };
+
+    // Delete rows
+    const deleteRows = async (pks) => {
+        try {
+            const res = await fetch(`/api/data/${activeTab}`, {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ids: pks }),
+            });
+            const data = await res.json();
+            if (data.deleted > 0) {
+                setSelected(new Set());
+                fetchData();
+            }
+        } catch (e) {
+            console.error("Delete error:", e);
+        }
+    };
+
+    // Inline edit save
+    const saveEdit = async (rowIdx, colKey) => {
+        const row = rows[rowIdx];
+        const pk = getPk(row);
+        try {
+            const res = await fetch(`/api/data/${activeTab}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pk, column: colKey, value: editValue }),
+            });
+            if (res.ok) {
+                const updated = [...rows];
+                updated[rowIdx] = { ...updated[rowIdx], [colKey]: editValue };
+                setRows(updated);
+            }
+        } catch (e) {
+            console.error("Edit error:", e);
+        }
+        setEditCell(null);
+    };
+
+    // Clean blank data
+    const cleanBlank = async () => {
+        try {
+            const res = await fetch(`/api/data/${activeTab}/clean`, { method: "POST" });
+            const data = await res.json();
+            if (data.deleted > 0) {
+                fetchData();
+            }
+            alert(`Cleaned ${data.deleted} blank rows.`);
+        } catch (e) {
+            console.error("Clean error:", e);
+        }
+    };
+
+    // Row detail modal
+    const openRowDetail = async (row, colKey) => {
+        const pk = getPk(row);
+        try {
+            const res = await fetch(`/api/data/${activeTab}/row?pk=${encodeURIComponent(JSON.stringify(pk))}`);
+            const full = await res.json();
+            const title = full.title || full.member_name || full.filer_name || full.ticker || "Detail";
+            const content = activeTab === "youtube"
+                ? (full.raw_transcript || "No transcript available.")
+                : activeTab === "reddit"
+                    ? (full.context_snippet || "No context available.")
+                    : JSON.stringify(full, null, 2);
+            setModal({ title, content });
+        } catch (e) {
+            console.error("Row detail error:", e);
+        }
+    };
+
+    // Select all toggle
+    const toggleSelectAll = () => {
+        if (selected.size === rows.length) {
+            setSelected(new Set());
+        } else {
+            setSelected(new Set(rows.map((_, i) => i)));
+        }
+    };
+
+    const columns = DATA_COLUMNS[activeTab] || [];
+
+    return (
+        <SidebarLayout active="data" watchlist={watchlist} selectedTicker={selectedTicker}
+            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow}
+            setExpandedRow={setExpandedRow} overviewCache={overviewCache}>
+
+            <div className="flex flex-col h-full overflow-hidden">
+                {/* Page Header */}
+                <div className="px-6 py-4 border-b border-border-dark bg-onyx-panel shrink-0">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+                                <span className="material-symbols-outlined text-primary text-xl">database</span>
+                            </div>
+                            <div>
+                                <h2 className="text-lg font-bold text-white">Data Explorer</h2>
+                                <p className="text-xs text-text-muted">{total.toLocaleString()} records • {activeTab}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Tab Bar */}
+                <div className="flex border-b border-border-dark px-6 bg-onyx-surface shrink-0">
+                    {DATA_TABS.map(tab => (
+                        <button key={tab.id}
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`tab-btn flex items-center gap-1.5 ${activeTab === tab.id ? "active" : ""}`}>
+                            <span className="material-symbols-outlined text-sm">{tab.icon}</span>
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                {/* Custom tracker views for holdings, ticker-tracker & congress tabs */}
+                {activeTab === "13f-holdings" ? (
+                    <div className="flex-1 overflow-auto">
+                        <HedgeFundTracker />
+                    </div>
+                ) : activeTab === "ticker-tracker" ? (
+                    <div className="flex-1 overflow-auto">
+                        <TickerTracker />
+                    </div>
+                ) : activeTab === "congress" ? (
+                    <div className="flex-1 overflow-auto">
+                        <CongressTracker />
+                    </div>
+                ) : (
+                    <>
+                        {/* Toolbar */}
+                        <div className="px-6 py-3 border-b border-border-dark bg-onyx-panel/50 shrink-0 flex items-center gap-3 flex-wrap">
+                            {/* Search */}
+                            <div className="flex items-center gap-2 bg-onyx-black border border-border-dark rounded-lg px-3 py-1.5 flex-1 max-w-sm">
+                                <span className="material-symbols-outlined text-text-muted text-sm">search</span>
+                                <input type="text" placeholder="Search tickers, names, keywords…" value={search}
+                                    onChange={(e) => handleSearch(e.target.value)}
+                                    className="bg-transparent border-none outline-none text-xs text-white flex-1 font-mono" />
+                            </div>
+
+                            {/* Actions */}
+                            <button onClick={fetchData} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary hover:text-white transition" title="Refresh data">
+                                <span className={`material-symbols-outlined text-sm ${loading ? "animate-spin" : ""}`}>refresh</span>
+                                Refresh
+                            </button>
+                            <button onClick={cleanBlank} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-orange/10 hover:bg-accent-orange/20 text-xs text-accent-orange transition" title="Delete rows with blank key fields">
+                                <span className="material-symbols-outlined text-sm">cleaning_services</span>
+                                Clean Blank
+                            </button>
+                        </div>
+
+                        {/* Bulk Action Bar */}
+                        {selected.size > 0 && (
+                            <div className="px-6 py-2 shrink-0">
+                                <div className="data-bulk-bar">
+                                    <span className="text-xs text-primary font-bold">{selected.size} selected</span>
+                                    <button onClick={() => {
+                                        const pks = [...selected].map(i => getPk(rows[i]));
+                                        if (confirm(`Delete ${pks.length} rows permanently?`)) deleteRows(pks);
+                                    }} className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-xs text-red-400 transition">
+                                        <span className="material-symbols-outlined text-sm">delete</span>
+                                        Delete Selected
+                                    </button>
+                                    <button onClick={() => setSelected(new Set())} className="text-xs text-text-muted hover:text-white transition">
+                                        Clear Selection
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Grid */}
+                        <div className="flex-1 overflow-auto px-6 py-2">
+                            {loading && rows.length === 0 ? (
+                                <div className="flex items-center justify-center h-full">
+                                    <span className="material-symbols-outlined text-primary animate-spin text-3xl">progress_activity</span>
+                                </div>
+                            ) : rows.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center h-full text-text-muted">
+                                    <span className="material-symbols-outlined text-5xl mb-3">inbox</span>
+                                    <p className="text-sm">No data found</p>
+                                    <p className="text-xs mt-1">Run the scraper to populate this table</p>
+                                </div>
+                            ) : (
+                                <table className="data-grid">
+                                    <thead>
+                                        <tr>
+                                            <th style={{ width: "36px" }}>
+                                                <input type="checkbox" checked={selected.size === rows.length && rows.length > 0}
+                                                    onChange={toggleSelectAll}
+                                                    className="accent-primary" />
+                                            </th>
+                                            {columns.map(col => (
+                                                <th key={col.key} onClick={() => handleSort(col.key)}
+                                                    className={col.frozen ? "frozen-col" : ""}
+                                                    style={col.wide ? { minWidth: "200px" } : {}}>
+                                                    {col.label}
+                                                    <span className={`sort-arrow ${sort === col.key ? "active" : ""}`}>
+                                                        {sort === col.key ? (order === "asc" ? "▲" : "▼") : "↕"}
+                                                    </span>
+                                                </th>
+                                            ))}
+                                            <th style={{ width: "60px" }}>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {rows.map((row, rowIdx) => (
+                                            <tr key={rowIdx}>
+                                                <td>
+                                                    <input type="checkbox" checked={selected.has(rowIdx)}
+                                                        onChange={() => {
+                                                            const next = new Set(selected);
+                                                            next.has(rowIdx) ? next.delete(rowIdx) : next.add(rowIdx);
+                                                            setSelected(next);
+                                                        }}
+                                                        className="accent-primary" />
+                                                </td>
+                                                {columns.map(col => {
+                                                    const isEditing = editCell && editCell.rowIdx === rowIdx && editCell.colKey === col.key;
+
+                                                    if (isEditing) {
+                                                        return (
+                                                            <td key={col.key}>
+                                                                <input className="edit-input" value={editValue}
+                                                                    onChange={(e) => setEditValue(e.target.value)}
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === "Enter") saveEdit(rowIdx, col.key);
+                                                                        if (e.key === "Escape") setEditCell(null);
+                                                                    }}
+                                                                    onBlur={() => saveEdit(rowIdx, col.key)}
+                                                                    autoFocus />
+                                                            </td>
+                                                        );
+                                                    }
+
+                                                    const cellContent = col.clickable
+                                                        ? <span className="cursor-pointer hover:text-primary transition"
+                                                            onClick={() => openRowDetail(row, col.key)}
+                                                            title="Click to view full content">{formatCell(row[col.key], col.format, row)}</span>
+                                                        : formatCell(row[col.key], col.format, row);
+
+                                                    return (
+                                                        <td key={col.key}
+                                                            className={`${col.frozen ? "frozen-col" : ""} ${col.editable ? "editable" : ""}`}
+                                                            onDoubleClick={() => {
+                                                                if (col.editable) {
+                                                                    setEditCell({ rowIdx, colKey: col.key });
+                                                                    setEditValue(row[col.key] ?? "");
+                                                                }
+                                                            }}
+                                                            title={col.editable ? "Double-click to edit" : ""}>
+                                                            {col.key === "ticker" && row[col.key]
+                                                                ? <span className="text-primary font-bold">{row[col.key]}</span>
+                                                                : cellContent}
+                                                        </td>
+                                                    );
+                                                })}
+                                                <td>
+                                                    <button onClick={() => {
+                                                        if (confirm(`Delete this row?`)) deleteRows([getPk(row)]);
+                                                    }} className="icon-btn danger" title="Delete row">
+                                                        <span className="material-symbols-outlined text-sm">delete</span>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+
+                        {/* Pagination */}
+                        {totalPages > 1 && (
+                            <div className="px-6 py-3 border-t border-border-dark bg-onyx-panel/50 shrink-0 flex items-center justify-between">
+                                <span className="text-xs text-text-muted font-mono">
+                                    Showing {((page - 1) * pageSize) + 1}–{Math.min(page * pageSize, total)} of {total.toLocaleString()}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <button disabled={page <= 1} onClick={() => setPage(page - 1)}
+                                        className="px-3 py-1 rounded bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed transition">
+                                        ← Prev
+                                    </button>
+                                    <span className="text-xs text-text-muted font-mono">
+                                        Page {page} / {totalPages}
+                                    </span>
+                                    <button disabled={page >= totalPages} onClick={() => setPage(page + 1)}
+                                        className="px-3 py-1 rounded bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary disabled:opacity-30 disabled:cursor-not-allowed transition">
+                                        Next →
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+
+            {/* Detail Modal */}
+            {modal && <DataDetailModal title={modal.title} content={modal.content} onClose={() => setModal(null)} />}
+        </SidebarLayout>
+    );
+};
+
+// ***************************************************************
 // APP  Root router
 // ***************************************************************
 
@@ -5807,6 +7262,7 @@ const App = () => {
             <Routes>
                 <Route path="/" element={<WatchlistPage {...terminalData} />} />
                 <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
+                <Route path="/data" element={<DataExplorerPage {...terminalData} />} />
 
                 <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
                 <Route path="/settings" element={<SettingsPage />} />

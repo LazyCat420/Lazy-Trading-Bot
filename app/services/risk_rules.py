@@ -10,7 +10,6 @@ import math
 
 from app.utils.logger import logger
 
-
 # ── Default configuration ────────────────────────────────────────
 _MAX_POSITION_PCT = 0.15       # Max 15% of portfolio in one stock
 _MAX_SINGLE_ORDER_PCT = 0.10   # Max 10% of portfolio per order

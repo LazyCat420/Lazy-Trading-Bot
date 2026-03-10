@@ -132,4 +132,5 @@ echo "  Starting server on http://localhost:8000"
 echo "  API docs:  http://localhost:8000/docs"
 echo "========================================="
 echo
+export PYTHONIOENCODING=utf-8
 python server.py

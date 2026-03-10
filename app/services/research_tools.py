@@ -12,12 +12,11 @@ TradingAgent and PortfolioStrategist to expose these tools to the LLM.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from app.database import get_db
 from app.utils.logger import logger
-
 
 # ------------------------------------------------------------------
 # Tool implementations

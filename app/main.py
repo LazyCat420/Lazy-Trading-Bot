@@ -8,7 +8,6 @@ from datetime import date, datetime
 from pathlib import Path
 
 import httpx
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -94,8 +93,8 @@ class LLMConfigRequest(BaseModel):
 pipeline = PipelineService()
 
 # Lazy import to avoid circular — WatchlistManager uses PipelineService
-from app.services.watchlist_manager import WatchlistManager  # noqa: E402
 from app.services.deep_analysis_service import DeepAnalysisService  # noqa: E402
+from app.services.watchlist_manager import WatchlistManager  # noqa: E402
 
 _watchlist_mgr = WatchlistManager()
 _deep_analysis = DeepAnalysisService()
@@ -550,7 +549,7 @@ async def get_vram_estimate(model: str = "") -> dict:
                     # Floor at 8192 — the backend never loads below 8k,
                     # so the UI slider/badge should reflect the real floor
                     result["proven_max_ctx"] = max(cached["proven_max_ctx"], 8192)
-                
+
                 if cached.get("real_kv_rate"):
                     cached_rate = cached["real_kv_rate"]
                     if (
@@ -1102,7 +1101,7 @@ async def dashboard_db_stats() -> dict:
     db = get_db()
     for table in tables:
         try:
-            result = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
+            result = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
             counts[table] = result[0] if result else 0
         except Exception:
             counts[table] = -1  # Table doesn't exist
@@ -1129,7 +1128,7 @@ def _get_active_bot_id() -> str:
 
 
 def _set_active_bot(bot_id: str) -> None:
-    global _active_bot_id  # noqa: PLW0603
+    global _active_bot_id
     _active_bot_id = bot_id
     logger.info("[ActiveBot] Switched to bot_id=%s", bot_id)
 
@@ -1468,7 +1467,7 @@ _loop_task: asyncio.Task | None = None
 @app.post("/api/bot/run-loop")
 async def run_full_loop(max_tickers: int = 10) -> dict:
     """Trigger the full autonomous loop using the active bot."""
-    global _loop, _loop_task  # noqa: PLW0603
+    global _loop, _loop_task
 
     if _loop._state["running"]:
         raise HTTPException(status_code=409, detail="Loop is already running")
@@ -1909,7 +1908,7 @@ async def reorder_bots(req: BotReorderRequest) -> dict:
 async def get_leaderboard() -> dict:
     """Get all bots ranked by total P&L."""
     from app.config import settings as _cfg
-    
+
     # Recalculate stats for all active bots
     bots = BotRegistry.list_bots()
     for bot in bots:
@@ -1917,9 +1916,9 @@ async def get_leaderboard() -> dict:
             BotRegistry.update_stats(bot["bot_id"])
         except Exception:
             pass  # Skip bots with no data yet
-            
+
     rankings = BotRegistry.get_leaderboard()
-    
+
     # Inject VRAM stats for UI tooltip
     for bot in rankings:
         model = bot.get("model_name", "")
@@ -1930,7 +1929,7 @@ async def get_leaderboard() -> dict:
         else:
             bot["computed_max_ctx"] = None
             bot["computed_vram_gb"] = None
-            
+
     return {"count": len(rankings), "leaderboard": rankings}
 
 
@@ -2048,7 +2047,7 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
     loads the model via LM Studio API, runs the autonomous loop, then
     moves to the next bot.
     """
-    global _run_all_task  # noqa: PLW0603
+    global _run_all_task
 
     if _run_all_state["running"]:
         raise HTTPException(
@@ -2660,3 +2659,1027 @@ async def get_audit_logs_for_cycle(cycle_id: str) -> dict:
 
     logs = LLMAuditLogger.get_logs_for_cycle(cycle_id)
     return {"cycle_id": cycle_id, "logs": logs, "count": len(logs)}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TRACKER API — Enhanced accordion views for 13F + Congress data
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/tracker/funds")
+async def tracker_fund_list(
+    sort: str = Query(default="value", description="Sort by: value | holdings | name"),
+    search: str = Query(default=""),
+) -> dict:
+    """Fund summary cards — name, CIK, latest quarter, totals."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT f.cik, f.filer_name, f.latest_quarter, f.is_active,
+               COUNT(h.ticker) AS holding_count,
+               COALESCE(SUM(h.value_usd), 0) AS total_value
+        FROM sec_13f_filers f
+        LEFT JOIN sec_13f_holdings h
+            ON f.cik = h.cik
+            AND h.filing_quarter = f.latest_quarter
+        GROUP BY f.cik, f.filer_name, f.latest_quarter, f.is_active
+        ORDER BY total_value DESC
+        """,
+    ).fetchall()
+
+    funds = []
+    for cik, name, quarter, active, count, value in rows:
+        if search and search.lower() not in (name or "").lower():
+            continue
+        funds.append({
+            "cik": cik,
+            "name": name,
+            "latest_quarter": quarter,
+            "is_active": active,
+            "holding_count": count,
+            "total_value_usd": value,
+        })
+
+    # Sort
+    if sort == "holdings":
+        funds.sort(key=lambda f: f["holding_count"], reverse=True)
+    elif sort == "name":
+        funds.sort(key=lambda f: (f["name"] or "").lower())
+    # default: value (already sorted)
+
+    return {"funds": funds, "count": len(funds)}
+
+
+@app.get("/api/tracker/funds/{cik}/holdings")
+async def tracker_fund_holdings(
+    cik: str,
+    search: str = Query(default=""),
+    sort: str = Query(default="value_usd"),
+    order: str = Query(default="desc"),
+) -> dict:
+    """Holdings for one fund with QoQ change detection and % of portfolio."""
+    db = get_db()
+
+    # Get latest quarter for this filer
+    filer = db.execute(
+        "SELECT filer_name, latest_quarter FROM sec_13f_filers WHERE cik = ?",
+        [cik],
+    ).fetchone()
+    if not filer:
+        raise HTTPException(status_code=404, detail=f"Filer {cik} not found")
+
+    filer_name, latest_q = filer
+
+    # Determine prior quarter
+    prior_q = _prior_quarter(latest_q) if latest_q else None
+
+    # Current quarter holdings
+    current = db.execute(
+        """
+        SELECT ticker, name_of_issuer, shares, value_usd, cusip
+        FROM sec_13f_holdings
+        WHERE cik = ? AND filing_quarter = ?
+        ORDER BY value_usd DESC
+        """,
+        [cik, latest_q],
+    ).fetchall()
+
+    # Prior quarter holdings for QoQ comparison
+    prior_map: dict[str, tuple] = {}
+    if prior_q:
+        prior_rows = db.execute(
+            "SELECT ticker, shares, value_usd FROM sec_13f_holdings "
+            "WHERE cik = ? AND filing_quarter = ?",
+            [cik, prior_q],
+        ).fetchall()
+        for ticker, shares, value in prior_rows:
+            prior_map[ticker] = (shares, value)
+
+    # Total portfolio value for % calculation
+    total_value = sum(r[3] or 0 for r in current) or 1  # avoid div by zero
+
+    holdings = []
+    for ticker, issuer, shares, value, cusip in current:
+        if search and search.lower() not in (
+            f"{ticker} {issuer}".lower()
+        ):
+            continue
+
+        pct = round(((value or 0) / total_value) * 100, 2)
+
+        # QoQ change detection
+        if ticker in prior_map:
+            prev_shares, prev_value = prior_map[ticker]
+            if shares == prev_shares:
+                qoq = "UNCHANGED"
+            elif shares > prev_shares:
+                qoq = "ADDED"
+            else:
+                qoq = "REDUCED"
+            share_delta = (shares or 0) - (prev_shares or 0)
+        else:
+            qoq = "NEW"
+            share_delta = shares or 0
+
+        holdings.append({
+            "ticker": ticker,
+            "name_of_issuer": issuer,
+            "shares": shares,
+            "value_usd": value,
+            "pct_of_portfolio": pct,
+            "qoq_change": qoq,
+            "share_change": share_delta,
+            "cusip": cusip,
+        })
+
+    # Detect SOLD OUT — tickers in prior but not in current
+    current_tickers = {r[0] for r in current}
+    for ticker, (prev_shares, prev_value) in prior_map.items():
+        if ticker not in current_tickers:
+            if search and search.lower() not in ticker.lower():
+                continue
+            holdings.append({
+                "ticker": ticker,
+                "name_of_issuer": "",
+                "shares": 0,
+                "value_usd": 0,
+                "pct_of_portfolio": 0,
+                "qoq_change": "SOLD_OUT",
+                "share_change": -(prev_shares or 0),
+                "cusip": "",
+            })
+
+    # ── Multi-quarter trend calculation ──────────────────────────────
+    # Pull ALL historical quarters for this filer to compute trends
+    all_hist = db.execute(
+        """
+        SELECT ticker, filing_quarter, shares
+        FROM sec_13f_holdings
+        WHERE cik = ?
+        ORDER BY filing_quarter ASC
+        """,
+        [cik],
+    ).fetchall()
+
+    # Build { ticker -> [(quarter, shares), ...] } ordered by quarter
+    hist_map: dict[str, list[tuple[str, int]]] = {}
+    for t, q, s in all_hist:
+        hist_map.setdefault(t, []).append((q, s or 0))
+
+    for h in holdings:
+        ticker = h["ticker"]
+        history = hist_map.get(ticker, [])
+
+        if len(history) <= 1:
+            h["trend_direction"] = "NEW"
+            h["trend_streak"] = 0
+            h["total_change_pct"] = 0
+            continue
+
+        # Calculate consecutive streak direction
+        streak = 0
+        direction = "STEADY"
+        for i in range(len(history) - 1, 0, -1):
+            delta = history[i][1] - history[i - 1][1]
+            if i == len(history) - 1:
+                # Set direction from latest change
+                if delta > 0:
+                    direction = "ACCUMULATING"
+                elif delta < 0:
+                    direction = "DUMPING"
+                else:
+                    direction = "STEADY"
+                streak = 1
+            else:
+                # Extend streak if same direction
+                if (direction == "ACCUMULATING" and delta > 0) or \
+                   (direction == "DUMPING" and delta < 0):
+                    streak += 1
+                else:
+                    break
+
+        # Total change % from first to current
+        first_shares = history[0][1]
+        current_shares = history[-1][1]
+        if first_shares > 0:
+            total_pct = round(
+                ((current_shares - first_shares) / first_shares)
+                * 100, 1,
+            )
+        else:
+            total_pct = 0
+
+        h["trend_direction"] = direction
+        h["trend_streak"] = streak
+        h["total_change_pct"] = total_pct
+
+    # Sort
+    valid_sorts = (
+        "ticker", "value_usd", "shares", "pct_of_portfolio",
+        "trend_direction",
+    )
+    sort_key = sort if sort in valid_sorts else "value_usd"
+    reverse = order.lower() != "asc"
+    holdings.sort(
+        key=lambda h: h.get(sort_key) or 0, reverse=reverse,
+    )
+
+    return {
+        "cik": cik,
+        "filer_name": filer_name,
+        "quarter": latest_q,
+        "prior_quarter": prior_q,
+        "total_value_usd": total_value,
+        "holdings": holdings,
+        "count": len(holdings),
+    }
+
+
+@app.get("/api/tracker/funds/{cik}/history/{ticker}")
+async def tracker_holding_history(cik: str, ticker: str) -> dict:
+    """Position history for a specific ticker across all stored quarters."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT filing_quarter, filing_date, shares, value_usd
+        FROM sec_13f_holdings
+        WHERE cik = ? AND ticker = ?
+        ORDER BY filing_quarter ASC
+        """,
+        [cik, ticker.upper()],
+    ).fetchall()
+
+    filer = db.execute(
+        "SELECT filer_name FROM sec_13f_filers WHERE cik = ?", [cik],
+    ).fetchone()
+
+    history = []
+    prev_shares = None
+    for quarter, filing_date, shares, value in rows:
+        change = None
+        if prev_shares is not None:
+            change = (shares or 0) - prev_shares
+        history.append({
+            "quarter": quarter,
+            "filing_date": str(filing_date) if filing_date else None,
+            "shares": shares,
+            "value_usd": value,
+            "share_change": change,
+        })
+        prev_shares = shares or 0
+
+    return {
+        "cik": cik,
+        "filer_name": filer[0] if filer else cik,
+        "ticker": ticker.upper(),
+        "history": history,
+        "quarters_held": len(history),
+    }
+
+
+@app.get("/api/tracker/funds/overlap")
+async def tracker_fund_overlap(
+    min_funds: int = Query(default=2, ge=2),
+) -> dict:
+    """Tickers held by multiple funds — institutional consensus signal."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT h.ticker, COUNT(DISTINCT h.cik) AS fund_count,
+               SUM(h.value_usd) AS total_value,
+               SUM(h.shares) AS total_shares,
+               STRING_AGG(DISTINCT f.filer_name, ', ') AS fund_names
+        FROM sec_13f_holdings h
+        JOIN sec_13f_filers f ON h.cik = f.cik
+        WHERE h.filing_quarter = f.latest_quarter
+          AND h.ticker != '' AND h.ticker IS NOT NULL
+        GROUP BY h.ticker
+        HAVING COUNT(DISTINCT h.cik) >= ?
+        ORDER BY fund_count DESC, total_value DESC
+        LIMIT 100
+        """,
+        [min_funds],
+    ).fetchall()
+
+    overlap = []
+    for ticker, fund_count, total_value, total_shares, fund_names in rows:
+        overlap.append({
+            "ticker": ticker,
+            "fund_count": fund_count,
+            "total_value_usd": total_value,
+            "total_shares": total_shares,
+            "fund_names": fund_names,
+        })
+
+    return {"overlap": overlap, "count": len(overlap), "min_funds": min_funds}
+
+
+@app.get("/api/tracker/congress/members")
+async def tracker_congress_members(
+    sort: str = Query(default="trades"),
+    search: str = Query(default=""),
+) -> dict:
+    """Congress member summary cards with trade stats."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT member_name, chamber,
+               COUNT(*) AS trade_count,
+               SUM(CASE WHEN tx_type LIKE '%Purchase%' THEN 1 ELSE 0 END) AS buys,
+               SUM(CASE WHEN tx_type LIKE '%Sale%' THEN 1 ELSE 0 END) AS sells,
+               MAX(tx_date) AS last_trade_date,
+               MIN(tx_date) AS first_trade_date
+        FROM congressional_trades
+        WHERE member_name IS NOT NULL AND member_name != ''
+        GROUP BY member_name, chamber
+        ORDER BY trade_count DESC
+        """,
+    ).fetchall()
+
+    members = []
+    for name, chamber, count, buys, sells, last_trade, first_trade in rows:
+        if search and search.lower() not in (name or "").lower():
+            continue
+        members.append({
+            "member_name": name,
+            "chamber": chamber,
+            "trade_count": count,
+            "buys": buys,
+            "sells": sells,
+            "last_trade_date": str(last_trade) if last_trade else None,
+            "first_trade_date": str(first_trade) if first_trade else None,
+        })
+
+    if sort == "name":
+        members.sort(key=lambda m: (m["member_name"] or "").lower())
+    elif sort == "recent":
+        members.sort(key=lambda m: m["last_trade_date"] or "", reverse=True)
+    # default: trades (already sorted)
+
+    return {"members": members, "count": len(members)}
+
+
+@app.get("/api/tracker/congress/members/{name}/trades")
+async def tracker_congress_member_trades(
+    name: str,
+    sort: str = Query(default="tx_date"),
+    order: str = Query(default="desc"),
+) -> dict:
+    """Trades for a specific member with days-to-report calculation."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, ticker, asset_name, tx_type, tx_date,
+               filed_date, amount_range, source_url
+        FROM congressional_trades
+        WHERE member_name = ?
+        ORDER BY tx_date DESC
+        """,
+        [name],
+    ).fetchall()
+
+    trades = []
+    for row_id, ticker, asset, tx_type, tx_date, filed_date, amount, url in rows:
+        # Calculate days to report
+        days_to_report = None
+        if tx_date and filed_date:
+            try:
+                from datetime import date as date_cls
+                td = (
+                    tx_date if isinstance(tx_date, date_cls)
+                    else date_cls.fromisoformat(str(tx_date))
+                )
+                fd = (
+                    filed_date if isinstance(filed_date, date_cls)
+                    else date_cls.fromisoformat(str(filed_date))
+                )
+                days_to_report = (fd - td).days
+            except (ValueError, TypeError):
+                pass
+
+        trades.append({
+            "id": row_id,
+            "ticker": ticker,
+            "asset_name": asset,
+            "tx_type": tx_type,
+            "tx_date": str(tx_date) if tx_date else None,
+            "filed_date": str(filed_date) if filed_date else None,
+            "days_to_report": days_to_report,
+            "amount_range": amount,
+            "source_url": url,
+        })
+
+    # Sort
+    if sort == "ticker":
+        trades.sort(key=lambda t: t.get("ticker") or "", reverse=(order == "desc"))
+    elif sort == "days_to_report":
+        trades.sort(key=lambda t: t.get("days_to_report") or 999, reverse=(order == "desc"))
+    # default: tx_date (already sorted desc)
+
+    return {"member_name": name, "trades": trades, "count": len(trades)}
+
+
+@app.get("/api/tracker/tickers")
+async def tracker_ticker_list(
+    search: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Searchable list of all tickers in 13F holdings."""
+    db = get_db()
+    if search:
+        rows = db.execute(
+            """
+            SELECT DISTINCT ticker
+            FROM sec_13f_holdings
+            WHERE ticker IS NOT NULL AND ticker != ''
+              AND ticker LIKE ?
+            ORDER BY ticker ASC
+            LIMIT ?
+            """,
+            [f"%{search.upper()}%", limit],
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT DISTINCT ticker
+            FROM sec_13f_holdings
+            WHERE ticker IS NOT NULL AND ticker != ''
+            ORDER BY ticker ASC
+            LIMIT ?
+            """,
+            [limit],
+        ).fetchall()
+    return {"tickers": [r[0] for r in rows], "count": len(rows)}
+
+
+@app.get("/api/tracker/ticker/{ticker}/funds")
+async def tracker_ticker_funds(ticker: str) -> dict:
+    """All funds' position history for one ticker across quarters."""
+    db = get_db()
+    ticker = ticker.upper()
+
+    # Get all holdings for this ticker, joined with filer name
+    rows = db.execute(
+        """
+        SELECT h.cik, f.filer_name, h.filing_quarter,
+               h.shares, h.value_usd, h.filing_date
+        FROM sec_13f_holdings h
+        JOIN sec_13f_filers f ON h.cik = f.cik
+        WHERE h.ticker = ?
+        ORDER BY h.filing_quarter ASC, f.filer_name ASC
+        """,
+        [ticker],
+    ).fetchall()
+
+    if not rows:
+        return {
+            "ticker": ticker,
+            "funds": [],
+            "quarters": [],
+            "count": 0,
+        }
+
+    # Collect all unique quarters and funds
+    all_quarters: list[str] = []
+    fund_map: dict[str, dict] = {}  # cik -> fund data
+
+    for cik, name, quarter, shares, value, filing_date in rows:
+        if quarter not in all_quarters:
+            all_quarters.append(quarter)
+
+        if cik not in fund_map:
+            fund_map[cik] = {
+                "cik": cik,
+                "name": name,
+                "quarters": {},
+                "first_seen": quarter,
+                "last_seen": quarter,
+            }
+
+        fund_map[cik]["quarters"][quarter] = {
+            "shares": shares,
+            "value_usd": value,
+            "filing_date": (
+                str(filing_date) if filing_date else None
+            ),
+        }
+        fund_map[cik]["last_seen"] = quarter
+
+    # Build fund timeline with QoQ status per quarter
+    funds = []
+    for cik, data in fund_map.items():
+        timeline = []
+        prev_shares = None
+        for q in all_quarters:
+            entry = data["quarters"].get(q)
+            if entry:
+                shares = entry["shares"] or 0
+                if prev_shares is None:
+                    status = "NEW"
+                elif shares > prev_shares:
+                    status = "ADDED"
+                elif shares < prev_shares:
+                    status = "REDUCED"
+                else:
+                    status = "HELD"
+                change = (
+                    shares - prev_shares
+                    if prev_shares is not None
+                    else shares
+                )
+                timeline.append({
+                    "quarter": q,
+                    "shares": shares,
+                    "value_usd": entry["value_usd"],
+                    "status": status,
+                    "change": change,
+                })
+                prev_shares = shares
+            else:
+                # Fund didn't hold this quarter
+                if prev_shares is not None and prev_shares > 0:
+                    timeline.append({
+                        "quarter": q,
+                        "shares": 0,
+                        "value_usd": 0,
+                        "status": "SOLD_OUT",
+                        "change": -prev_shares,
+                    })
+                    prev_shares = 0
+                else:
+                    timeline.append({
+                        "quarter": q,
+                        "shares": 0,
+                        "value_usd": 0,
+                        "status": "NOT_HELD",
+                        "change": 0,
+                    })
+
+        # Current position (latest quarter)
+        latest_q = all_quarters[-1]
+        latest = data["quarters"].get(latest_q, {})
+
+        funds.append({
+            "cik": cik,
+            "name": data["name"],
+            "timeline": timeline,
+            "current_shares": latest.get("shares", 0),
+            "current_value": latest.get("value_usd", 0),
+            "first_seen": data["first_seen"],
+            "last_seen": data["last_seen"],
+            "quarters_held": len(data["quarters"]),
+        })
+
+    # Sort by current shares descending
+    funds.sort(
+        key=lambda f: f["current_shares"] or 0, reverse=True,
+    )
+
+    return {
+        "ticker": ticker,
+        "funds": funds,
+        "quarters": all_quarters,
+        "count": len(funds),
+    }
+
+
+@app.post("/api/tracker/backfill")
+async def tracker_backfill(
+    max_quarters: int = Query(default=8, ge=1, le=20),
+) -> dict:
+    """Trigger historical 13F backfill for all active filers."""
+    from app.services.sec_13f_service import SEC13FCollector
+    collector = SEC13FCollector()
+    result = await collector.backfill_history(max_quarters=max_quarters)
+    return {"status": "complete", **result}
+
+
+def _prior_quarter(quarter: str) -> str | None:
+    """Calculate the prior quarter string, e.g. '2025Q1' -> '2024Q4'."""
+    if not quarter or len(quarter) < 6:
+        return None
+    try:
+        year = int(quarter[:4])
+        q = int(quarter[-1])
+        if q == 1:
+            return f"{year - 1}Q4"
+        return f"{year}Q{q - 1}"
+    except (ValueError, IndexError):
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DATA EXPLORER API — browse, edit, and delete scraped data
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Table configuration registry ────────────────────────────────────
+_DATA_TABLES: dict[str, dict] = {
+    "youtube": {
+        "table": "youtube_transcripts",
+        "pk": ["ticker", "video_id"],
+        "search_cols": ["ticker", "title", "channel"],
+        "key_fields": ["ticker", "title"],
+        "columns": [
+            "ticker", "video_id", "title", "channel", "published_at",
+            "duration_seconds", "raw_transcript", "collected_at",
+            "scanned_for_tickers",
+        ],
+        "editable": [
+            "ticker", "title", "channel",
+        ],
+    },
+    "reddit": {
+        "table": "discovered_tickers",
+        "pk": ["rowid"],
+        "where_clause": "source = 'reddit'",
+        "search_cols": ["ticker", "source_detail", "context_snippet"],
+        "key_fields": ["ticker"],
+        "columns": [
+            "rowid", "ticker", "source", "source_detail",
+            "discovery_score", "sentiment_hint", "context_snippet",
+            "source_url", "discovered_at",
+        ],
+        "editable": [
+            "ticker", "source_detail", "sentiment_hint", "context_snippet",
+        ],
+    },
+    "13f-filers": {
+        "table": "sec_13f_filers",
+        "pk": ["cik"],
+        "search_cols": ["cik", "filer_name"],
+        "key_fields": ["filer_name"],
+        "columns": [
+            "cik", "filer_name", "latest_quarter", "next_expected_filing",
+            "last_checked", "is_active",
+        ],
+        "editable": ["filer_name"],
+    },
+    "13f-holdings": {
+        "table": "sec_13f_holdings",
+        "from_clause": (
+            "sec_13f_holdings h "
+            "LEFT JOIN sec_13f_filers f ON h.cik = f.cik"
+        ),
+        "pk": ["cik", "ticker", "filing_quarter"],
+        "search_cols": ["h.cik", "h.ticker", "h.name_of_issuer", "f.filer_name"],
+        "key_fields": ["ticker", "name_of_issuer"],
+        "columns": [
+            "f.filer_name AS filer_name", "h.ticker AS ticker",
+            "h.name_of_issuer AS name_of_issuer", "h.value_usd AS value_usd",
+            "h.shares AS shares", "h.filing_quarter AS filing_quarter",
+            "h.filing_date AS filing_date", "h.cik AS cik",
+            "h.cusip AS cusip", "h.share_type AS share_type",
+            "h.collected_at AS collected_at",
+        ],
+        "editable": ["ticker", "name_of_issuer", "cusip"],
+        "filters": {
+            "cik": "h.cik",
+            "quarter": "h.filing_quarter",
+        },
+    },
+    "congress": {
+        "table": "congressional_trades",
+        "pk": ["id"],
+        "search_cols": ["member_name", "ticker", "asset_name"],
+        "key_fields": ["member_name", "ticker"],
+        "columns": [
+            "id", "member_name", "chamber", "ticker", "asset_name",
+            "tx_type", "tx_date", "filed_date", "amount_range",
+            "source_url", "collected_at",
+        ],
+        "editable": [
+            "member_name", "ticker", "asset_name", "tx_type",
+            "amount_range",
+        ],
+    },
+}
+
+
+class DataDeleteRequest(BaseModel):
+    ids: list[dict | str]
+
+
+class DataEditRequest(BaseModel):
+    pk: dict
+    column: str
+    value: str | float | int | bool | None
+
+
+class DataCleanResult(BaseModel):
+    deleted: int
+
+
+@app.get("/api/data/{table}")
+async def data_explorer_list(
+    table: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=10, le=200),
+    search: str = Query(default=""),
+    sort: str = Query(default=""),
+    order: str = Query(default="desc"),
+    cik: str = Query(default=""),
+    quarter: str = Query(default=""),
+) -> dict:
+    """Paginated data listing for the Data Explorer."""
+    cfg = _DATA_TABLES.get(table)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table}")
+
+    tbl = cfg["table"]
+    offset = (page - 1) * page_size
+
+    # Build WHERE clauses
+    wheres: list[str] = []
+    params: list = []
+    if cfg.get("where_clause"):
+        wheres.append(cfg["where_clause"])
+
+    # Extra filters (e.g. cik, quarter for holdings)
+    if cik and "filters" in cfg and "cik" in cfg["filters"]:
+        wheres.append(f"{cfg['filters']['cik']} = ?")
+        params.append(cik)
+    if quarter and "filters" in cfg and "quarter" in cfg["filters"]:
+        wheres.append(f"{cfg['filters']['quarter']} = ?")
+        params.append(quarter)
+
+    # Search
+    if search:
+        search_conditions = [
+            f"CAST({col} AS VARCHAR) ILIKE ?"
+            for col in cfg.get("search_cols", [])
+        ]
+        if search_conditions:
+            wheres.append(f"({' OR '.join(search_conditions)})")
+            params.extend([f"%{search}%"] * len(search_conditions))
+
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+
+    # Sort — support aliased columns (e.g. "h.ticker AS ticker")
+    # The frontend sends the alias name; we need to find the matching column spec.
+    col_specs = cfg["columns"]
+    sort_col = ""
+    if sort:
+        for spec in col_specs:
+            # Extract alias: "h.ticker AS ticker" → "ticker", or bare "ticker" → "ticker"
+            alias = spec.split(" AS ")[-1].strip() if " AS " in spec else spec
+            if alias == sort:
+                sort_col = spec.split(" AS ")[0].strip() if " AS " in spec else spec
+                break
+    order_dir = "ASC" if order.lower() == "asc" else "DESC"
+    order_sql = f"ORDER BY {sort_col} {order_dir}" if sort_col else ""
+
+    # Columns — select specific columns to avoid fetching huge transcript blobs
+    select_cols = ", ".join(cfg["columns"])
+
+    # Use from_clause (for JOINs) or plain table name
+    from_source = cfg.get("from_clause", tbl)
+
+    try:
+        db = get_db()
+        # Count
+        count_sql = f"SELECT COUNT(*) as cnt FROM {from_source} {where_sql}"
+        total = db.execute(count_sql, params).fetchone()[0]
+
+        # Data
+        data_sql = (
+            f"SELECT {select_cols} FROM {from_source} {where_sql} "
+            f"{order_sql} LIMIT ? OFFSET ?"
+        )
+        result = db.execute(data_sql, params + [page_size, offset]).fetchall()
+        cols = [desc[0] for desc in db.description]
+        rows = [dict(zip(cols, row)) for row in result]
+
+        # For YouTube, truncate transcript in list view
+        if table == "youtube":
+            for row in rows:
+                transcript = row.get("raw_transcript")
+                if transcript and len(transcript) > 150:
+                    row["raw_transcript"] = transcript[:150] + "…"
+
+        return {
+            "table": table,
+            "rows": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, -(-total // page_size)),
+        }
+    except Exception as e:
+        logger.error("Data explorer list error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/api/data/{table}/row")
+async def data_explorer_get_row(
+    table: str,
+    pk: str = Query(..., description="JSON-encoded primary key"),
+) -> dict:
+    """Get a single full row (e.g. for modals with full transcript text)."""
+    import json as json_mod
+
+    cfg = _DATA_TABLES.get(table)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table}")
+
+    try:
+        pk_dict = json_mod.loads(pk)
+    except (json_mod.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid pk JSON") from exc
+
+    tbl = cfg["table"]
+    pk_cols = cfg["pk"]
+    wheres = [f"{col} = ?" for col in pk_cols if col != "rowid"]
+    params = [pk_dict[col] for col in pk_cols if col != "rowid"]
+
+    if "rowid" in pk_cols:
+        wheres.append("rowid = ?")
+        params.append(int(pk_dict["rowid"]))
+
+    extra_where = cfg.get("where_clause")
+    if extra_where:
+        wheres.append(extra_where)
+
+    where_sql = " AND ".join(wheres) if wheres else "1=1"
+
+    try:
+        db = get_db()
+        row = db.execute(
+            f"SELECT * FROM {tbl} WHERE {where_sql} LIMIT 1", params
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Row not found")
+        cols = [desc[0] for desc in db.description]
+        return dict(zip(cols, row))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.delete("/api/data/{table}")
+async def data_explorer_delete(table: str, req: DataDeleteRequest) -> dict:
+    """Delete one or more rows by primary key."""
+    cfg = _DATA_TABLES.get(table)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table}")
+
+    if not req.ids:
+        return {"deleted": 0}
+
+    tbl = cfg["table"]
+    pk_cols = cfg["pk"]
+    deleted = 0
+
+    try:
+        db = get_db()
+        for pk_val in req.ids:
+            if isinstance(pk_val, str):
+                pk_val = {pk_cols[0]: pk_val}
+
+            wheres = []
+            params = []
+            for col in pk_cols:
+                if col == "rowid":
+                    wheres.append("rowid = ?")
+                    params.append(int(pk_val.get("rowid", 0)))
+                else:
+                    wheres.append(f"{col} = ?")
+                    params.append(pk_val.get(col, ""))
+
+            extra_where = cfg.get("where_clause")
+            if extra_where:
+                wheres.append(extra_where)
+
+            where_sql = " AND ".join(wheres)
+            result = db.execute(
+                f"DELETE FROM {tbl} WHERE {where_sql}", params
+            )
+            deleted += result.rowcount if hasattr(result, "rowcount") else 1
+
+        db.commit()
+        logger.info("[DataExplorer] Deleted %d rows from %s", deleted, tbl)
+        return {"deleted": deleted}
+    except Exception as e:
+        logger.error("Data explorer delete error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.put("/api/data/{table}")
+async def data_explorer_edit(table: str, req: DataEditRequest) -> dict:
+    """Inline edit a single cell value."""
+    cfg = _DATA_TABLES.get(table)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table}")
+
+    if req.column not in cfg.get("editable", []):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Column '{req.column}' is not editable",
+        )
+
+    tbl = cfg["table"]
+    pk_cols = cfg["pk"]
+
+    wheres = []
+    params: list = [req.value]
+    for col in pk_cols:
+        if col == "rowid":
+            wheres.append("rowid = ?")
+            params.append(int(req.pk.get("rowid", 0)))
+        else:
+            wheres.append(f"{col} = ?")
+            params.append(req.pk.get(col, ""))
+
+    extra_where = cfg.get("where_clause")
+    if extra_where:
+        wheres.append(extra_where)
+
+    where_sql = " AND ".join(wheres)
+
+    try:
+        db = get_db()
+        db.execute(
+            f"UPDATE {tbl} SET {req.column} = ? WHERE {where_sql}",
+            params,
+        )
+        db.commit()
+        logger.info(
+            "[DataExplorer] Updated %s.%s for pk=%s",
+            tbl, req.column, req.pk,
+        )
+        return {"status": "updated", "column": req.column}
+    except Exception as e:
+        logger.error("Data explorer edit error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/data/{table}/clean")
+async def data_explorer_clean(table: str) -> dict:
+    """Delete rows where key fields are blank or null.
+
+    For the reddit table, also purges rows with RSS-sourced junk
+    (source_detail containing 'news articles' instead of real reddit data).
+    """
+    cfg = _DATA_TABLES.get(table)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Unknown table: {table}")
+
+    tbl = cfg["table"]
+    key_fields = cfg.get("key_fields", [])
+    if not key_fields:
+        return {"deleted": 0}
+
+    # Build condition: any key field is NULL or empty
+    conditions = [
+        f"({col} IS NULL OR TRIM(CAST({col} AS VARCHAR)) = '')"
+        for col in key_fields
+    ]
+    where_clause = " OR ".join(conditions)
+
+    extra_where = cfg.get("where_clause")
+    if extra_where:
+        where_clause = f"({where_clause}) AND {extra_where}"
+
+    try:
+        db = get_db()
+        total_deleted = 0
+
+        # Standard blank-field cleanup
+        count_result = db.execute(
+            f"SELECT COUNT(*) FROM {tbl} WHERE {where_clause}"
+        ).fetchone()
+        count = count_result[0] if count_result else 0
+
+        if count > 0:
+            db.execute(f"DELETE FROM {tbl} WHERE {where_clause}")
+            total_deleted += count
+            logger.info(
+                "[DataExplorer] Cleaned %d blank rows from %s", count, tbl,
+            )
+
+        # Reddit-specific: also purge RSS-sourced junk
+        if table == "reddit":
+            junk_where = (
+                "source = 'reddit' "
+                "AND source_detail LIKE '%news articles%'"
+            )
+            junk_result = db.execute(
+                f"SELECT COUNT(*) FROM {tbl} WHERE {junk_where}"
+            ).fetchone()
+            junk_count = junk_result[0] if junk_result else 0
+
+            if junk_count > 0:
+                db.execute(f"DELETE FROM {tbl} WHERE {junk_where}")
+                total_deleted += junk_count
+                logger.info(
+                    "[DataExplorer] Purged %d RSS-sourced junk rows from reddit",
+                    junk_count,
+                )
+
+        if total_deleted > 0:
+            db.commit()
+
+        return {"deleted": total_deleted}
+    except Exception as e:
+        logger.error("Data explorer clean error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e

@@ -7,18 +7,18 @@ import json
 from datetime import datetime
 from typing import Any
 
+from app.config import settings
 from app.services.congress_service import CongressCollector
+from app.services.llm_service import LLMService
 from app.services.news_service import NewsCollector
+from app.services.peer_fetcher import PeerFetcher
+from app.services.quant_engine import QuantSignalEngine
 from app.services.risk_service import RiskComputer
 from app.services.rss_news_service import RSSNewsCollector
 from app.services.sec_13f_service import SEC13FCollector
 from app.services.technical_service import TechnicalComputer
 from app.services.yfinance_service import YFinanceCollector
 from app.services.youtube_service import YouTubeCollector
-from app.config import settings
-from app.services.quant_engine import QuantSignalEngine
-from app.services.llm_service import LLMService
-from app.services.peer_fetcher import PeerFetcher
 from app.utils.logger import logger
 
 
@@ -100,8 +100,8 @@ class PipelineService:
         technicals: list = []
         balance_sheet: list = []
         cashflow: list = []
-        analyst_data = None  # noqa: F841
-        insider_activity = None  # noqa: F841
+        analyst_data = None
+        insider_activity = None
         earnings_calendar = None  # noqa: F841
         risk_metrics = None  # noqa: F841
         news: list = []
@@ -115,7 +115,7 @@ class PipelineService:
         # ----------------------------------------------------------
         # Helper for parallel steps
         # ----------------------------------------------------------
-        async def _step(name: str, coro):  # noqa: ANN001
+        async def _step(name: str, coro):
             try:
                 data = await coro
                 return name, data, None
@@ -167,13 +167,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data  # noqa: F841
+                        _analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data  # noqa: F841
+                        _insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data  # noqa: F841
+                        _earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":
@@ -188,7 +188,7 @@ class PipelineService:
                 logger.error("Step 1 (Price) failed: %s", e)
 
             # Load cached fundamentals/financials from DB (daily guards = no Yahoo calls)
-            async def _step_cached(name: str, coro):  # noqa: ANN001
+            async def _step_cached(name: str, coro):
                 try:
                     data = await coro
                     return name, data, None
@@ -243,7 +243,7 @@ class PipelineService:
 
         elif mode == "data":
             # Data-only: same parallel batch as full
-            async def _step_data(name: str, coro):  # noqa: ANN001
+            async def _step_data(name: str, coro):
                 try:
                     data = await coro
                     return name, data, None
@@ -286,13 +286,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data  # noqa: F841
+                        _analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data  # noqa: F841
+                        _insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data  # noqa: F841
+                        _earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         # --- news mode skips yfinance entirely ---
@@ -323,7 +323,7 @@ class PipelineService:
                 return await self.risk_computer.compute(ticker)
 
             try:
-                _risk_metrics = await _step_risk()  # noqa: F841
+                _risk_metrics = await _step_risk()
                 result.status["risk_metrics"] = {"status": "ok"}
             except Exception as e:
                 result.status["risk_metrics"] = {
@@ -528,13 +528,13 @@ class PipelineService:
         analyst_data = None  # noqa: F841
         insider_activity = None  # noqa: F841
         earnings_calendar = None  # noqa: F841
-        risk_metrics = None  # noqa: F841
+        risk_metrics = None
         news: list = []
         yt_transcripts: list = []
         industry_peers: list[str] = []
         peer_fundamentals: list = []
 
-        async def _tracked_step(name: str, coro) -> tuple:  # noqa: ANN001
+        async def _tracked_step(name: str, coro) -> tuple:
             """Run a step, emitting start/complete/error events."""
             await _emit({"type": "step_start", "name": name})
             try:
@@ -592,13 +592,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data  # noqa: F841
+                        _analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data  # noqa: F841
+                        _insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data  # noqa: F841
+                        _earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":

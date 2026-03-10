@@ -1,10 +1,10 @@
 """Ollama LLM service — sends chat requests to Ollama.
 
 The Ollama URL is centralized in app.config.settings:
-    OLLAMA_URL ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Ollama endpoint (default http://localhost:11434)
+    OLLAMA_URL → Ollama endpoint (default http://localhost:11434)
 
 Uses a module-level shared httpx.AsyncClient for connection pooling.
-This is critical for parallel LLM calls ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â when OLLAMA_NUM_PARALLEL > 1,
+This is critical for parallel LLM calls — when OLLAMA_NUM_PARALLEL > 1,
 multiple agents can share the same TCP connection pool instead of each
 creating and destroying their own connection.
 """
@@ -22,7 +22,7 @@ from app.config import settings
 from app.services.pipeline_health import log_llm_call
 from app.utils.logger import logger
 
-# Shared async HTTP client ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â reused across all LLM calls for connection pooling.
+# Shared async HTTP client — reused across all LLM calls for connection pooling.
 # Created lazily on first use; lives for the entire app lifecycle.
 _shared_client: httpx.AsyncClient | None = None
 
@@ -34,7 +34,7 @@ async def _get_shared_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0,  # Fail fast if server is unreachable
-                read=600.0,  # 10 min ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â thinking models can be very slow
+                read=600.0,  # 10 min — thinking models can be very slow
                 write=30.0,  # Sending large prompts
                 pool=30.0,  # Waiting for a connection slot
             ),
@@ -51,7 +51,7 @@ class LLMService:
 
     All config values (model, context_size, temperature) are read LIVE
     from settings on every call, so hot-patching via the Settings UI
-    takes effect immediately ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no restart needed.
+    takes effect immediately — no restart needed.
     """
 
     @property
@@ -129,7 +129,10 @@ class LLMService:
 
         t0 = _time.monotonic()
         content = await self._call_ollama(
-            effective_msgs, response_format, max_tokens, effective_temp,
+            effective_msgs,
+            response_format,
+            max_tokens,
+            effective_temp,
             schema=schema,
         )
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
@@ -198,13 +201,13 @@ class LLMService:
             schema=schema,
         )
 
-        # ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Dual-mode retry for empty JSON responses ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
+        # ── Dual-mode retry for empty JSON responses ──
         # Some models (e.g. GLM-4.7-flash) return 0 chars when
         # format=json is used because they can't handle the GBNF
         # grammar constraint.  Retry with format=text instead.
         if not content.strip() and response_format == "json":
             logger.warning(
-                "[LLM] Empty response with format=json ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â retrying "
+                "[LLM] Empty response with format=json — retrying "
                 "with format=text + JSON instructions",
             )
             # Append explicit JSON instruction to system prompt
@@ -213,10 +216,9 @@ class LLMService:
                 retry_msgs[0] = {
                     **retry_msgs[0],
                     "content": (
-                        retry_msgs[0]["content"]
-                        + "\n\nIMPORTANT: You MUST respond with "
+                        retry_msgs[0]["content"] + "\n\nIMPORTANT: You MUST respond with "
                         "valid JSON only. No markdown, no "
-                        "explanations ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â pure JSON."
+                        "explanations — pure JSON."
                     ),
                 }
             content = await self._send_ollama_request(
@@ -232,8 +234,7 @@ class LLMService:
                 )
             else:
                 logger.error(
-                    "[LLM] Text-mode retry also returned empty ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â "
-                    "model may be unresponsive",
+                    "[LLM] Text-mode retry also returned empty — model may be unresponsive",
                 )
 
         return content
@@ -302,13 +303,10 @@ class LLMService:
         _measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
         _file_size = _measurement.get("model_file_size", 0)
         _model_file_gb = _file_size / (1024**3) if _file_size else 0
-        _timeout = (
-            max(_base_timeout, 300) if _model_file_gb > 15 else _base_timeout
-        )
+        _timeout = max(_base_timeout, 300) if _model_file_gb > 15 else _base_timeout
 
         logger.info(
-            "Ollama request START -> %s model=%s format=%s ctx=%d "
-            "num_predict=%d timeout=%ds",
+            "Ollama request START -> %s model=%s format=%s ctx=%d num_predict=%d timeout=%ds",
             url,
             self.model,
             response_format,
@@ -317,7 +315,6 @@ class LLMService:
             _timeout,
         )
         t0 = time.perf_counter()
-
 
         try:
             client = await _get_shared_client()
@@ -385,35 +382,44 @@ class LLMService:
         thinking = msg.get("thinking", "")
         tokens = data.get("eval_count", 0)
 
-        # ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ Thinking-model fallback ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
+        # ── Thinking-model fallback ──
         # Some thinking models (e.g. olmo-3:32b, qwen3) put all
         # their reasoning in `thinking` and leave `content` empty.
-        # Try to extract JSON from the thinking text.
+        # Strip <think> tags first, then try to extract JSON.
         if not content.strip() and thinking.strip():
-            # Try to find a JSON object or array in the thinking
             import json as _json
 
+            # Strip <think>...</think> blocks from thinking text
+            clean_thinking = re.sub(
+                r"<think>.*?</think>",
+                "",
+                thinking,
+                flags=re.DOTALL,
+            ).strip()
+            # Use original thinking if stripping removed everything
+            text_to_parse = clean_thinking or thinking
+
             # Reuse our robust brace-depth-counting extractor
-            # instead of a regex that breaks on nested JSON
-            candidate = LLMService.clean_json_response(thinking)
+            candidate = LLMService.clean_json_response(text_to_parse)
             if candidate.strip().startswith("{"):
                 try:
-                    _json.loads(candidate)  # Validate it's real JSON
+                    parsed = _json.loads(candidate)
                     content = candidate
+                    _keys = list(parsed.keys())[:5]
                     logger.info(
-                        "[LLM] Extracted JSON from thinking field (%d chars)",
+                        "[LLM] Extracted JSON from thinking field: keys=%s (%d chars)",
+                        _keys,
                         len(content),
                     )
                 except _json.JSONDecodeError:
                     pass  # Not valid JSON, keep content empty
 
-            # If still empty, return the raw thinking text
-            # so the caller can try to parse it
-            if not content.strip() and thinking.strip():
-                content = thinking
+            # If still empty, return the cleaned thinking text
+            # (with <think> tags stripped) so the caller can try to parse it
+            if not content.strip():
+                content = clean_thinking or thinking
                 logger.warning(
-                    "[LLM] Using raw thinking text as response "
-                    "(%d chars) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â no JSON found",
+                    "[LLM] Using raw thinking text as response (%d chars) — no JSON found",
                     len(content),
                 )
 
@@ -423,8 +429,7 @@ class LLMService:
         if thinking:
             think_tokens = data.get("thinking_eval_count", 0)
             logger.info(
-                "Ollama request DONE  -> %.2fs, %d chars "
-                "(thinking: %d chars, %d tokens)",
+                "Ollama request DONE  -> %.2fs, %d chars (thinking: %d chars, %d tokens)",
                 elapsed,
                 len(content),
                 len(thinking),
@@ -467,7 +472,7 @@ class LLMService:
                 )
                 trimmed.append({**msg, "content": trimmed_content})
                 logger.info(
-                    "ÃƒÆ’Ã‚Â¢Ãƒâ€¦Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã‚Â¯Ãƒâ€šÃ‚Â¸Ãƒâ€šÃ‚Â  Trimmed message[%d] from %d ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ %d chars",
+                    "✂️ Trimmed message[%d] from %d → %d chars",
                     i,
                     len(content),
                     len(trimmed_content),
@@ -482,7 +487,8 @@ class LLMService:
 
         LLMs often wrap their JSON in ```json ... ``` markers, or output
         multiple JSON objects in one response.  We use brace-depth counting
-        to extract only the first complete {...} object.
+        to extract only the first complete {...} object, then apply light
+        repairs for common LLM output quirks.
         """
         # Strip <think>...</think> blocks from reasoning models
         cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
@@ -529,16 +535,46 @@ class LLMService:
                     break
 
         if end != -1:
-            return cleaned[start : end + 1]
+            extracted = cleaned[start : end + 1]
+        else:
+            # Incomplete object (truncated by max_tokens) — return what we have
+            extracted = cleaned[start:]
 
-        # Incomplete object (truncated by max_tokens) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â return what we have
-        return cleaned[start:]
+        # ── JSON repair: fix common LLM output quirks ──
+        extracted = LLMService._repair_json(extracted)
+
+        return extracted
+
+    @staticmethod
+    def _repair_json(text: str) -> str:
+        """Light JSON repair for common LLM mistakes.
+
+        Fixes: trailing commas, NaN/Infinity literals, single-quoted strings,
+        unescaped control characters.
+        """
+        # Replace NaN, Infinity, -Infinity with null (invalid in JSON)
+        text = re.sub(r"\bNaN\b", "null", text)
+        text = re.sub(r"\bInfinity\b", "99999999", text)
+        text = re.sub(r"-Infinity\b", "-99999999", text)
+
+        # Remove trailing commas before } or ]
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+
+        # Replace single-quoted strings with double-quoted (simple cases)
+        # Only do this outside of already-double-quoted strings
+        # This is a best-effort repair; complex nested quotes may fail
+        text = re.sub(r"(?<![\"\\])'([^']*)'(?![\"\\])", r'"\1"', text)
+
+        # Remove control characters that break JSON (except \n \r \t)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+
+        return text
 
     @staticmethod
     async def fetch_models(base_url: str) -> list[str]:
         """Probe an Ollama URL and return available model names.
 
-        Works independently of the current config ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â used by the frontend
+        Works independently of the current config — used by the frontend
         to test arbitrary URLs before saving them.
         """
         base_url = base_url.rstrip("/")
@@ -704,7 +740,7 @@ class LLMService:
         """Estimate total VRAM for a model at a given context length.
 
         Uses the model architecture from /api/show's model_info to
-        calculate KV cache size.  Model weight VRAM ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€¹Ã¢â‚¬Â  GGUF file size.
+         Model weight VRAM ≈ GGUF file size.
 
         Returns {"total_bytes", "weights_bytes", "kv_bytes",
                  "kv_bytes_per_token", "fields_found"}.
@@ -739,7 +775,7 @@ class LLMService:
         kv_bytes_per_token = 0
         kv_bytes = 0
         if fields_found:
-            # KV cache = 2 (K+V) ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â layers ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â kv_heads ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â head_dim ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â 2 (FP16)
+            # KV cache = 2 (K+V) × layers × kv_heads × head_dim × 2 (FP16)
             kv_bytes_per_token = 2 * block_count * head_count_kv * head_dim * 2
             kv_bytes = kv_bytes_per_token * num_ctx
 
@@ -791,10 +827,7 @@ class LLMService:
 
         _GRAPH_OVERHEAD = int(0.5 * (1024**3))  # 0.5 GiB
         compute_reserve = int(safe_ceiling_bytes * compute_reserve_pct)
-        kv_budget = (
-            safe_ceiling_bytes - model_file_size
-            - _GRAPH_OVERHEAD - compute_reserve
-        )
+        kv_budget = safe_ceiling_bytes - model_file_size - _GRAPH_OVERHEAD - compute_reserve
 
         if kv_budget <= 0:
             logger.warning(
@@ -835,12 +868,12 @@ class LLMService:
         """Verify an Ollama model exists, estimate VRAM, and pre-warm it.
 
         Flow:
-          1. GET /api/tags  ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ verify model exists, get file size
-          2. POST /api/show ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ get architecture (layers, kv_heads, head_dim)
-          3. nvidia-smi      ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ get free GPU memory
-          4. MATH            ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ estimate total VRAM needed
-          5. If estimated > free ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ return oom_error + suggested_ctx (NO load)
-          6. If estimated ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ free ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ load the model (single attempt)
+          1. GET /api/tags  → verify model exists, get file size
+          2. POST /api/show → get architecture (layers, kv_heads, head_dim)
+          3. nvidia-smi      → get free GPU memory
+          4. MATH            → estimate total VRAM needed
+          5. If estimated > free → return oom_error + suggested_ctx (NO load)
+          6. If estimated ≤ free → load the model (single attempt)
 
         Returns dict with model info.  On predicted/actual OOM, returns
         status="oom_error" with suggested_ctx.
@@ -854,7 +887,7 @@ class LLMService:
 
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
-                # â€”â€” Step 1: Verify model exists â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
+                # —— Step 1: Verify model exists ——————————————————
                 tags_resp = await client.get(f"{base_url}/api/tags")
                 tags_resp.raise_for_status()
                 tags_data = tags_resp.json().get("models", [])
@@ -891,7 +924,7 @@ class LLMService:
                 model_max_ctx = 0
                 model_info: dict = {}
 
-                # â€”â€” Step 2: Query architecture â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
+                # —— Step 2: Query architecture ———————————————————
                 try:
                     CalibrationTracker.update_progress("Step 2: Querying model architecture...", 25)
                     show_resp = await client.post(
@@ -922,7 +955,7 @@ class LLMService:
                         exc,
                     )
 
-                # â€”â€” Step 3: Determine desired context â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
+                # —— Step 3: Determine desired context ————————————
                 from app.config import settings as _cfg
 
                 desired_ctx = _cfg.LLM_CONTEXT_SIZE
@@ -930,7 +963,7 @@ class LLMService:
                     desired_ctx = min(desired_ctx, model_max_ctx)
                 desired_ctx = max(desired_ctx, 2048)
 
-                # â€”â€” Step 4: Estimate VRAM (for frontend display) â€”
+                # —— Step 4: Estimate VRAM (for frontend display) —
                 CalibrationTracker.update_progress("Step 4: Estimating VRAM requirements...", 50)
                 estimate = LLMService.estimate_model_vram(
                     model_info,
@@ -958,7 +991,7 @@ class LLMService:
                     safe_gb,
                 )
 
-                # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                # ════════════════════════════════════════════════
                 # EMPIRICAL MEMORY AUDIT SYSTEM
                 #
                 # On Jetson unified memory, there is a ~10 GB
@@ -967,9 +1000,9 @@ class LLMService:
                 # Instead of math, we test the real hardware.
                 #
                 # Two paths:
-                #   FAST PATH:  proven_max_ctx in cache â†’ instant
-                #   AUDIT PATH: step through ctx sizes â†’ find limit
-                # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                #   FAST PATH:  proven_max_ctx in cache → instant
+                #   AUDIT PATH: step through ctx sizes → find limit
+                # ════════════════════════════════════════════════
                 import asyncio
 
                 cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model, {})
@@ -979,7 +1012,8 @@ class LLMService:
                     # ═══ FAST PATH: Audited model ═══════════════
                     # Cap to compute-optimal (leave 30% for throughput)
                     compute_optimal = LLMService.calculate_compute_optimal_ctx(
-                        model_file_size, kv_per_tok,
+                        model_file_size,
+                        kv_per_tok,
                         safe_ceiling,
                     )
                     load_ctx = min(desired_ctx, proven_max_ctx, compute_optimal)
@@ -1036,15 +1070,16 @@ class LLMService:
                         warm_resp.raise_for_status()
                         CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
                         CalibrationTracker.update_progress(
-                            f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
+                            f"Calibration complete! Loaded at {load_ctx:,} ctx.",
+                            100,
                         )
                         logger.info(
-                            "[LLM] âœ… Model %s loaded at ctx=%d",
+                            "[LLM] ✅ Model %s loaded at ctx=%d",
                             model,
                             load_ctx,
                         )
                     except httpx.HTTPStatusError:
-                        # Cached limit failed â€” invalidate and
+                        # Cached limit failed — invalidate and
                         # fall through to re-audit next time.
                         logger.warning(
                             "[LLM] âš ï¸ Cached limit %d failed for "
@@ -1055,8 +1090,7 @@ class LLMService:
                         _cfg.LLM_VRAM_MEASUREMENTS.pop(model, None)
                         CalibrationTracker.set_status("error")
                         CalibrationTracker.update_progress(
-                            f"Cached limit {proven_max_ctx:,} "
-                            f"failed for {model}. Re-audit.",
+                            f"Cached limit {proven_max_ctx:,} failed for {model}. Re-audit.",
                             100,
                         )
                         with contextlib.suppress(Exception):
@@ -1092,8 +1126,7 @@ class LLMService:
                     if clamped:
                         result["clamped_from"] = desired_ctx
                         result["message"] = (
-                            f"Loaded at {load_ctx:,} tokens "
-                            f"(hardware limit: {proven_max_ctx:,})."
+                            f"Loaded at {load_ctx:,} tokens (hardware limit: {proven_max_ctx:,})."
                         )
                     return result
 
@@ -1101,7 +1134,8 @@ class LLMService:
                     # ═══ AUDIT PATH: Compute-aware first-time test ══
                     # Calculate optimal ctx that leaves 30% VRAM for compute
                     compute_optimal = LLMService.calculate_compute_optimal_ctx(
-                        model_file_size, kv_per_tok,
+                        model_file_size,
+                        kv_per_tok,
                         safe_ceiling,
                     )
                     target_ctx = min(desired_ctx, compute_optimal)
@@ -1111,7 +1145,10 @@ class LLMService:
                         "[LLM] 🔍 COMPUTE-AWARE AUDIT: %s "
                         "compute_optimal=%d, desired=%d. "
                         "Testing load at ctx=%d...",
-                        model, compute_optimal, desired_ctx, target_ctx,
+                        model,
+                        compute_optimal,
+                        desired_ctx,
+                        target_ctx,
                     )
 
                     CalibrationTracker.update_progress(
@@ -1133,18 +1170,13 @@ class LLMService:
 
                     for step_idx, ctx_test in enumerate(audit_steps):
                         # Scale progress 60-90% across audit steps
-                        step_pct = 60 + int(
-                            30 * step_idx
-                            / max(len(audit_steps) - 1, 1)
-                        )
+                        step_pct = 60 + int(30 * step_idx / max(len(audit_steps) - 1, 1))
                         CalibrationTracker.update_progress(
-                            f"Audit {step_idx + 1}/"
-                            f"{len(audit_steps)}: "
-                            f"ctx={ctx_test:,}...",
+                            f"Audit {step_idx + 1}/{len(audit_steps)}: ctx={ctx_test:,}...",
                             step_pct,
                         )
                         logger.info(
-                            "[LLM] ðŸ” Audit step: testing ctx=%d...",
+                            "[LLM] 🔎 Audit step: testing ctx=%d...",
                             ctx_test,
                         )
 
@@ -1173,13 +1205,12 @@ class LLMService:
                             warm_resp.raise_for_status()
                             last_successful_ctx = ctx_test
                             logger.info(
-                                "[LLM] âœ… Audit step ctx=%d SUCCESS",
+                                "[LLM] ✅ Audit step ctx=%d SUCCESS",
                                 ctx_test,
                             )
                         except httpx.HTTPStatusError:
                             logger.warning(
-                                "[LLM] ðŸ›‘ Audit step ctx=%d FAILED. "
-                                "Hardware limit found.",
+                                "[LLM] 🛑 Audit step ctx=%d FAILED. Hardware limit found.",
                                 ctx_test,
                             )
                             break
@@ -1188,7 +1219,8 @@ class LLMService:
                     if last_successful_ctx == 0:
                         CalibrationTracker.set_status("error")
                         CalibrationTracker.update_progress(
-                            f"Failed: {model} weights exceed available memory.", 100,
+                            f"Failed: {model} weights exceed available memory.",
+                            100,
                         )
                         logger.error(
                             "[LLM] âŒ Model %s cannot load at any "
@@ -1219,6 +1251,7 @@ class LLMService:
                     import json
                     import os
                     import time
+
                     CONFIG_FILE = str(_cfg.LLM_CONFIG_PATH)
 
                     vram_usage_gb = (model_file_size + (proven_max_ctx * kv_per_tok)) / (1024**3)
@@ -1229,7 +1262,7 @@ class LLMService:
                         "model_file_size": model_file_size,
                         "vram_usage_gb": vram_usage_gb,
                         "last_audited": time.time(),
-                        "status": "calibrated"
+                        "status": "calibrated",
                     }
 
                     # FORCE SAVE TO DISK
@@ -1279,17 +1312,17 @@ class LLMService:
                         warm_resp.raise_for_status()
                         CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
                         CalibrationTracker.update_progress(
-                            f"Calibration complete! Loaded at {load_ctx:,} ctx.", 100,
+                            f"Calibration complete! Loaded at {load_ctx:,} ctx.",
+                            100,
                         )
                         logger.info(
-                            "[LLM] âœ… Final load at ctx=%d after audit",
+                            "[LLM] ✅ Final load at ctx=%d after audit",
                             load_ctx,
                         )
                     except httpx.HTTPStatusError:
                         CalibrationTracker.set_status("error")
                         CalibrationTracker.update_progress(
-                            f"Final reload at ctx={load_ctx:,}"
-                            " failed after audit.",
+                            f"Final reload at ctx={load_ctx:,} failed after audit.",
                             100,
                         )
                         logger.warning(
@@ -1315,9 +1348,7 @@ class LLMService:
                             "max_proven_ctx": proven_max_ctx,
                             "vram_usage_gb": vram_usage_gb,
                         },
-                        "message": (
-                            f"Model ready. Max safe context locked at {proven_max_ctx}."
-                        ),
+                        "message": (f"Model ready. Max safe context locked at {proven_max_ctx}."),
                     }
                     if clamped:
                         result["clamped_from"] = desired_ctx

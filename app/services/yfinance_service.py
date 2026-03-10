@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from datetime import date, timedelta
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import pandas as pd
 import yfinance as yf
@@ -26,8 +27,8 @@ from app.models.market_data import (
     BalanceSheetRow,
     CashFlowRow,
     EarningsCalendar,
-    FundamentalSnapshot,
     FinancialHistoryRow,
+    FundamentalSnapshot,
     InsiderSummary,
     OHLCVRow,
 )

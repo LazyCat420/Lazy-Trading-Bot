@@ -14,9 +14,9 @@ from app.services.risk_rules import RiskRules
 from app.utils.logger import logger
 
 # ── Safety gate defaults ─────────────────────────────────────────
-_MAX_NOTIONAL = 50_000       # Max dollar value per trade
-_MAX_DAILY_TRADES = 20       # Max trades per day per bot
-_DUPLICATE_WINDOW_MIN = 5    # Block same symbol+side within N minutes
+_MAX_NOTIONAL = 50_000  # Max dollar value per trade
+_MAX_DAILY_TRADES = 20  # Max trades per day per bot
+_DUPLICATE_WINDOW_MIN = 5  # Block same symbol+side within N minutes
 
 # Track recent trades for duplicate detection (in-memory, resets on restart)
 _recent_trades: list[dict] = []
@@ -64,7 +64,8 @@ class ExecutionService:
         if tripped:
             logger.warning(
                 "[Execution] CIRCUIT BREAKER tripped for %s: %s",
-                symbol, cb_reason,
+                symbol,
+                cb_reason,
             )
             DecisionLogger.update_decision_status(decision_id, "circuit_breaker")
             return {"status": "circuit_breaker", "symbol": symbol, "reason": cb_reason}
@@ -82,6 +83,58 @@ class ExecutionService:
                 existing_pos = p
                 break
 
+        # ── Gate 1.5: Already-holding guard (BUY only) ──────────
+        # Prevent the bot from DCA-ing endlessly into the same stock
+        if side == "buy" and existing_pos and existing_pos.get("qty", 0) > 0:
+            logger.warning(
+                "[Execution] BLOCKED BUY %s: already holding %d shares @ $%.2f",
+                symbol,
+                existing_pos["qty"],
+                existing_pos.get("avg_entry_price", 0),
+            )
+            DecisionLogger.update_decision_status(decision_id, "skipped_already_held")
+            return {
+                "status": "skipped",
+                "reason": (
+                    f"Already holding {existing_pos['qty']} shares of {symbol}. "
+                    f"Cannot buy more — sell first or pick a different ticker."
+                ),
+            }
+
+        # ── Gate 1.7: 24-hour buy cooldown (DB-persisted) ───────
+        # Prevents re-buying the same ticker across server restarts
+        if side == "buy":
+            from app.database import get_db
+
+            try:
+                db = get_db()
+                last_buy = db.execute(
+                    "SELECT MAX(created_at) FROM orders "
+                    "WHERE ticker = ? AND side = 'buy' AND bot_id = ? "
+                    "AND created_at > CURRENT_TIMESTAMP - INTERVAL 24 HOUR",
+                    [symbol, action.bot_id],
+                ).fetchone()
+                if last_buy and last_buy[0]:
+                    logger.warning(
+                        "[Execution] BLOCKED BUY %s: bought within last 24h (at %s)",
+                        symbol,
+                        last_buy[0],
+                    )
+                    DecisionLogger.update_decision_status(
+                        decision_id,
+                        "skipped_buy_cooldown",
+                    )
+                    return {
+                        "status": "skipped",
+                        "reason": (
+                            f"Already bought {symbol} within the last 24 hours "
+                            f"(at {str(last_buy[0])[:19]}). "
+                            f"Pick a different ticker."
+                        ),
+                    }
+            except Exception as exc:
+                logger.debug("[Execution] Buy cooldown check failed: %s", exc)
+
         # Resolve price
         price = current_price
         if price <= 0:
@@ -91,6 +144,7 @@ class ExecutionService:
             if price <= 0:
                 try:
                     import yfinance as yf
+
                     t = yf.Ticker(symbol)
                     price = t.fast_info.get("lastPrice", 0) or 0
                 except Exception:
@@ -104,9 +158,7 @@ class ExecutionService:
         if action.action == "BUY":
             existing_value = 0
             if existing_pos:
-                existing_value = (
-                    existing_pos.get("qty", 0) * existing_pos.get("avg_entry_price", 0)
-                )
+                existing_value = existing_pos.get("qty", 0) * existing_pos.get("avg_entry_price", 0)
 
             qty = RiskRules.compute_qty(
                 price=price,
@@ -144,8 +196,7 @@ class ExecutionService:
         now = datetime.now()
         # Prune expired entries in-place (preserves list reference for tests)
         _recent_trades[:] = [
-            t for t in _recent_trades
-            if now - t["ts"] < timedelta(minutes=_DUPLICATE_WINDOW_MIN)
+            t for t in _recent_trades if now - t["ts"] < timedelta(minutes=_DUPLICATE_WINDOW_MIN)
         ]
         for t in _recent_trades:
             if t["symbol"] == symbol and t["side"] == side and t["bot_id"] == action.bot_id:
@@ -165,9 +216,14 @@ class ExecutionService:
         # ── Dry run: log without executing ──────────────────────
         if dry_run:
             logger.info(
-                "[Execution] DRY RUN: %s %d x %s @ $%.2f "
-                "(stop=$%.2f, tp=$%.2f, confidence=%.2f)",
-                side.upper(), qty, symbol, price, stop, tp, action.confidence,
+                "[Execution] DRY RUN: %s %d x %s @ $%.2f (stop=$%.2f, tp=$%.2f, confidence=%.2f)",
+                side.upper(),
+                qty,
+                symbol,
+                price,
+                stop,
+                tp,
+                action.confidence,
             )
             DecisionLogger.update_decision_status(decision_id, "dry_run")
             DecisionLogger.log_execution(
@@ -177,12 +233,14 @@ class ExecutionService:
                 status="dry_run",
             )
             # Track for duplicate detection even in dry_run
-            _recent_trades.append({
-                "symbol": symbol,
-                "side": side,
-                "bot_id": action.bot_id,
-                "ts": now,
-            })
+            _recent_trades.append(
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "bot_id": action.bot_id,
+                    "ts": now,
+                }
+            )
             return {
                 "status": "dry_run",
                 "symbol": symbol,
@@ -226,12 +284,14 @@ class ExecutionService:
                 return {"status": "rejected", "reason": "PaperTrader rejected the order"}
 
             order_id = order.id
-            _recent_trades.append({
-                "symbol": symbol,
-                "side": side,
-                "bot_id": action.bot_id,
-                "ts": now,
-            })
+            _recent_trades.append(
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "bot_id": action.bot_id,
+                    "ts": now,
+                }
+            )
 
             DecisionLogger.update_decision_status(decision_id, "executed")
             DecisionLogger.log_execution(
@@ -244,7 +304,11 @@ class ExecutionService:
 
             logger.info(
                 "[Execution] EXECUTED: %s %d x %s @ $%.2f (order=%s)",
-                side.upper(), qty, symbol, price, order_id[:8],
+                side.upper(),
+                qty,
+                symbol,
+                price,
+                order_id[:8],
             )
             return {
                 "status": "executed",

@@ -36,14 +36,14 @@ _tracker_lock = threading.Lock()
 
 def set_active_tracker(tracker: HealthTracker) -> None:
     """Set the module-level active health tracker."""
-    global _active_tracker  # noqa: PLW0603
+    global _active_tracker
     with _tracker_lock:
         _active_tracker = tracker
 
 
 def clear_active_tracker() -> None:
     """Clear the module-level active health tracker."""
-    global _active_tracker  # noqa: PLW0603
+    global _active_tracker
     with _tracker_lock:
         _active_tracker = None
 
@@ -120,7 +120,7 @@ _diagnostic_handler: DiagnosticHandler | None = None
 
 def get_diagnostic_handler() -> DiagnosticHandler:
     """Return (and lazily create + attach) the diagnostic handler."""
-    global _diagnostic_handler  # noqa: PLW0603
+    global _diagnostic_handler
     if _diagnostic_handler is None:
         _diagnostic_handler = DiagnosticHandler()
         fmt = logging.Formatter("%(message)s")

@@ -544,8 +544,8 @@ class AutonomousLoop:
             metadata={"tickers": tickers, "count": len(tickers)},
         )
         dossiers = await self.deep_analysis.analyze_batch(
-            tickers, 
-            concurrency=2, 
+            tickers,
+            concurrency=2,
             portfolio_context=portfolio_context,
             bot_id=self.bot_id,
             progress_callback=lambda t: self._log(f"➤ Finished deep analysis for ${t}"),

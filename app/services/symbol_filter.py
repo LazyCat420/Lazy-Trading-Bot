@@ -177,7 +177,7 @@ _pipeline: FilterPipeline | None = None
 
 def get_filter_pipeline() -> FilterPipeline:
     """Return the singleton pipeline (lazy init)."""
-    global _pipeline  # noqa: PLW0603
+    global _pipeline
     if _pipeline is None:
         _pipeline = FilterPipeline([
             NormalizeFilter(),

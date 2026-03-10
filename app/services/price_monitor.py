@@ -6,7 +6,6 @@ when stop-loss, take-profit, or trailing-stop conditions are met.
 
 from __future__ import annotations
 
-
 from app.database import get_db
 from app.utils.logger import logger
 
