@@ -3431,6 +3431,16 @@ const SettingsPage = () => {
 // AUTOBOT MONITOR DATA HOOK — Persistent state across navigation
 // ***************************************************************
 
+// ── Module-Level State ──────────────────────────────────────────
+// These survive React mount/unmount cycles (page navigation)
+// so Run All progress is not lost when switching tabs.
+let _runAllRunning = false;
+let _runAllStatus = null;
+let _runAllPollId = null;
+let _loopRunning = false;
+let _loopStatus = null;
+
+
 const useMonitorData = () => {
     const [status, setStatus] = useState(null);
     const [scores, setScores] = useState([]);
@@ -3463,9 +3473,9 @@ const useMonitorData = () => {
     const [portfolioHistory, setPortfolioHistory] = useState([]);
     const [portfolioLoading, setPortfolioLoading] = useState(false);
 
-    // ── Autonomous Loop state ──
-    const [loopRunning, setLoopRunning] = useState(false);
-    const [loopStatus, setLoopStatus] = useState(null);
+    // ── Autonomous Loop state (initialized from module-level) ──
+    const [loopRunning, setLoopRunning] = useState(_loopRunning);
+    const [loopStatus, setLoopStatus] = useState(_loopStatus);
 
     // ── Multi-Bot state ──
     const [activeBotId, setActiveBotId] = useState("default");
@@ -3474,13 +3484,19 @@ const useMonitorData = () => {
     const [botList, setBotList] = useState([]);
     const [leaderboard, setLeaderboard] = useState([]);
 
-    // ── Run-All-Bots state ──
-    const [runAllRunning, setRunAllRunning] = useState(false);
-    const [runAllStatus, setRunAllStatus] = useState(null);
-    const runAllPollRef = useRef(null);
+    // ── Run-All-Bots state (initialized from module-level) ──
+    const [runAllRunning, setRunAllRunning] = useState(_runAllRunning);
+    const [runAllStatus, setRunAllStatus] = useState(_runAllStatus);
+    const runAllPollRef = useRef(_runAllPollId);
 
     // Ref for loop poll interval so we can manage it across renders
     const loopPollRef = useRef(null);
+
+    // ── Sync React state → module-level state on every change ──
+    useEffect(() => { _runAllRunning = runAllRunning; }, [runAllRunning]);
+    useEffect(() => { _runAllStatus = runAllStatus; }, [runAllStatus]);
+    useEffect(() => { _loopRunning = loopRunning; }, [loopRunning]);
+    useEffect(() => { _loopStatus = loopStatus; }, [loopStatus]);
 
     // Fetch active bot info on mount + listen for config saves
     useEffect(() => {
@@ -3531,6 +3547,45 @@ const useMonitorData = () => {
         } catch (e) { console.error("Leaderboard fetch error:", e); }
     }, []);
 
+    // Start polling run-all status (extracted so we can restart on re-mount)
+    const startRunAllPoll = useCallback(() => {
+        if (runAllPollRef.current) clearInterval(runAllPollRef.current);
+        const pollId = setInterval(async () => {
+            try {
+                const sr = await fetch("/api/bots/run-all/status");
+                const st = await sr.json();
+                setRunAllStatus(st);
+                // Refresh pipeline events so Activity Log stays alive
+                try {
+                    const evRes = await fetch("/api/pipeline/events?limit=200").then(r => r.json());
+                    setPipelineEvents(evRes.events || []);
+                } catch (_) { /* best effort */ }
+                // Sync active bot with the currently-running bot
+                // so Portfolio tab shows the right data
+                if (st.current_bot) {
+                    const curBotId = st.current_bot.bot_id;
+                    if (curBotId && curBotId !== activeBotId) {
+                        setActiveBotId(curBotId);
+                        fetchActiveBot();
+                    }
+                }
+
+                if (!st.running) {
+                    clearInterval(pollId);
+                    runAllPollRef.current = null;
+                    _runAllPollId = null;
+                    setRunAllRunning(false);
+                    RetroSFX.successChime();
+                    fetchLeaderboard();
+                    fetchBotList();
+                    fetchActiveBot();
+                }
+            } catch (e) { console.error("Run-all poll error:", e); }
+        }, 3000);
+        runAllPollRef.current = pollId;
+        _runAllPollId = pollId;
+    }, [fetchLeaderboard, fetchBotList, fetchActiveBot, activeBotId]);
+
     const runAllBots = useCallback(async () => {
         if (runAllRunning) return;
         RetroSFX.modemHandshake();
@@ -3544,44 +3599,12 @@ const useMonitorData = () => {
                 setRunAllRunning(false);
                 return;
             }
-            // Start polling run-all status
-            if (runAllPollRef.current) clearInterval(runAllPollRef.current);
-            runAllPollRef.current = setInterval(async () => {
-                try {
-                    const sr = await fetch("/api/bots/run-all/status");
-                    const st = await sr.json();
-                    setRunAllStatus(st);
-                    // Refresh pipeline events so Activity Log stays alive
-                    try {
-                        const evRes = await fetch("/api/pipeline/events?limit=200").then(r => r.json());
-                        setPipelineEvents(evRes.events || []);
-                    } catch (_) { /* best effort */ }
-                    // Sync active bot with the currently-running bot
-                    // so Portfolio tab shows the right data
-                    if (st.current_bot) {
-                        const curBotId = st.current_bot.bot_id;
-                        if (curBotId && curBotId !== activeBotId) {
-                            setActiveBotId(curBotId);
-                            fetchActiveBot();
-                        }
-                    }
-
-                    if (!st.running) {
-                        clearInterval(runAllPollRef.current);
-                        runAllPollRef.current = null;
-                        setRunAllRunning(false);
-                        RetroSFX.successChime();
-                        fetchLeaderboard();
-                        fetchBotList();
-                        fetchActiveBot();
-                    }
-                } catch (e) { console.error("Run-all poll error:", e); }
-            }, 3000);
+            startRunAllPoll();
         } catch (e) {
             console.error("Run all bots error:", e);
             setRunAllRunning(false);
         }
-    }, [runAllRunning, fetchLeaderboard, fetchBotList]);
+    }, [runAllRunning, startRunAllPoll]);
 
     const fetchWatchlist = useCallback(async () => {
         try {
@@ -3716,10 +3739,10 @@ const useMonitorData = () => {
         }, 3000);
     }, [fetchAll]);
 
-    // On mount: fetch data + check if a loop is already running
+    // On mount: fetch data + check if loop / run-all were already running
     useEffect(() => {
         fetchAll();
-        const interval = setInterval(fetchAll, 30000);
+        let bgInterval = setInterval(fetchAll, 30000);
 
         // Check if loop was already running before we mounted
         fetch("/api/bot/loop-status").then(r => r.json()).then(st => {
@@ -3731,11 +3754,67 @@ const useMonitorData = () => {
             }
         }).catch(() => { });
 
-        return () => {
-            clearInterval(interval);
-            if (loopPollRef.current) clearInterval(loopPollRef.current);
+        // Check if run-all was already running before we mounted
+        fetch("/api/bots/run-all/status").then(r => r.json()).then(st => {
+            if (st.running) {
+                console.log("[MonitorData] Run-All already running, resuming poll...");
+                setRunAllRunning(true);
+                setRunAllStatus(st);
+                startRunAllPoll();
+            }
+        }).catch(() => { });
+
+        // ── Visibility change: pause polling when tab is hidden, catch up when visible ──
+        const handleVisibility = () => {
+            if (document.hidden) {
+                // Pause the 30s background refresh to save resources
+                clearInterval(bgInterval);
+            } else {
+                // Tab is visible again — immediate catch-up fetch + resume
+                console.log("[MonitorData] Tab visible — catching up...");
+                fetchAll();
+                bgInterval = setInterval(fetchAll, 30000);
+                // Re-check if runs started/stopped while hidden
+                fetch("/api/bots/run-all/status").then(r => r.json()).then(st => {
+                    if (st.running && !_runAllRunning) {
+                        setRunAllRunning(true);
+                        setRunAllStatus(st);
+                        startRunAllPoll();
+                    } else if (!st.running && _runAllRunning) {
+                        if (runAllPollRef.current) { clearInterval(runAllPollRef.current); runAllPollRef.current = null; _runAllPollId = null; }
+                        setRunAllRunning(false);
+                        setRunAllStatus(st);
+                        fetchLeaderboard();
+                        fetchBotList();
+                    } else if (st.running) {
+                        setRunAllStatus(st);
+                    }
+                }).catch(() => { });
+                fetch("/api/bot/loop-status").then(r => r.json()).then(st => {
+                    if (st.running && !_loopRunning) {
+                        setLoopRunning(true);
+                        setLoopStatus(st);
+                        startLoopPoll();
+                    } else if (!st.running && _loopRunning) {
+                        if (loopPollRef.current) { clearInterval(loopPollRef.current); loopPollRef.current = null; }
+                        setLoopRunning(false);
+                        fetchAll();
+                    } else if (st.running) {
+                        setLoopStatus(st);
+                    }
+                }).catch(() => { });
+            }
         };
-    }, [fetchAll, startLoopPoll]);
+        document.addEventListener("visibilitychange", handleVisibility);
+
+        return () => {
+            clearInterval(bgInterval);
+            if (loopPollRef.current) clearInterval(loopPollRef.current);
+            // Do NOT clear run-all poll — it persists at module level
+            // so it survives page navigation within the SPA
+            document.removeEventListener("visibilitychange", handleVisibility);
+        };
+    }, [fetchAll, startLoopPoll, startRunAllPoll, fetchLeaderboard, fetchBotList]);
 
     // ── Action handlers ──
 
