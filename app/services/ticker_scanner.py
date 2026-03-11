@@ -21,20 +21,56 @@ from app.utils.logger import logger
 
 # Maximum chars of transcript to send to the LLM per video.
 # Keeps prompt size reasonable while capturing the key content.
-_MAX_TRANSCRIPT_CHARS = 6000
+_MAX_TRANSCRIPT_CHARS = 8000
 
-_EXTRACTION_PROMPT = """You are a stock ticker extraction tool.
+_EXTRACTION_PROMPT = """You are a financial data extraction engine. Your job is to extract EVERY piece of investment-relevant information from this YouTube transcript. Be thorough — do NOT skip information.
 
-Given the following YouTube video transcript, identify ALL stock tickers
-(e.g. AAPL, TSLA, NVDA) that are discussed as investment opportunities,
-analysis targets, or trading ideas.
+TASK 1 — IDENTIFY STOCKS:
+Find ALL stocks discussed. Look for:
+- Explicit ticker symbols (e.g. "AAPL", "CRS", "NVDA")
+- Company names → resolve to NYSE/NASDAQ tickers (e.g. "Intel" → "INTC", "Carpenter Technology" → "CRS")
+- Companies mentioned as partners, competitors, investors, or in analyst coverage
 
-RULES:
-- Return ONLY real US stock ticker symbols (NYSE/NASDAQ).
-- Do NOT include ETFs, crypto, forex, indices, or commodities unless
-  they trade as a stock ticker.
-- Do NOT include common English words that happen to look like tickers.
-- If no real tickers are mentioned, return an empty list.
+RULES FOR TICKERS:
+- ONLY real US stock tickers (NYSE/NASDAQ)
+- NO ETFs (SPY, QQQ), crypto, forex, indices (DJI, SPX), or commodities
+- NO common English words that look like tickers
+
+TASK 2 — EXTRACT ALL TRADING DATA:
+Scan the transcript carefully for EVERY piece of the following data. Do NOT return empty fields if the information exists in the transcript.
+
+PRICE LEVELS — scan for ANY dollar amounts, price points, or ranges:
+- Current price, recent highs/lows, support/resistance levels
+- Historical prices mentioned, 52-week high/low
+- Example: "$19 low on Aug 4th", "currently at $37", "$29 gap level"
+
+VALUATION — scan for market cap, P/E, multiples, revenue figures:
+- Market cap, PE ratio, price-to-sales, EV/EBITDA
+- Revenue, earnings, EPS figures (current or projected)
+- Example: "market cap $177B", "14x multiple", "revenue $12-14B"
+
+ANALYST OPINIONS — ratings, upgrades/downgrades, price targets:
+- Which firm/analyst said what rating
+- Price targets from analysts or the video creator
+
+TECHNICAL ANALYSIS — chart patterns, indicators, key levels:
+- Moving averages, MACD, RSI, volume analysis
+- Support/resistance levels, gap levels, breakouts
+- Chart patterns (head and shoulders, cup and handle, etc.)
+
+CATALYSTS — events that could move the stock:
+- Government actions, partnerships, M&A, new products
+- Insider buying, institutional investors, major contracts
+- Dividends, share buybacks, management changes
+- Example: "US govt invested via CHIPS Act", "AMD partnering for chip manufacturing"
+
+RISKS — anything negative or cautious:
+- Revenue declining, losing market share, overvaluation concerns
+- Macro risks, sector risks, competition threats
+
+SENTIMENT — the overall tone of the video creator:
+- Are they bullish, bearish, or cautious?
+- What's their recommendation? Buy, sell, hold, wait?
 
 VIDEO TITLE: {title}
 CHANNEL: {channel}
@@ -42,8 +78,25 @@ CHANNEL: {channel}
 TRANSCRIPT (truncated):
 {transcript}
 
-Return ONLY a JSON list of uppercase ticker strings, e.g.: ["AAPL", "TSLA"]
-If none found, return: []"""
+Return a JSON object with this structure. FILL IN EVERY FIELD — do not leave arrays empty if data exists:
+{{
+  "tickers": ["INTC", "AMD", "NVDA"],
+  "trading_data": {{
+    "sentiment": "bullish" or "bearish" or "neutral" or "mixed",
+    "price_levels": ["Current: $37", "Recent low: $19 (Aug 4)", "Key gap level: $29", "52-week high: $X"],
+    "valuation": "Market cap $177B, ~14x revenue multiple, revenue $12-14B range, no growth yet",
+    "analyst_ratings": ["Creator: cautious buy on dips", "BTIG: Buy"],
+    "price_targets": ["Near-term resistance: $40", "Upside potential: $50"],
+    "earnings": "Revenue $12-14B, flat/declining. No earnings improvement yet. EPS $X.",
+    "technicals": "Gapped above $29 support. Price rose from $19 to $37 in 5 weeks. Illiquid zone above $29.",
+    "catalysts": ["US govt invested 10% via CHIPS Act (up 50%)", "AMD partnering for chip manufacturing", "NVDA investing"],
+    "risks": ["Revenue still declining", "No fundamental improvement yet", "Could be overvalued at current levels"],
+    "key_facts": ["Stock up ~95% from Aug 4 lows ($19 to $37)", "US govt investment already up 50%", "Market cap $177B"],
+    "summary": "Intel surged from $19 to $37 on CHIPS Act investment and AMD/NVDA partnerships, but fundamentals unchanged with flat $12-14B revenue. Mixed outlook — strong momentum but valuation stretched."
+  }}
+}}
+
+If genuinely no trading data in the transcript, set trading_data to null."""
 
 
 class TickerScanner:
@@ -130,7 +183,7 @@ class TickerScanner:
 
             # ── LLM extraction ──
             trust_mult = 1.5 if channel in self.TRUSTED_CHANNELS else 1.0
-            extracted = await self._llm_extract_tickers(
+            extracted, trading_data = await self._llm_extract_tickers(
                 title or "",
                 channel or "",
                 transcript,
@@ -144,6 +197,25 @@ class TickerScanner:
                 ticker_channels.setdefault(t, set()).add(
                     channel or "unknown",
                 )
+
+            # Store trading data summary if the LLM extracted any
+            if trading_data and extracted:
+                try:
+                    summary_text = json.dumps(trading_data, default=str)[:2000]
+                    for t in extracted:
+                        db.execute(
+                            """
+                            INSERT INTO youtube_trading_data
+                                (ticker, video_id, title, channel, trading_data, collected_at)
+                            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT (ticker, video_id) DO UPDATE
+                            SET trading_data = excluded.trading_data,
+                                collected_at = CURRENT_TIMESTAMP
+                            """,
+                            [t, video_id, title[:200], channel[:100], summary_text],
+                        )
+                except Exception:
+                    pass  # Table may not exist yet — non-critical
 
         # ── Mark all processed transcripts as scanned ──
         if scanned_video_ids:
@@ -210,8 +282,11 @@ class TickerScanner:
         title: str,
         channel: str,
         transcript: str,
-    ) -> list[str]:
-        """Ask the LLM to list stock tickers from a transcript."""
+    ) -> tuple[list[str], dict | None]:
+        """Ask the LLM to list stock tickers and extract trading data.
+
+        Returns (tickers, trading_data) tuple.
+        """
         # Truncate transcript to keep prompt reasonable
         truncated = transcript[:_MAX_TRANSCRIPT_CHARS]
 
@@ -224,7 +299,12 @@ class TickerScanner:
         try:
             raw = await self.llm.chat(
                 system=(
-                    "You are a stock ticker extraction tool. "
+                    "You are a financial data extraction engine. "
+                    "You extract stock tickers from company names AND "
+                    "pull ALL investment-relevant data points: price levels, "
+                    "valuations, analyst ratings, technicals, catalysts, risks. "
+                    "Be thorough — extract every dollar amount, percentage, "
+                    "and fact mentioned. "
                     "Return ONLY raw, valid JSON. Do not include markdown "
                     "formatting, code blocks like ```json, or conversational text."
                 ),
@@ -235,39 +315,47 @@ class TickerScanner:
                 audit_ticker=title[:60] if title else "unknown",
             )
             cleaned = LLMService.clean_json_response(raw)
-            tickers = json.loads(cleaned)
+            parsed = json.loads(cleaned)
 
-            # LLMs sometimes return {"tickers": [...]} instead of [...]
-            if isinstance(tickers, dict):
-                tickers = (
-                    tickers.get("tickers")
-                    or tickers.get("symbols")
-                    or tickers.get("ticker_symbols")
-                    or next(iter(tickers.values()))
-                    if tickers
-                    else []
+            tickers = []
+            trading_data = None
+
+            if isinstance(parsed, dict):
+                # New structured format: {"tickers": [...], "trading_data": {...}}
+                raw_tickers = (
+                    parsed.get("tickers")
+                    or parsed.get("symbols")
+                    or parsed.get("ticker_symbols")
+                    or []
                 )
+                trading_data = parsed.get("trading_data")
 
-            if isinstance(tickers, list):
-                # Filter to valid-looking ticker symbols
-                result = [
+                if isinstance(raw_tickers, list):
+                    tickers = [
+                        t.upper().strip()
+                        for t in raw_tickers
+                        if isinstance(t, str)
+                        and 1 <= len(t.strip()) <= 5
+                        and t.strip().isalpha()
+                    ]
+            elif isinstance(parsed, list):
+                # Backwards-compatible: old-style ["AAPL", "TSLA"] array
+                tickers = [
                     t.upper().strip()
-                    for t in tickers
-                    if isinstance(t, str) and 1 <= len(t.strip()) <= 5 and t.strip().isalpha()
+                    for t in parsed
+                    if isinstance(t, str)
+                    and 1 <= len(t.strip()) <= 5
+                    and t.strip().isalpha()
                 ]
-                logger.info(
-                    "[YouTube Scanner] LLM extracted %d tickers from '%s': %s",
-                    len(result),
-                    title[:40],
-                    result[:10],
-                )
-                return result
 
-            logger.warning(
-                "[YouTube Scanner] LLM returned non-list: %s",
-                type(tickers),
+            logger.info(
+                "[YouTube Scanner] LLM extracted %d tickers from '%s': %s%s",
+                len(tickers),
+                title[:40],
+                tickers[:10],
+                " (+ trading data)" if trading_data else "",
             )
-            return []
+            return tickers, trading_data
 
         except Exception as e:
             logger.warning(
@@ -275,4 +363,4 @@ class TickerScanner:
                 title[:40],
                 e,
             )
-            return []
+            return [], None

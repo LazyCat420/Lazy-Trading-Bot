@@ -2810,65 +2810,15 @@ const SettingsPage = () => {
     const [vramEstimate, setVramEstimate] = useState(null); // {total_vram_gb, model_weight_gb, kv_bytes_per_token, model_max_ctx}
     // OOM error state
     const [oomError, setOomError] = useState(null); // {requested_ctx, suggested_ctx, message}
-    // Audit result state
-    const [auditResult, setAuditResult] = useState(null); // { message, proven_max_ctx }
-    // Calibration polling state
-    const [calibrationStatus, setCalibrationStatus] = useState(null); // polled from /api/settings/calibration-status
-    const pollingRef = useRef(null);
 
-    // ── Calibration polling helpers ─────────────────────────────
-    const stopPolling = useCallback(() => {
-        if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            pollingRef.current = null;
-        }
-    }, []);
-
-    const startPolling = useCallback(() => {
-        stopPolling();
-        const poll = async () => {
-            try {
-                const res = await fetch("/api/settings/calibration-status");
-                const state = await res.json();
-                setCalibrationStatus(state);
-                if (state.status === "success") {
-                    stopPolling();
-                    setSaveStatus("saved");
-                    RetroSFX.successChime();
-                    setAuditResult({ message: state.current_step, proven_max_ctx: state.proven_max_ctx || 0 });
-                    fetchVramEstimate(state.model || llmConfig.model);
-                    // Refresh config from server
-                    try {
-                        const cfgRes = await fetch("/api/llm-config");
-                        const cfgData = await cfgRes.json();
-                        setLlmConfig(prev => ({ ...prev, ...cfgData }));
-                    } catch (_) { }
-                    setTimeout(() => { setCalibrationStatus(null); setSaveStatus(null); }, 5000);
-                } else if (state.status === "error") {
-                    stopPolling();
-                    setSaveStatus("error");
-                    setTimeout(() => { setCalibrationStatus(null); setSaveStatus(null); }, 8000);
-                } else if (state.status === "idle") {
-                    stopPolling();
-                    setCalibrationStatus(null);
-                }
-            } catch (_) { }
-        };
-        poll(); // immediate first check
-        pollingRef.current = setInterval(poll, 1500);
-    }, [stopPolling, llmConfig.model]);
-
-    // Cleanup polling on unmount
-    useEffect(() => () => stopPolling(), [stopPolling]);
 
     useEffect(() => {
         const load = async () => {
             try {
-                const [stratRes, riskRes, llmRes, calRes] = await Promise.all([
+                const [stratRes, riskRes, llmRes] = await Promise.all([
                     fetch("/api/strategy"),
                     fetch("/api/risk-params"),
                     fetch("/api/llm-config"),
-                    fetch("/api/settings/calibration-status"),
                 ]);
                 const stratData = await stratRes.json();
                 setStrategy(stratData.strategy || "");
@@ -2876,17 +2826,10 @@ const SettingsPage = () => {
                 setRiskParams(prev => ({ ...prev, ...riskData }));
                 const llmData = await llmRes.json();
                 setLlmConfig(llmData);
-                // Check if calibration is in progress
-                const calData = await calRes.json();
-                if (calData.status === "calibrating") {
-                    setCalibrationStatus(calData);
-                    setSaveStatus("saving");
-                    startPolling();
-                }
                 // Fetch VRAM estimate data for this model
                 fetchVramEstimate(llmData.model);
                 // Auto-fetch models on load
-                fetchModels(llmData.ollama_url);
+                fetchModels();
             } catch (e) {
                 console.error("Settings load error:", e);
             } finally {
@@ -2897,13 +2840,13 @@ const SettingsPage = () => {
     }, []);
 
     const fetchModels = async (url) => {
-        if (!url) return;
         setModelsFetching(true);
         setLlmConnected(null);
         try {
             const params = new URLSearchParams();
             if (url) params.set("url", url);
-            const res = await fetch(`/api/llm-models?${params}`);
+            const qs = params.toString() ? `?${params}` : "";
+            const res = await fetch(`/api/llm-models${qs}`);
             const data = await res.json();
             setModels(data.models || []);
             setLlmConnected(data.connected);
@@ -2915,15 +2858,10 @@ const SettingsPage = () => {
         }
     };
 
-    const setActiveUrl = (val) => {
-        setLlmConfig(prev => ({ ...prev, ollama_url: val }));
-    };
-
     const saveLlmConfig = async () => {
         RetroSFX.click();
         setSaveStatus("saving");
         setOomError(null);
-        setAuditResult(null);
         try {
             const res = await fetch("/api/llm-config", {
                 method: "PUT",
@@ -2932,13 +2870,8 @@ const SettingsPage = () => {
             });
             const data = await res.json();
 
-            // Config saved — if calibration started, begin polling
-            if (data.calibration_started) {
-                startPolling();
-            } else {
-                setSaveStatus("saved");
-                RetroSFX.successChime();
-            }
+            setSaveStatus("saved");
+            RetroSFX.successChime();
 
             // Update local config from server response
             if (data.config) {
@@ -3118,66 +3051,7 @@ const SettingsPage = () => {
                         </div>
                     </div>
 
-                    {/* Calibration Progress Banner */}
-                    {calibrationStatus && calibrationStatus.status === "calibrating" && (
-                        <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/30 animate-fadeIn">
-                            <div className="flex items-start gap-3">
-                                <span className="material-symbols-outlined text-primary text-xl mt-0.5 animate-spin">progress_activity</span>
-                                <div className="flex-1">
-                                    <h4 className="text-sm font-bold text-primary mb-1">
-                                        Calibrating: {calibrationStatus.model}
-                                    </h4>
-                                    <p className="text-xs text-text-muted mb-2">{calibrationStatus.current_step}</p>
-                                    {/* Progress bar */}
-                                    <div className="w-full h-2 bg-onyx-black rounded-full overflow-hidden mb-2">
-                                        <div className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
-                                            style={{ width: `${calibrationStatus.progress_pct || 0}%` }} />
-                                    </div>
-                                    <div className="flex justify-between text-[10px] font-mono text-text-muted">
-                                        <span>{calibrationStatus.progress_pct || 0}%</span>
-                                        <span>Do not close this page — you can navigate away and return</span>
-                                    </div>
-                                    {/* Mini log */}
-                                    {calibrationStatus.logs && calibrationStatus.logs.length > 0 && (
-                                        <div className="mt-2 max-h-24 overflow-y-auto bg-onyx-black/50 rounded p-2 border border-border-dark"
-                                            style={{ scrollbarWidth: "thin" }}>
-                                            {calibrationStatus.logs.map((log, i) => (
-                                                <div key={i} className="text-[10px] font-mono text-text-secondary leading-relaxed">
-                                                    <span className="text-primary/40 mr-1">›</span>{log}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
-                    {/* Calibration Error Banner */}
-                    {calibrationStatus && calibrationStatus.status === "error" && (
-                        <div className="mb-4 p-4 rounded-lg bg-red-500/10 border border-red-500/30 animate-fadeIn">
-                            <div className="flex items-start gap-3">
-                                <span className="material-symbols-outlined text-red-400 text-xl mt-0.5">error</span>
-                                <div className="flex-1">
-                                    <h4 className="text-sm font-bold text-red-400 mb-1">Calibration Failed</h4>
-                                    <p className="text-xs text-text-muted">{calibrationStatus.current_step}</p>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Calibration Success Banner */}
-                    {calibrationStatus && calibrationStatus.status === "success" && (
-                        <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/30 animate-fadeIn">
-                            <div className="flex items-start gap-3">
-                                <span className="material-symbols-outlined text-green-400 text-xl mt-0.5">check_circle</span>
-                                <div className="flex-1">
-                                    <h4 className="text-sm font-bold text-green-400 mb-1">Calibration Complete</h4>
-                                    <p className="text-xs text-text-muted">{calibrationStatus.current_step}</p>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
                     {/* OOM Error Banner */}
                     {oomError && (
@@ -3205,46 +3079,27 @@ const SettingsPage = () => {
                         </div>
                     )}
 
-                    {/* Audit Success Banner */}
-                    {auditResult && (
-                        <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/30 animate-fadeIn relative">
-                            <button onClick={() => setAuditResult(null)} className="absolute top-2 right-2 px-2 py-1 text-text-muted hover:text-white">
-                                <span className="material-symbols-outlined text-sm">close</span>
-                            </button>
-                            <div className="flex items-start gap-3">
-                                <span className="material-symbols-outlined text-green-400 text-xl mt-0.5">verified</span>
-                                <div className="flex-1">
-                                    <h4 className="text-sm font-bold text-green-400 mb-1">
-                                        Memory Audit Complete
-                                    </h4>
-                                    <p className="text-xs text-text-muted mb-2">{auditResult.message}</p>
-                                    <div className="text-[11px] font-mono text-green-400/80">
-                                        Proven Hardware Limit: {(auditResult.proven_max_ctx || 0).toLocaleString()} tokens
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+
 
                     <div className="grid grid-cols-2 gap-4 mb-4">
-                        {/* Ollama URL */}
+                        {/* Prism Gateway URL */}
                         <div>
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">
-                                Ollama URL
+                                Prism Gateway URL
                             </label>
                             <div className="flex gap-2">
                                 <input
                                     type="text"
-                                    value={llmConfig.ollama_url}
-                                    onChange={e => setActiveUrl(e.target.value)}
-                                    placeholder="http://10.0.0.30:11434"
+                                    value={llmConfig.prism_url || ""}
+                                    onChange={e => setLlmConfig(prev => ({ ...prev, prism_url: e.target.value }))}
+                                    placeholder="http://localhost:3020"
                                     className="flex-1 bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
                                 />
                                 <button
-                                    onClick={() => fetchModels(llmConfig.ollama_url)}
+                                    onClick={() => fetchModels()}
                                     disabled={modelsFetching}
                                     className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-secondary text-xs font-bold rounded transition flex items-center gap-1"
-                                    title="Test connection & fetch models"
+                                    title="Test connection & fetch models via Prism"
                                 >
                                     <span className={`material-symbols-outlined text-[14px] ${modelsFetching ? "animate-spin" : ""}`}>
                                         {modelsFetching ? "progress_activity" : "sync"}
@@ -3252,6 +3107,20 @@ const SettingsPage = () => {
                                     Test
                                 </button>
                             </div>
+                        </div>
+
+                        {/* Prism Secret */}
+                        <div>
+                            <label className="text-[10px] text-text-muted uppercase block mb-1.5">
+                                Prism Secret
+                            </label>
+                            <input
+                                type="password"
+                                value={llmConfig.prism_secret || ""}
+                                onChange={e => setLlmConfig(prev => ({ ...prev, prism_secret: e.target.value }))}
+                                placeholder="banana"
+                                className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
+                            />
                         </div>
                     </div>
 
@@ -3285,17 +3154,7 @@ const SettingsPage = () => {
                         <div className="col-span-3">
                             <label className="text-[10px] text-text-muted uppercase block mb-1.5">Context Size</label>
 
-                            {vramEstimate && vramEstimate.model_found && !vramEstimate.is_audited && (
-                                <div className="mb-3 p-3 rounded-lg bg-orange-500/10 border border-orange-500/30">
-                                    <div className="flex items-start gap-2">
-                                        <span className="material-symbols-outlined text-orange-400 text-lg mt-0.5">warning</span>
-                                        <div className="flex-1">
-                                            <h4 className="text-xs font-bold text-orange-400 mb-0.5">Calibration Required</h4>
-                                            <p className="text-[10px] text-text-muted leading-tight">This model has not been calibrated for your hardware yet. The next pipeline run will take ~20-60 seconds longer to perform an initial VRAM audit. This will only happen once.</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
+
 
                             <div className="flex items-center gap-3 mb-2">
                                 <input
@@ -3303,7 +3162,7 @@ const SettingsPage = () => {
                                     value={llmConfig.context_size}
                                     onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
                                     min={2048}
-                                    max={vramEstimate?.is_audited ? vramEstimate.proven_max_ctx : (vramEstimate?.model_max_ctx || 131072)}
+                                    max={vramEstimate?.model_max_ctx || 131072}
                                     step={1024}
                                     className="flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-primary"
                                     style={{
@@ -3330,7 +3189,7 @@ const SettingsPage = () => {
                                     value={llmConfig.context_size}
                                     onChange={e => { setLlmConfig(prev => ({ ...prev, context_size: parseInt(e.target.value) || 8192 })); setOomError(null); }}
                                     min={2048}
-                                    max={vramEstimate?.is_audited ? vramEstimate.proven_max_ctx : (vramEstimate?.model_max_ctx || 131072)}
+                                    max={vramEstimate?.model_max_ctx || 131072}
                                     step={1024}
                                     className="w-24 bg-onyx-black border border-border-dark rounded px-2 py-1.5 text-xs text-white font-mono focus:border-primary focus:outline-none transition text-center"
                                 />
@@ -3349,12 +3208,7 @@ const SettingsPage = () => {
                                 );
                             })()}
 
-                            {vramEstimate?.is_audited && (
-                                <div className="text-[10px] text-green-400 font-mono mt-2 flex items-center gap-1.5 border border-green-500/20 bg-green-500/5 px-2 py-1 rounded w-fit">
-                                    <span className="material-symbols-outlined text-[12px]">lock</span>
-                                    Hardware Limit: {vramEstimate.proven_max_ctx.toLocaleString()} tokens
-                                </div>
-                            )}
+
                         </div>
 
                         {/* Discovery Temperature */}

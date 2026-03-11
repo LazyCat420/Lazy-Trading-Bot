@@ -1,12 +1,12 @@
-"""Ollama LLM service — sends chat requests to Ollama.
+"""LLM service — sends chat requests via Prism AI Gateway.
 
-The Ollama URL is centralized in app.config.settings:
-    OLLAMA_URL → Ollama endpoint (default http://localhost:11434)
+All LLM calls are routed through Prism (POST /text-to-text) which
+proxies to the configured Ollama backend.  Prism logs all requests,
+tracks usage/cost, and provides centralized data collection.
+
+Direct Ollama access is only used for model warm-up and VRAM estimation.
 
 Uses a module-level shared httpx.AsyncClient for connection pooling.
-This is critical for parallel LLM calls — when OLLAMA_NUM_PARALLEL > 1,
-multiple agents can share the same TCP connection pool instead of each
-creating and destroying their own connection.
 """
 
 from __future__ import annotations
@@ -25,6 +25,23 @@ from app.utils.logger import logger
 # Shared async HTTP client — reused across all LLM calls for connection pooling.
 # Created lazily on first use; lives for the entire app lifecycle.
 _shared_client: httpx.AsyncClient | None = None
+
+# ── LLM Request Queue ────────────────────────────────────────────────
+# Global semaphore that ensures only ONE LLM request hits Ollama at a
+# time.  Ollama on a single GPU processes requests sequentially — firing
+# multiple in parallel just causes GPU context-switching overhead which
+# tanks throughput.  All callers across the app (discovery, analysis,
+# trading, peer fetching) automatically queue through this.
+_llm_queue: asyncio.Semaphore | None = None
+_llm_queue_waiters: int = 0  # Track how many requests are waiting
+
+
+def _get_llm_queue() -> asyncio.Semaphore:
+    """Lazy-init the LLM request queue (must be called inside an event loop)."""
+    global _llm_queue
+    if _llm_queue is None:
+        _llm_queue = asyncio.Semaphore(1)
+    return _llm_queue
 
 
 async def _get_shared_client() -> httpx.AsyncClient:
@@ -128,12 +145,15 @@ class LLMService:
         import time as _time
 
         t0 = _time.monotonic()
-        content = await self._call_ollama(
+        content = await self._call_prism(
             effective_msgs,
             response_format,
             max_tokens,
             effective_temp,
             schema=schema,
+            audit_ticker=audit_ticker,
+            audit_step=audit_step,
+            audit_cycle_id=audit_cycle_id,
         )
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
 
@@ -177,7 +197,7 @@ class LLMService:
 
         return content
 
-    async def _call_ollama(
+    async def _call_prism(
         self,
         messages: list[dict],
         response_format: str,
@@ -185,61 +205,84 @@ class LLMService:
         temperature: float,
         *,
         schema: dict | None = None,
+        audit_ticker: str = "",
+        audit_step: str = "",
+        audit_cycle_id: str = "",
     ) -> str:
-        """Call the Ollama /api/chat endpoint using shared connection pool.
+        """Call the Prism AI Gateway for text generation.
 
-        Implements a dual-mode retry: if ``format=json`` returns an empty
-        response (some models can't handle GBNF grammar constraints), the
-        call is retried with ``format=text`` and an explicit JSON
-        instruction appended to the system prompt.
+        Implements a dual-mode retry: if JSON-format response returns empty
+        (some models can't handle grammar constraints), the call is retried
+        with text format and explicit JSON instructions.
         """
-        content = await self._send_ollama_request(
-            messages,
-            response_format,
-            max_tokens,
-            temperature,
-            schema=schema,
-        )
+        # ── Queue: serialize all LLM requests ──────────────────
+        # Only one request hits Ollama at a time; others wait in
+        # a FIFO queue to maximize single-GPU throughput.
+        global _llm_queue_waiters
+        queue = _get_llm_queue()
 
-        # ── Dual-mode retry for empty JSON responses ──
-        # Some models (e.g. GLM-4.7-flash) return 0 chars when
-        # format=json is used because they can't handle the GBNF
-        # grammar constraint.  Retry with format=text instead.
-        if not content.strip() and response_format == "json":
-            logger.warning(
-                "[LLM] Empty response with format=json — retrying "
-                "with format=text + JSON instructions",
+        if queue.locked():
+            _llm_queue_waiters += 1
+            logger.info(
+                "[LLM Queue] Request queued (position #%d) — %s %s",
+                _llm_queue_waiters,
+                audit_ticker or self.model,
+                audit_step or "",
             )
-            # Append explicit JSON instruction to system prompt
-            retry_msgs = list(messages)  # shallow copy
-            if retry_msgs and retry_msgs[0].get("role") == "system":
-                retry_msgs[0] = {
-                    **retry_msgs[0],
-                    "content": (
-                        retry_msgs[0]["content"] + "\n\nIMPORTANT: You MUST respond with "
-                        "valid JSON only. No markdown, no "
-                        "explanations — pure JSON."
-                    ),
-                }
-            content = await self._send_ollama_request(
-                retry_msgs,
-                "text",
+
+        async with queue:
+            _llm_queue_waiters = max(0, _llm_queue_waiters - 1)
+
+            content = await self._send_prism_request(
+                messages,
+                response_format,
                 max_tokens,
                 temperature,
+                schema=schema,
+                audit_ticker=audit_ticker,
+                audit_step=audit_step,
+                audit_cycle_id=audit_cycle_id,
             )
-            if content.strip():
-                logger.info(
-                    "[LLM] Text-mode retry succeeded (%d chars)",
-                    len(content),
-                )
-            else:
-                logger.error(
-                    "[LLM] Text-mode retry also returned empty — model may be unresponsive",
-                )
 
-        return content
+            # ── Dual-mode retry for empty JSON responses ──
+            # Some models (e.g. GLM-4.7-flash) return 0 chars when
+            # format=json is used because they can't handle the GBNF
+            # grammar constraint.  Retry with format=text instead.
+            if not content.strip() and response_format == "json":
+                logger.warning(
+                    "[LLM] Empty response with format=json — retrying "
+                    "with format=text + JSON instructions",
+                )
+                # Append explicit JSON instruction to system prompt
+                retry_msgs = list(messages)  # shallow copy
+                if retry_msgs and retry_msgs[0].get("role") == "system":
+                    retry_msgs[0] = {
+                        **retry_msgs[0],
+                        "content": (
+                            retry_msgs[0]["content"] + "\n\nIMPORTANT: You MUST respond with "
+                            "valid JSON only. No markdown, no "
+                            "explanations — pure JSON."
+                        ),
+                    }
+                content = await self._send_prism_request(
+                    retry_msgs,
+                    "text",
+                    max_tokens,
+                    temperature,
+                )
+                if content.strip():
+                    logger.info(
+                        "[LLM] Text-mode retry succeeded (%d chars)",
+                        len(content),
+                    )
+                else:
+                    logger.error(
+                        "[LLM] Text-mode retry also returned empty — model may be unresponsive",
+                    )
 
-    async def _send_ollama_request(
+            return content
+
+    async def _send_prism_request(
         self,
         messages: list[dict],
         response_format: str,
@@ -247,58 +290,130 @@ class LLMService:
         temperature: float,
         *,
         schema: dict | None = None,
+        audit_ticker: str = "",
+        audit_step: str = "",
+        audit_cycle_id: str = "",
     ) -> str:
-        """Send a single request to the Ollama /api/chat endpoint."""
-        url = f"{self.base_url}/api/chat"
+        """Send a single request to the Prism AI Gateway.
 
-        # Context size: Use the PROVEN loaded context for this model
-        # from the Empirical Memory Audit. The actual ctx must match
-        # what the model was loaded with to prevent Ollama from eviction.
-        desired_ctx = self.context_size if self.context_size > 0 else 8192
-        measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
-        proven_ctx = measurement.get("proven_max_ctx", 0)
+        Routes through Prism's POST /text-to-text endpoint which forwards
+        to the configured Ollama backend.  Prism logs all calls centrally.
+        When audit metadata is provided, a Prism conversation is created
+        so the call appears in Prism's live activity dashboard.
+        """
+        url = f"{self.base_url}/text-to-text"
 
-        if proven_ctx > 0:
-            effective_ctx = min(desired_ctx, proven_ctx)
+        # Build Prism options
+        options: dict = {"temperature": temperature}
+
+        # ── Max tokens: cap generation length to prevent runaway thinking ──
+        if max_tokens:
+            options["maxTokens"] = max_tokens
         else:
-            # If not audited yet, trust the user's slider (desired_ctx)
-            # The warmup should have caught OOMs, so don't arbitrarily limit to 8192 here.
-            effective_ctx = desired_ctx
+            default_predict = 2048 if response_format == "json" or schema else 4096
+            options["maxTokens"] = default_predict
+
+        # Build the messages, injecting JSON instructions if needed
+        effective_msgs = list(messages)  # shallow copy
+        if schema is not None or response_format == "json":
+            # Prism doesn't support Ollama's format field,
+            # so we enforce JSON output via system prompt instruction
+            json_instruction = (
+                "\n\nIMPORTANT: You MUST respond with valid JSON only. "
+                "No markdown, no code fences, no explanations — pure JSON."
+            )
+            if schema is not None:
+                import json as _json
+                json_instruction += (
+                    f"\n\nYour response MUST conform to this JSON Schema:\n"
+                    f"{_json.dumps(schema, indent=2)}"
+                )
+            # Append to system message
+            if effective_msgs and effective_msgs[0].get("role") == "system":
+                effective_msgs[0] = {
+                    **effective_msgs[0],
+                    "content": effective_msgs[0]["content"] + json_instruction,
+                }
 
         payload: dict = {
+            "provider": "ollama",
             "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "keep_alive": "2h",
-            "options": {
-                "temperature": temperature,
-                "num_ctx": effective_ctx,
-                "num_gpu": 999,
-            },
+            "messages": effective_msgs,
+            "options": options,
         }
-        if schema is not None:
-            # Structured output: pass JSON Schema directly to Ollama
-            payload["format"] = schema
-        elif response_format == "json":
-            payload["format"] = "json"
 
-        # ── num_predict: cap generation length to prevent runaway thinking ──
-        # Large thinking models (olmo-3:32b) can spend 5K-9K chars thinking,
-        # burning through the timeout. Default caps: 2048 for structured JSON
-        # output (trade decisions only need ~200 tokens), 4096 for free-form.
-        if max_tokens:
-            payload["options"]["num_predict"] = max_tokens
-        else:
-            # Default cap based on output mode
-            default_predict = 2048 if response_format == "json" or schema else 4096
-            payload["options"]["num_predict"] = default_predict
+        # ── Create a Prism conversation for live activity tracking ──
+        # Every text-to-text call gets a conversation so it shows in
+        # Prism's live activity dashboard.
+        import uuid
+        from datetime import datetime as _dt, timezone as _tz
+
+        conversation_id = str(uuid.uuid4())
+        title_parts = []
+        if audit_ticker:
+            title_parts.append(audit_ticker)
+        if audit_step:
+            title_parts.append(audit_step)
+        if audit_cycle_id:
+            title_parts.append(f"cycle:{audit_cycle_id[:8]}")
+        conv_title = " — ".join(title_parts) if title_parts else f"{self.model} generation"
+
+        # Fire-and-forget conversation start
+        try:
+            conv_client = await _get_shared_client()
+            await conv_client.post(
+                f"{self.base_url}/conversations/start",
+                json={
+                    "id": conversation_id,
+                    "title": conv_title,
+                    "systemPrompt": (
+                        effective_msgs[0].get("content", "")[:500]
+                        if effective_msgs and effective_msgs[0].get("role") == "system"
+                        else ""
+                    ),
+                    "settings": {
+                        "provider": "ollama",
+                        "model": self.model,
+                        "temperature": temperature,
+                        "maxTokens": options.get("maxTokens"),
+                    },
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-secret": settings.PRISM_SECRET,
+                    "x-project": settings.PRISM_PROJECT,
+                    "x-username": "trading-bot",
+                },
+                timeout=5.0,
+            )
+        except Exception:
+            pass  # Never block trading for conversation logging
+
+        # Extract user message content for Prism conversation auto-append
+        user_content = ""
+        for m in effective_msgs:
+            if m.get("role") == "user":
+                user_content = m.get("content", "")
+                break
+
+        payload["conversationId"] = conversation_id
+        payload["userMessage"] = {
+            "content": user_content,
+            "timestamp": _dt.now(_tz.utc).isoformat(),
+        }
+
+        # Prism auth headers
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-secret": settings.PRISM_SECRET,
+            "x-project": settings.PRISM_PROJECT,
+            "x-username": "trading-bot",
+        }
 
         # Derive a short context label from the system prompt
         _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
 
         # ── Dynamic timeout based on model size ──────────────────
-        # Large models (>15GB, e.g. olmo-3:32b at 18GB) generate tokens
-        # slower on Jetson. Give them 300s instead of the default 180s.
         _base_timeout = settings.LLM_CALL_TIMEOUT_SECONDS
         _measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
         _file_size = _measurement.get("model_file_size", 0)
@@ -306,12 +421,11 @@ class LLMService:
         _timeout = max(_base_timeout, 300) if _model_file_gb > 15 else _base_timeout
 
         logger.info(
-            "Ollama request START -> %s model=%s format=%s ctx=%d num_predict=%d timeout=%ds",
+            "Prism request START -> %s model=%s format=%s maxTokens=%d timeout=%ds",
             url,
             self.model,
             response_format,
-            effective_ctx,
-            payload["options"].get("num_predict", 0),
+            options.get("maxTokens", 0),
             _timeout,
         )
         t0 = time.perf_counter()
@@ -319,14 +433,14 @@ class LLMService:
         try:
             client = await _get_shared_client()
             resp = await asyncio.wait_for(
-                client.post(url, json=payload),
+                client.post(url, json=payload, headers=headers),
                 timeout=_timeout,
             )
             resp.raise_for_status()
         except (TimeoutError, httpx.ReadTimeout):
             elapsed = time.perf_counter() - t0
             logger.error(
-                "Ollama request TIMEOUT after %.1fs (limit=%ds)",
+                "Prism request TIMEOUT after %.1fs (limit=%ds)",
                 elapsed,
                 _timeout,
             )
@@ -338,7 +452,6 @@ class LLMService:
             )
             raise
         except httpx.HTTPStatusError as exc:
-            # Non-200 response — capture the actual error body from Ollama
             elapsed = time.perf_counter() - t0
             error_body = ""
             try:
@@ -346,7 +459,7 @@ class LLMService:
             except Exception:
                 pass
             logger.warning(
-                "Ollama request FAILED -> %.1fs: HTTP %d — %s",
+                "Prism request FAILED -> %.1fs: HTTP %d — %s",
                 elapsed,
                 exc.response.status_code,
                 error_body or str(exc)[:120],
@@ -357,35 +470,53 @@ class LLMService:
                 duration_seconds=elapsed,
                 error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
             )
-            # Return empty string for 500 errors so the retry can kick in
             if exc.response.status_code >= 500:
                 return ""
             raise
-        except Exception as exc:
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            # Connection-level failures — Prism may be loading the model
             elapsed = time.perf_counter() - t0
+            exc_type = type(exc).__name__
             logger.warning(
-                "Ollama request FAILED -> %.1fs: %s",
+                "Prism request CONN_ERROR -> %.1fs: %s: %s",
                 elapsed,
-                str(exc)[:120],
+                exc_type,
+                str(exc)[:200] or "(no message)",
             )
             log_llm_call(
                 context=_ctx,
                 model=self.model,
                 duration_seconds=elapsed,
-                error=str(exc)[:120],
+                error=f"{exc_type}: {str(exc)[:120]}",
+            )
+            # Return empty so dual-mode retry can attempt again
+            return ""
+        except Exception as exc:
+            elapsed = time.perf_counter() - t0
+            exc_type = type(exc).__name__
+            logger.warning(
+                "Prism request FAILED -> %.1fs: %s: %s",
+                elapsed,
+                exc_type,
+                str(exc)[:200] or repr(exc)[:200],
+            )
+            log_llm_call(
+                context=_ctx,
+                model=self.model,
+                duration_seconds=elapsed,
+                error=f"{exc_type}: {str(exc)[:120]}",
             )
             raise
 
         data = resp.json()
-        msg = data.get("message", {})
-        content = msg.get("content", "")
-        thinking = msg.get("thinking", "")
-        tokens = data.get("eval_count", 0)
+        content = data.get("text", "")
+        thinking = data.get("thinking", "") or ""
+        usage = data.get("usage", {})
+        tokens = usage.get("outputTokens", 0)
 
         # ── Thinking-model fallback ──
-        # Some thinking models (e.g. olmo-3:32b, qwen3) put all
-        # their reasoning in `thinking` and leave `content` empty.
-        # Strip <think> tags first, then try to extract JSON.
+        # Some thinking models put all reasoning in `thinking` and
+        # leave `text` empty. Try to extract JSON from thinking.
         if not content.strip() and thinking.strip():
             import json as _json
 
@@ -396,10 +527,8 @@ class LLMService:
                 thinking,
                 flags=re.DOTALL,
             ).strip()
-            # Use original thinking if stripping removed everything
             text_to_parse = clean_thinking or thinking
 
-            # Reuse our robust brace-depth-counting extractor
             candidate = LLMService.clean_json_response(text_to_parse)
             if candidate.strip().startswith("{"):
                 try:
@@ -412,10 +541,8 @@ class LLMService:
                         len(content),
                     )
                 except _json.JSONDecodeError:
-                    pass  # Not valid JSON, keep content empty
+                    pass
 
-            # If still empty, return the cleaned thinking text
-            # (with <think> tags stripped) so the caller can try to parse it
             if not content.strip():
                 content = clean_thinking or thinking
                 logger.warning(
@@ -425,19 +552,16 @@ class LLMService:
 
         elapsed = time.perf_counter() - t0
 
-        # Log thinking model output separately
         if thinking:
-            think_tokens = data.get("thinking_eval_count", 0)
             logger.info(
-                "Ollama request DONE  -> %.2fs, %d chars (thinking: %d chars, %d tokens)",
+                "Prism request DONE  -> %.2fs, %d chars (thinking: %d chars)",
                 elapsed,
                 len(content),
                 len(thinking),
-                think_tokens,
             )
         else:
             logger.info(
-                "Ollama request DONE  -> %.2fs, %d chars",
+                "Prism request DONE  -> %.2fs, %d chars",
                 elapsed,
                 len(content),
             )
@@ -572,10 +696,9 @@ class LLMService:
 
     @staticmethod
     async def fetch_models(base_url: str) -> list[str]:
-        """Probe an Ollama URL and return available model names.
+        """Probe an Ollama URL directly and return available model names.
 
-        Works independently of the current config — used by the frontend
-        to test arbitrary URLs before saving them.
+        Used by model warmup and VRAM estimation (direct Ollama access).
         """
         base_url = base_url.rstrip("/")
         try:
@@ -585,6 +708,39 @@ class LLMService:
                 return [m["name"] for m in resp.json().get("models", [])]
         except Exception:
             return []
+
+    @staticmethod
+    async def fetch_models_from_prism() -> list[str]:
+        """Fetch available Ollama models via the Prism /config endpoint.
+
+        Returns model names pulled from Prism's centralized config.
+        Falls back to direct Ollama if Prism is unreachable.
+        """
+        prism_url = settings.PRISM_URL.rstrip("/")
+        try:
+            headers = {
+                "x-api-secret": settings.PRISM_SECRET,
+                "x-project": settings.PRISM_PROJECT,
+                "x-username": "trading-bot",
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{prism_url}/config",
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                # Extract Ollama models from Prism config
+                ttt = data.get("textToText", {})
+                models_map = ttt.get("models", {})
+                ollama_models = models_map.get("ollama", [])
+                return [m.get("name", "") for m in ollama_models if m.get("name")]
+        except Exception as exc:
+            logger.warning(
+                "[LLM] Prism model fetch failed, falling back to direct Ollama: %s",
+                exc,
+            )
+            return await LLMService.fetch_models(settings.OLLAMA_URL)
 
     @staticmethod
     async def unload_ollama_model(base_url: str, model: str) -> bool:
@@ -865,25 +1021,16 @@ class LLMService:
         *,
         keep_alive: str = "10m",
     ) -> dict:
-        """Verify an Ollama model exists, estimate VRAM, and pre-warm it.
+        """Verify an Ollama model exists and pre-warm it.
 
         Flow:
           1. GET /api/tags  → verify model exists, get file size
           2. POST /api/show → get architecture (layers, kv_heads, head_dim)
-          3. nvidia-smi      → get free GPU memory
-          4. MATH            → estimate total VRAM needed
-          5. If estimated > free → return oom_error + suggested_ctx (NO load)
-          6. If estimated ≤ free → load the model (single attempt)
+          3. Load the model at the user’s desired context size
 
-        Returns dict with model info.  On predicted/actual OOM, returns
-        status="oom_error" with suggested_ctx.
+        Returns dict with model info. No calibration or VRAM audit.
         """
-        from app.services.calibration_tracker import CalibrationTracker
-
         base_url = base_url.rstrip("/")
-
-        CalibrationTracker.set_status("calibrating", model=model)
-        CalibrationTracker.update_progress("Step 1: Verifying model exists...", 10)
 
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
@@ -926,7 +1073,6 @@ class LLMService:
 
                 # —— Step 2: Query architecture ———————————————————
                 try:
-                    CalibrationTracker.update_progress("Step 2: Querying model architecture...", 25)
                     show_resp = await client.post(
                         f"{base_url}/api/show",
                         json={"name": model},
@@ -963,399 +1109,96 @@ class LLMService:
                     desired_ctx = min(desired_ctx, model_max_ctx)
                 desired_ctx = max(desired_ctx, 2048)
 
-                # —— Step 4: Estimate VRAM (for frontend display) —
-                CalibrationTracker.update_progress("Step 4: Estimating VRAM requirements...", 50)
+                # —— Step 4: VRAM estimation (informational) ———————
                 estimate = LLMService.estimate_model_vram(
                     model_info,
                     model_file_size,
                     desired_ctx,
                 )
-                total_gpu = LLMService.get_total_vram_bytes()
-                safe_ceiling = LLMService.get_safe_ceiling_bytes()
                 kv_per_tok = estimate["kv_bytes_per_token"]
 
                 est_gb = estimate["total_bytes"] / (1024**3)
+                total_gpu = LLMService.get_total_vram_bytes()
                 total_gb = total_gpu / (1024**3) if total_gpu else 0
-                safe_gb = safe_ceiling / (1024**3) if safe_ceiling else 0
 
                 logger.info(
                     "[LLM] VRAM estimate for %s @ ctx=%d: "
                     "%.1f GiB needed (weights=%.1f + KV=%.1f + "
-                    "graph=0.5), total=%.1f GiB, safe=%.1f GiB",
+                    "graph=0.5), total=%.1f GiB",
                     model,
                     desired_ctx,
                     est_gb,
                     estimate["weights_bytes"] / (1024**3),
                     estimate["kv_bytes"] / (1024**3),
                     total_gb,
-                    safe_gb,
                 )
 
-                # ════════════════════════════════════════════════
-                # EMPIRICAL MEMORY AUDIT SYSTEM
-                #
-                # On Jetson unified memory, there is a ~10 GB
-                # invisible overhead (OS page cache, CUDA context,
-                # fragmentation) that no formula can predict.
-                # Instead of math, we test the real hardware.
-                #
-                # Two paths:
-                #   FAST PATH:  proven_max_ctx in cache → instant
-                #   AUDIT PATH: step through ctx sizes → find limit
-                # ════════════════════════════════════════════════
+                # —— Step 5: Flush other models then load —————————
                 import asyncio
 
-                cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model, {})
-                proven_max_ctx = cached.get("proven_max_ctx", 0)
-
-                if proven_max_ctx > 0:
-                    # ═══ FAST PATH: Audited model ═══════════════
-                    # Cap to compute-optimal (leave 30% for throughput)
-                    compute_optimal = LLMService.calculate_compute_optimal_ctx(
-                        model_file_size,
-                        kv_per_tok,
-                        safe_ceiling,
+                try:
+                    freed = await LLMService.unload_all_ollama_models(
+                        base_url,
                     )
-                    load_ctx = min(desired_ctx, proven_max_ctx, compute_optimal)
-                    load_ctx = max(load_ctx, 8192)
-                    clamped = load_ctx < desired_ctx
-
-                    CalibrationTracker.update_progress(
-                        f"Fast path: loading {model} at "
-                        f"ctx={load_ctx} "
-                        f"(optimal={compute_optimal}, "
-                        f"limit={proven_max_ctx})",
-                        70,
-                    )
-                    logger.info(
-                        "[LLM] ⚡ FAST PATH: %s "
-                        "compute_optimal=%d, audited_limit=%d. "
-                        "Loading at ctx=%d (desired=%d)",
-                        model,
-                        compute_optimal,
-                        proven_max_ctx,
-                        load_ctx,
-                        desired_ctx,
-                    )
-
-                    # Flush other models first
-                    try:
-                        freed = await LLMService.unload_all_ollama_models(
-                            base_url,
-                        )
-                        if freed > 0:
-                            logger.info(
-                                "[LLM] Flushed %d model(s) before load",
-                                freed,
-                            )
-                            await asyncio.sleep(2)
-                    except Exception:
-                        pass
-
-                    # Single, confident load
-                    try:
-                        warm_resp = await client.post(
-                            f"{base_url}/api/generate",
-                            json={
-                                "model": model,
-                                "prompt": "",
-                                "keep_alive": keep_alive,
-                                "stream": False,
-                                "options": {
-                                    "num_ctx": load_ctx,
-                                    "num_gpu": 999,
-                                },
-                            },
-                        )
-                        warm_resp.raise_for_status()
-                        CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
-                        CalibrationTracker.update_progress(
-                            f"Calibration complete! Loaded at {load_ctx:,} ctx.",
-                            100,
-                        )
+                    if freed > 0:
                         logger.info(
-                            "[LLM] ✅ Model %s loaded at ctx=%d",
-                            model,
-                            load_ctx,
-                        )
-                    except httpx.HTTPStatusError:
-                        # Cached limit failed — invalidate and
-                        # fall through to re-audit next time.
-                        logger.warning(
-                            "[LLM] âš ï¸ Cached limit %d failed for "
-                            "%s! Clearing cache for re-audit.",
-                            proven_max_ctx,
-                            model,
-                        )
-                        _cfg.LLM_VRAM_MEASUREMENTS.pop(model, None)
-                        CalibrationTracker.set_status("error")
-                        CalibrationTracker.update_progress(
-                            f"Cached limit {proven_max_ctx:,} failed for {model}. Re-audit.",
-                            100,
-                        )
-                        with contextlib.suppress(Exception):
-                            _cfg.update_llm_config(
-                                {"vram_measurements": _cfg.LLM_VRAM_MEASUREMENTS},
-                            )
-                        return {
-                            "status": "model_verified",
-                            "model": model,
-                            "available_models": [m["name"] for m in tags_data],
-                            "model_found": True,
-                            "pre_warmed": False,
-                            "audit_performed": False,
-                            "recommended_ctx": 2048,
-                            "message": (
-                                f"Cached limit {proven_max_ctx:,} failed. "
-                                "Re-audit needed on next load."
-                            ),
-                        }
-
-                    result: dict = {
-                        "status": "model_verified",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": True,
-                        "model_max_ctx": model_max_ctx,
-                        "recommended_ctx": load_ctx,
-                        "proven_max_ctx": proven_max_ctx,
-                        "audit_performed": False,
-                        "kv_rate_bytes_per_token": kv_per_tok,
-                    }
-                    if clamped:
-                        result["clamped_from"] = desired_ctx
-                        result["message"] = (
-                            f"Loaded at {load_ctx:,} tokens (hardware limit: {proven_max_ctx:,})."
-                        )
-                    return result
-
-                else:
-                    # ═══ AUDIT PATH: Compute-aware first-time test ══
-                    # Calculate optimal ctx that leaves 30% VRAM for compute
-                    compute_optimal = LLMService.calculate_compute_optimal_ctx(
-                        model_file_size,
-                        kv_per_tok,
-                        safe_ceiling,
-                    )
-                    target_ctx = min(desired_ctx, compute_optimal)
-                    target_ctx = max(target_ctx, 8192)
-
-                    logger.info(
-                        "[LLM] 🔍 COMPUTE-AWARE AUDIT: %s "
-                        "compute_optimal=%d, desired=%d. "
-                        "Testing load at ctx=%d...",
-                        model,
-                        compute_optimal,
-                        desired_ctx,
-                        target_ctx,
-                    )
-
-                    CalibrationTracker.update_progress(
-                        f"Compute-aware audit: testing {model} "
-                        f"at ctx={target_ctx:,} "
-                        f"(optimal for throughput)...",
-                        55,
-                    )
-
-                    # Build a short list: [target_ctx] + fallback steps
-                    # If optimal fails, step down gracefully
-                    _FALLBACK_STEPS = [32768, 24576, 16384, 8192, 4096, 2048]
-                    audit_steps = [target_ctx]
-                    for fb in _FALLBACK_STEPS:
-                        if fb < target_ctx:
-                            audit_steps.append(fb)
-
-                    last_successful_ctx = 0
-
-                    for step_idx, ctx_test in enumerate(audit_steps):
-                        # Scale progress 60-90% across audit steps
-                        step_pct = 60 + int(30 * step_idx / max(len(audit_steps) - 1, 1))
-                        CalibrationTracker.update_progress(
-                            f"Audit {step_idx + 1}/{len(audit_steps)}: ctx={ctx_test:,}...",
-                            step_pct,
-                        )
-                        logger.info(
-                            "[LLM] 🔎 Audit step: testing ctx=%d...",
-                            ctx_test,
-                        )
-
-                        # 1. Unload completely before every step
-                        await LLMService.unload_ollama_model(
-                            base_url,
-                            model,
+                            "[LLM] Flushed %d model(s) before load",
+                            freed,
                         )
                         await asyncio.sleep(2)
+                except Exception:
+                    pass
 
-                        # 2. Attempt load
-                        try:
-                            warm_resp = await client.post(
-                                f"{base_url}/api/generate",
-                                json={
-                                    "model": model,
-                                    "prompt": "",
-                                    "keep_alive": keep_alive,
-                                    "stream": False,
-                                    "options": {
-                                        "num_ctx": ctx_test,
-                                        "num_gpu": 999,
-                                    },
-                                },
-                            )
-                            warm_resp.raise_for_status()
-                            last_successful_ctx = ctx_test
-                            logger.info(
-                                "[LLM] ✅ Audit step ctx=%d SUCCESS",
-                                ctx_test,
-                            )
-                        except httpx.HTTPStatusError:
-                            logger.warning(
-                                "[LLM] 🛑 Audit step ctx=%d FAILED. Hardware limit found.",
-                                ctx_test,
-                            )
-                            break
-
-                    # Handle total failure (even 2048 failed)
-                    if last_successful_ctx == 0:
-                        CalibrationTracker.set_status("error")
-                        CalibrationTracker.update_progress(
-                            f"Failed: {model} weights exceed available memory.",
-                            100,
-                        )
-                        logger.error(
-                            "[LLM] âŒ Model %s cannot load at any "
-                            "context size. Model weights exceed "
-                            "available memory.",
-                            model,
-                        )
-                        return {
-                            "status": "oom_error",
+                # Single load at user’s desired context
+                try:
+                    warm_resp = await client.post(
+                        f"{base_url}/api/generate",
+                        json={
                             "model": model,
-                            "available_models": [m["name"] for m in tags_data],
-                            "model_found": True,
-                            "pre_warmed": False,
-                            "message": (
-                                f"Model {model} weights exceed available "
-                                "memory. Try a smaller model."
-                            ),
-                        }
-
-                    proven_max_ctx = max(last_successful_ctx, 8192)
-                    logger.info(
-                        "[LLM] ðŸ AUDIT COMPLETE! %s proven limit: ctx=%d",
-                        model,
-                        proven_max_ctx,
-                    )
-
-                    # Save to persistent cache
-                    import json
-                    import os
-                    import time
-
-                    CONFIG_FILE = str(_cfg.LLM_CONFIG_PATH)
-
-                    vram_usage_gb = (model_file_size + (proven_max_ctx * kv_per_tok)) / (1024**3)
-
-                    _cfg.LLM_VRAM_MEASUREMENTS[model] = {
-                        "proven_max_ctx": proven_max_ctx,
-                        "compute_optimal_ctx": compute_optimal,
-                        "model_file_size": model_file_size,
-                        "vram_usage_gb": vram_usage_gb,
-                        "last_audited": time.time(),
-                        "status": "calibrated",
-                    }
-
-                    # FORCE SAVE TO DISK
-                    try:
-                        # 1. Read existing file so we don't overwrite other settings
-                        if os.path.exists(CONFIG_FILE):
-                            with open(CONFIG_FILE) as f:
-                                disk_config = json.load(f)
-                        else:
-                            disk_config = {}
-
-                        # 2. Update the measurements section
-                        disk_config["vram_measurements"] = _cfg.LLM_VRAM_MEASUREMENTS
-
-                        # 3. Write back to disk atomically
-                        with open(CONFIG_FILE, "w") as f:
-                            json.dump(disk_config, f, indent=4)
-
-                        logger.info("[LLM] ✅ Saved audit results to permanent disk cache.")
-                    except Exception as save_exc:
-                        logger.error("❌ Failed to save audit cache to disk: %s", save_exc)
-
-                    # Reload at proven limit (audit may have ended
-                    # on a failure, leaving model unloaded)
-                    load_ctx = min(desired_ctx, proven_max_ctx, compute_optimal)
-                    load_ctx = max(load_ctx, 8192)
-
-                    await LLMService.unload_ollama_model(
-                        base_url,
-                        model,
-                    )
-                    await asyncio.sleep(2)
-                    try:
-                        warm_resp = await client.post(
-                            f"{base_url}/api/generate",
-                            json={
-                                "model": model,
-                                "prompt": "",
-                                "keep_alive": keep_alive,
-                                "stream": False,
-                                "options": {
-                                    "num_ctx": load_ctx,
-                                    "num_gpu": 999,
-                                },
+                            "prompt": "",
+                            "keep_alive": keep_alive,
+                            "stream": False,
+                            "options": {
+                                "num_ctx": desired_ctx,
+                                "num_gpu": 999,
                             },
-                        )
-                        warm_resp.raise_for_status()
-                        CalibrationTracker.set_status("success", proven_max_ctx=proven_max_ctx)
-                        CalibrationTracker.update_progress(
-                            f"Calibration complete! Loaded at {load_ctx:,} ctx.",
-                            100,
-                        )
-                        logger.info(
-                            "[LLM] ✅ Final load at ctx=%d after audit",
-                            load_ctx,
-                        )
-                    except httpx.HTTPStatusError:
-                        CalibrationTracker.set_status("error")
-                        CalibrationTracker.update_progress(
-                            f"Final reload at ctx={load_ctx:,} failed after audit.",
-                            100,
-                        )
-                        logger.warning(
-                            "[LLM] Final reload at ctx=%d failed "
-                            "after audit. Model may be unloaded.",
-                            load_ctx,
-                        )
-
-                    clamped = load_ctx < desired_ctx
-                    result: dict = {
+                        },
+                    )
+                    warm_resp.raise_for_status()
+                    logger.info(
+                        "[LLM] ✅ Model %s loaded at ctx=%d",
+                        model,
+                        desired_ctx,
+                    )
+                    return {
                         "status": "model_verified",
                         "model": model,
                         "available_models": [m["name"] for m in tags_data],
                         "model_found": True,
                         "pre_warmed": True,
                         "model_max_ctx": model_max_ctx,
-                        "recommended_ctx": load_ctx,
-                        "proven_max_ctx": proven_max_ctx,
-                        "audit_performed": True,
+                        "recommended_ctx": desired_ctx,
                         "kv_rate_bytes_per_token": kv_per_tok,
-                        "model_stats": {
-                            "model_name": model,
-                            "max_proven_ctx": proven_max_ctx,
-                            "vram_usage_gb": vram_usage_gb,
-                        },
-                        "message": (f"Model ready. Max safe context locked at {proven_max_ctx}."),
                     }
-                    if clamped:
-                        result["clamped_from"] = desired_ctx
-                    return result
+                except httpx.HTTPStatusError:
+                    logger.warning(
+                        "[LLM] ⚠️ Failed to load %s at ctx=%d",
+                        model,
+                        desired_ctx,
+                    )
+                    return {
+                        "status": "oom_error",
+                        "model": model,
+                        "available_models": [m["name"] for m in tags_data],
+                        "model_found": True,
+                        "pre_warmed": False,
+                        "requested_ctx": desired_ctx,
+                        "message": (
+                            f"Model {model} failed to load at ctx={desired_ctx}. "
+                            "Try a lower context size."
+                        ),
+                    }
         except Exception as exc:
-            CalibrationTracker.set_status("error")
-            CalibrationTracker.update_progress(f"Failed: {exc}", 100)
             logger.warning(
                 "[LLM] Ollama model verification failed: %s",
                 exc,
@@ -1367,8 +1210,9 @@ class LLMService:
 
     async def health_check(self) -> dict:
         """Check connectivity to the Ollama backend."""
+        ollama_url = settings.OLLAMA_URL.rstrip("/")
         try:
-            url = f"{self.base_url}/api/tags"
+            url = f"{ollama_url}/api/tags"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
@@ -1376,8 +1220,8 @@ class LLMService:
                 return {
                     "status": "ok",
                     "provider": "ollama",
-                    "active_url": self.base_url,
-                    "ollama_url": settings.OLLAMA_URL,
+                    "prism_url": self.base_url,
+                    "ollama_url": ollama_url,
                     "models": models,
                     "configured_model": self.model,
                     "model_available": self.model in models,
@@ -1386,7 +1230,7 @@ class LLMService:
             return {
                 "status": "error",
                 "provider": "ollama",
-                "active_url": self.base_url,
-                "ollama_url": settings.OLLAMA_URL,
+                "prism_url": self.base_url,
+                "ollama_url": ollama_url,
                 "error": str(e),
             }

@@ -479,7 +479,7 @@ async def get_vram_estimate(model: str = "") -> dict:
     from app.config import settings as _cfg
 
     target_model = model or _cfg.LLM_MODEL
-    base_url = _cfg.LLM_BASE_URL
+    base_url = _cfg.OLLAMA_URL.rstrip("/")
 
     # Total GPU memory from config (SYSTEM_TOTAL_VRAM_GB)
     total_bytes = LLMService.get_total_vram_bytes()
@@ -491,8 +491,6 @@ async def get_vram_estimate(model: str = "") -> dict:
         "kv_bytes_per_token": 0,
         "model_max_ctx": 0,
         "model_found": False,
-        "is_audited": False,
-        "proven_max_ctx": 0,
     }
 
     try:
@@ -544,12 +542,6 @@ async def get_vram_estimate(model: str = "") -> dict:
             theoretical_rate = est["kv_bytes_per_token"]
             cached = _cfg.LLM_VRAM_MEASUREMENTS.get(target_model)
             if cached:
-                if "proven_max_ctx" in cached:
-                    result["is_audited"] = True
-                    # Floor at 8192 — the backend never loads below 8k,
-                    # so the UI slider/badge should reflect the real floor
-                    result["proven_max_ctx"] = max(cached["proven_max_ctx"], 8192)
-
                 if cached.get("real_kv_rate"):
                     cached_rate = cached["real_kv_rate"]
                     if (
@@ -608,13 +600,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
         if not bot_for_model:
             # Auto-create a bot entry for this model
             _prov_url = merged.get("ollama_url", "http://localhost:11434")
-            # Clamp context to proven hardware limit if calibrated
-            _user_ctx = merged.get("context_size", 8192)
-            _cached = settings.LLM_VRAM_MEASUREMENTS.get(model_id)
-            if _cached and "proven_max_ctx" in _cached:
-                _ctx = min(_user_ctx, _cached["proven_max_ctx"])
-            else:
-                _ctx = _user_ctx
+            _ctx = merged.get("context_size", 8192)
             bot_for_model = _BReg.register_bot(
                 model_name=model_id,
                 display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
@@ -634,13 +620,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
             )
         else:
             # Update existing bot settings
-            # Clamp context to proven hardware limit if calibrated
-            _user_ctx = merged.get("context_size", 8192)
-            _cached = settings.LLM_VRAM_MEASUREMENTS.get(model_id)
-            if _cached and "proven_max_ctx" in _cached:
-                _ctx = min(_user_ctx, _cached["proven_max_ctx"])
-            else:
-                _ctx = _user_ctx
+            _ctx = merged.get("context_size", 8192)
             _BReg.update_bot_settings(
                 bot_for_model["bot_id"],
                 {
@@ -663,68 +643,33 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
         result["active_bot_id"] = bot_for_model["bot_id"]
         result["active_bot_name"] = bot_for_model.get("display_name", model_id)
 
-    # ── Ollama: fire calibration in background ──────────────────────
-    model_id = merged.get("model", "")
-    if model_id:
-        ollama_url = merged.get(
-            "ollama_url", "http://localhost:11434"
-        ).rstrip("/")
-
-        async def _background_calibrate() -> None:
-            """Run verify_and_warm in the background; update settings on success."""
-            try:
-                warm_result = await LLMService.verify_and_warm_ollama_model(
-                    ollama_url, model_id, keep_alive="10m",
-                )
-                if warm_result.get("status") == "oom_error":
-                    old_ctx = warm_result.get("suggested_ctx", 8192)
-                    settings.LLM_CONTEXT_SIZE = old_ctx
-                    logger.warning(
-                        "[Ollama] OOM at ctx=%d — keeping ctx=%d",
-                        warm_result.get("requested_ctx", 0),
-                        old_ctx,
-                    )
-                else:
-                    rec_ctx = warm_result.get("recommended_ctx")
-                    if rec_ctx and rec_ctx != merged.get("context_size"):
-                        settings.LLM_CONTEXT_SIZE = rec_ctx
-                        logger.info(
-                            "[Ollama] Context size adjusted to %d based on VRAM",
-                            rec_ctx,
-                        )
-            except Exception as exc:
-                logger.warning(
-                    "[Ollama] Background calibration failed: %s", exc,
-                )
-
-        asyncio.create_task(_background_calibrate())
-        result["calibration_started"] = True
-
     return result
-
-
-@app.get("/api/settings/calibration-status")
-async def get_calibration_status() -> dict:
-    """Return real-time calibration state for frontend polling."""
-    from app.services.calibration_tracker import CalibrationTracker
-
-    return CalibrationTracker.get_state()
 
 
 @app.get("/api/llm-models")
 async def get_llm_models(
     url: str = Query(default=None),
 ) -> dict:
-    """Fetch available Ollama models.
+    """Fetch available models.
 
-    Query params let the frontend test arbitrary URLs before saving.
+    Uses Prism /config by default.  If a custom Ollama URL is provided
+    (frontend testing), queries that URL directly.
     """
-    _url = url or settings.OLLAMA_URL
+    if url:
+        # Direct Ollama query — used when testing a custom URL
+        models = await LLMService.fetch_models(url)
+        return {
+            "provider": "ollama",
+            "url": url,
+            "models": models,
+            "connected": len(models) > 0,
+        }
 
-    models = await LLMService.fetch_models(_url)
+    # Default: fetch from Prism
+    models = await LLMService.fetch_models_from_prism()
     return {
         "provider": "ollama",
-        "url": _url,
+        "url": settings.PRISM_URL,
         "models": models,
         "connected": len(models) > 0,
     }
@@ -1922,13 +1867,8 @@ async def get_leaderboard() -> dict:
     # Inject VRAM stats for UI tooltip
     for bot in rankings:
         model = bot.get("model_name", "")
-        cached = _cfg.LLM_VRAM_MEASUREMENTS.get(model)
-        if cached and "proven_max_ctx" in cached:
-            bot["computed_max_ctx"] = cached["proven_max_ctx"]
-            bot["computed_vram_gb"] = round(cached.get("vram_usage_gb", 0), 1)
-        else:
-            bot["computed_max_ctx"] = None
-            bot["computed_vram_gb"] = None
+        bot["computed_max_ctx"] = bot.get("context_length")
+        bot["computed_vram_gb"] = None
 
     return {"count": len(rankings), "leaderboard": rankings}
 
@@ -2573,18 +2513,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         logger.info(
                             "[RunAll] ✅ Ollama model warmed: %s",
                             model_name,
-                        )
-                    # Sync proven context back to bot DB + global settings
-                    if warm.get("recommended_ctx"):
-                        from app.services.bot_registry import BotRegistry as _BReg
-                        rec = warm["recommended_ctx"]
-                        settings.LLM_CONTEXT_SIZE = rec
-                        _BReg.update_bot_settings(
-                            bot_id, {"context_length": rec},
-                        )
-                        logger.info(
-                            "[RunAll] Synced bot %s context_length → %d",
-                            bot_id, rec,
                         )
                     else:
                         _run_all_log(

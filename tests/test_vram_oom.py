@@ -100,20 +100,18 @@ class TestEstimateModelVram:
 
 
 # ---------------------------------------------------------------------------
-# FAST PATH: Cached proven_max_ctx → single load
+# SIMPLE LOAD: Verify model and load at user's desired context
 # ---------------------------------------------------------------------------
 
 
-class TestFastPath:
-    def test_uses_cached_proven_max_ctx(self):
-        """With cached proven_max_ctx, loads at min(desired, proven)."""
+class TestSimpleLoad:
+    def test_loads_at_desired_context(self):
+        """Model loads at user's desired context size directly."""
         from app.config import settings
         from app.services.llm_service import LLMService
 
         settings.LLM_CONTEXT_SIZE = 60000
-        settings.LLM_VRAM_MEASUREMENTS = {
-            "gemma3:27b": {"proven_max_ctx": 32768},
-        }
+        settings.LLM_VRAM_MEASUREMENTS = {}
 
         async def mock_post(url, **kwargs):
             if "/api/show" in url:
@@ -157,96 +155,18 @@ class TestFastPath:
 
         assert result["status"] == "model_verified"
         assert result["pre_warmed"] is True
-        assert result["audit_performed"] is False
-        # desired=60000 but proven limit is 32768
-        assert result["recommended_ctx"] == 32768
-        assert result["proven_max_ctx"] == 32768
-        assert "clamped_from" in result
+        # Capped to model_max_ctx (128000), but desired was 60000
+        assert result["recommended_ctx"] == 60000
 
 
 # ---------------------------------------------------------------------------
-# AUDIT PATH: No cache → step through ctx sizes → find limit
+# OOM: Model fails to load at desired context
 # ---------------------------------------------------------------------------
 
 
-class TestAuditScaleUp:
-    def test_steps_up_and_finds_limit(self):
-        """No cache → audit steps through ctx sizes → saves limit."""
-        from app.config import settings
-        from app.services.llm_service import LLMService
-
-        settings.LLM_CONTEXT_SIZE = 60000
-        settings.LLM_VRAM_MEASUREMENTS = {}
-
-        # Simulate: ctx 2048-32768 succeed, 49152 fails
-        async def mock_post(url, **kwargs):
-            if "/api/show" in url:
-                return _mock_resp(200, SHOW_DATA)
-            if "/api/generate" in url:
-                body = kwargs.get("json", {})
-                ctx = body.get("options", {}).get("num_ctx", 0)
-                ka = body.get("keep_alive")
-                # Unload calls (keep_alive="0") always succeed
-                if ka == "0" or ka == 0:
-                    return _mock_resp(200, {})
-                # Loads at ctx <= 32768 succeed, above fail
-                if ctx > 0 and ctx > 32768:
-                    return _mock_resp(500, {})
-                return _mock_resp(200, {})
-            return _mock_resp(200, {})
-
-        async def mock_get(url, **kwargs):
-            if "/api/tags" in url:
-                return _mock_resp(200, TAGS_DATA)
-            return _mock_resp(200, {})
-
-        with patch("httpx.AsyncClient") as mock_cls:
-            client = AsyncMock()
-            client.post = AsyncMock(side_effect=mock_post)
-            client.get = AsyncMock(side_effect=mock_get)
-            client.__aenter__ = AsyncMock(return_value=client)
-            client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = client
-
-            with (
-                patch.object(
-                    LLMService,
-                    "get_total_vram_bytes",
-                    return_value=64 * 1024**3,
-                ),
-                patch.object(
-                    LLMService,
-                    "unload_ollama_model",
-                    return_value=True,
-                ) as mock_unload,
-                patch("asyncio.sleep", new_callable=AsyncMock),
-            ):
-                result = asyncio.get_event_loop().run_until_complete(
-                    LLMService.verify_and_warm_ollama_model(
-                        "http://localhost:11434",
-                        "gemma3:27b",
-                    )
-                )
-
-        assert result["status"] == "model_verified"
-        assert result["pre_warmed"] is True
-        assert result["audit_performed"] is True
-        assert result["proven_max_ctx"] == 32768
-        assert result["recommended_ctx"] == 32768
-        # Cache should be populated with proven_max_ctx
-        assert settings.LLM_VRAM_MEASUREMENTS["gemma3:27b"]["proven_max_ctx"] == 32768
-        # unload_ollama_model called between each step
-        assert mock_unload.call_count >= 1
-
-
-# ---------------------------------------------------------------------------
-# AUDIT OOM: Even smallest context fails
-# ---------------------------------------------------------------------------
-
-
-class TestAuditOOM:
-    def test_returns_oom_when_all_loads_fail(self):
-        """No cache → all audit steps fail → oom_error."""
+class TestOOMError:
+    def test_returns_oom_when_load_fails(self):
+        """Load fails → returns oom_error."""
         from app.services.llm_service import LLMService
 
         async def mock_post(url, **kwargs):
@@ -255,10 +175,8 @@ class TestAuditOOM:
             if "/api/generate" in url:
                 body = kwargs.get("json", {})
                 ka = body.get("keep_alive")
-                # Unload calls succeed
                 if ka == "0" or ka == 0:
                     return _mock_resp(200, {})
-                # ALL loads fail
                 return _mock_resp(500, {})
             return _mock_resp(200, {})
 
@@ -283,8 +201,8 @@ class TestAuditOOM:
                 ),
                 patch.object(
                     LLMService,
-                    "unload_ollama_model",
-                    return_value=True,
+                    "unload_all_ollama_models",
+                    return_value=0,
                 ),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):

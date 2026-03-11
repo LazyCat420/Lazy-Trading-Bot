@@ -90,10 +90,10 @@ class AutonomousLoop:
 
         logger.info(
             "[AutoLoop] Pre-warming Ollama model: %s @ %s",
-            settings.LLM_MODEL, settings.LLM_BASE_URL,
+            settings.LLM_MODEL, settings.OLLAMA_URL,
         )
         warm_result = await LLMService.verify_and_warm_ollama_model(
-            settings.LLM_BASE_URL,
+            settings.OLLAMA_URL,
             settings.LLM_MODEL,
             keep_alive="2h",
         )

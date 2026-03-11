@@ -201,6 +201,18 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS youtube_trading_data (
+            ticker         VARCHAR NOT NULL,
+            video_id       VARCHAR NOT NULL,
+            title          VARCHAR,
+            channel        VARCHAR,
+            trading_data   TEXT,
+            collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker, video_id)
+        );
+    """)
+
     # ---- Phase 8: Expanded tables ----
 
     conn.execute("""

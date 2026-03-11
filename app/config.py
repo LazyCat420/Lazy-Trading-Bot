@@ -26,7 +26,13 @@ class Settings:
     # Database
     DB_PATH: Path = DATA_DIR / "trading_bot.duckdb"
 
-    # ── LLM Provider (Ollama only) ─────────────────────────────────
+    # ── LLM Provider ───────────────────────────────────────────────
+    # Prism AI Gateway (centralized LLM proxy)
+    PRISM_URL: str = os.getenv("PRISM_URL", "http://localhost:3020")
+    PRISM_SECRET: str = os.getenv("PRISM_SECRET", "banana")
+    PRISM_PROJECT: str = os.getenv("PRISM_PROJECT", "lazy-trading-bot")
+
+    # Ollama direct URL (used only for model warm-up and VRAM estimation)
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
     # Model name (e.g. "gemma3:27b" for Ollama)
@@ -72,8 +78,8 @@ class Settings:
 
     @property
     def LLM_BASE_URL(self) -> str:
-        """Computed: returns the Ollama URL."""
-        return self.OLLAMA_URL.rstrip("/")
+        """Computed: returns the Prism gateway URL for LLM calls."""
+        return self.PRISM_URL.rstrip("/")
 
     # Server
     HOST: str = os.getenv("HOST", "0.0.0.0")
@@ -111,6 +117,12 @@ class Settings:
 
     def _apply_llm_config(self, data: dict[str, Any]) -> None:
         """Apply a config dict to the running settings instance."""
+        if "prism_url" in data:
+            self.PRISM_URL = str(data["prism_url"])
+        if "prism_secret" in data:
+            self.PRISM_SECRET = str(data["prism_secret"])
+        if "prism_project" in data:
+            self.PRISM_PROJECT = str(data["prism_project"])
         if "ollama_url" in data:
             self.OLLAMA_URL = str(data["ollama_url"])
         if "model" in data:
@@ -177,6 +189,9 @@ class Settings:
     def get_llm_config(self) -> dict[str, Any]:
         """Return the current LLM configuration as a dict."""
         cfg: dict[str, Any] = {
+            "prism_url": self.PRISM_URL,
+            "prism_secret": self.PRISM_SECRET,
+            "prism_project": self.PRISM_PROJECT,
             "ollama_url": self.OLLAMA_URL,
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
@@ -196,16 +211,6 @@ class Settings:
             "rag_top_k": self.RAG_TOP_K,
             "rag_max_chars": self.RAG_MAX_CHARS,
         }
-        # Attach VRAM measurement data for the current model (if cached)
-        vram = self.LLM_VRAM_MEASUREMENTS.get(self.LLM_MODEL)
-        if vram:
-            proven_ctx = vram.get("proven_max_ctx", 0)
-            cfg["last_measured_ctx"] = proven_ctx
-            cfg["model_stats"] = {
-                "model_name": self.LLM_MODEL,
-                "max_proven_ctx": proven_ctx,
-                # vram_usage_gb could be calculated here or omitted if frontend calculates
-            }
         return cfg
 
 
