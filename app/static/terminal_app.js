@@ -1089,6 +1089,384 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 };
 
 // ***************************************************************
+// DASHBOARD PAGE — Fidelity-style overview of all bots + markets
+// ***************************************************************
+
+const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
+    const [summary, setSummary] = useState(null);
+    const [bots, setBots] = useState([]);
+    const [activity, setActivity] = useState([]);
+    const [movers, setMovers] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [activeTab, setActiveTab] = useState("bots"); // bots | activity | movers
+
+    const fetchAll = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [sumRes, botsRes, actRes, movRes] = await Promise.all([
+                fetch("/api/dashboard/summary").then(r => r.json()),
+                fetch("/api/dashboard/bots/compare").then(r => r.json()),
+                fetch("/api/dashboard/activity?limit=50").then(r => r.json()),
+                fetch("/api/dashboard/institutional/movers").then(r => r.json()),
+            ]);
+            setSummary(sumRes);
+            setBots(botsRes.bots || []);
+            setActivity(actRes.trades || []);
+            setMovers(movRes);
+        } catch (e) { console.error("Dashboard fetch error:", e); }
+        setLoading(false);
+    }, []);
+
+    useEffect(() => { fetchAll(); }, [fetchAll]);
+
+    // Mini sparkline renderer
+    const Sparkline = ({ data, width = 120, height = 32 }) => {
+        const canvasRef = useRef(null);
+        useEffect(() => {
+            const canvas = canvasRef.current;
+            if (!canvas || !data || data.length < 2) return;
+            const ctx = canvas.getContext("2d");
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            ctx.scale(dpr, dpr);
+            ctx.clearRect(0, 0, width, height);
+
+            const values = data.map(d => d.value);
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const range = max - min || 1;
+            const isUp = values[values.length - 1] >= values[0];
+
+            ctx.beginPath();
+            ctx.strokeStyle = isUp ? "#22c55e" : "#ef4444";
+            ctx.lineWidth = 1.5;
+            values.forEach((v, i) => {
+                const x = (i / (values.length - 1)) * width;
+                const y = height - ((v - min) / range) * (height - 4) - 2;
+                i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Fill gradient below
+            const lastX = width;
+            const lastY = height - ((values[values.length - 1] - min) / range) * (height - 4) - 2;
+            ctx.lineTo(lastX, height);
+            ctx.lineTo(0, height);
+            ctx.closePath();
+            const grad = ctx.createLinearGradient(0, 0, 0, height);
+            grad.addColorStop(0, isUp ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)");
+            grad.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = grad;
+            ctx.fill();
+        }, [data, width, height]);
+
+        return React.createElement("canvas", {
+            ref: canvasRef,
+            style: { width: `${width}px`, height: `${height}px` },
+        });
+    };
+
+    const StatCard = ({ icon, label, value, sub, color }) => (
+        <div className="bg-onyx-panel border border-border-dark rounded-xl p-4 flex flex-col gap-1">
+            <div className="flex items-center gap-2 text-text-muted text-xs font-mono uppercase">
+                <span className="material-symbols-outlined text-base">{icon}</span>
+                {label}
+            </div>
+            <div className={`text-xl font-bold ${color || "text-white"}`}>{value}</div>
+            {sub && <div className="text-xs text-text-secondary">{sub}</div>}
+        </div>
+    );
+
+    return (
+        <SidebarLayout active="dashboard" watchlist={watchlist} selectedTicker={selectedTicker}
+            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow} setExpandedRow={setExpandedRow}
+            overviewCache={overviewCache}>
+            <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h2 className="text-white font-bold text-xl">Dashboard</h2>
+                        <p className="text-text-muted text-xs font-mono mt-1">Aggregate analytics across all bots & institutions</p>
+                    </div>
+                    <button onClick={fetchAll}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border-dark/50 hover:bg-border-dark text-xs text-text-secondary hover:text-white transition">
+                        <span className={`material-symbols-outlined text-sm ${loading ? "animate-spin" : ""}`}>refresh</span>
+                        Refresh
+                    </button>
+                </div>
+
+                {/* Summary Bar */}
+                {summary && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <StatCard icon="account_balance"
+                            label="Total Portfolio"
+                            value={fmt.usdShort(summary.total_portfolio_value)}
+                            sub={`Across ${summary.bot_count} bots`} />
+                        <StatCard icon="trending_up"
+                            label="Total P&L"
+                            value={`${summary.total_pnl >= 0 ? "+" : ""}${fmt.usdShort(summary.total_pnl)}`}
+                            color={summary.total_pnl >= 0 ? "text-green-400" : "text-red-400"}
+                            sub={`Best: ${summary.best_bot.name}`} />
+                        <StatCard icon="swap_vert"
+                            label="Total Trades"
+                            value={summary.total_trades.toLocaleString()}
+                            sub={`Win Rate: ${summary.overall_win_rate}%`} />
+                        <StatCard icon="emoji_events"
+                            label="Top Bot"
+                            value={summary.best_bot.name}
+                            color="text-primary"
+                            sub={`${summary.best_bot.pnl >= 0 ? "+" : ""}${fmt.usdShort(summary.best_bot.pnl)} P&L`} />
+                    </div>
+                )}
+
+                {/* Tab Switcher */}
+                <div className="flex items-center gap-1 bg-onyx-panel border border-border-dark rounded-xl p-1">
+                    {[
+                        { id: "bots", label: "Bot Comparison", icon: "smart_toy" },
+                        { id: "activity", label: "Activity Feed", icon: "history" },
+                        { id: "movers", label: "Institutional Movers", icon: "trending_up" },
+                    ].map(tab => (
+                        <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition flex-1 justify-center ${activeTab === tab.id
+                                ? "bg-primary/15 text-primary"
+                                : "text-text-secondary hover:text-white hover:bg-border-dark/50"
+                            }`}>
+                            <span className="material-symbols-outlined text-base">{tab.icon}</span>
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+
+                {loading && (
+                    <div className="flex items-center justify-center py-12 text-text-muted">
+                        <span className="material-symbols-outlined animate-spin mr-2">progress_activity</span>
+                        Loading dashboard…
+                    </div>
+                )}
+
+                {/* Bot Comparison Cards */}
+                {!loading && activeTab === "bots" && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {bots.map(bot => (
+                            <div key={bot.bot_id} className="bg-onyx-panel border border-border-dark rounded-xl p-4 flex flex-col gap-3">
+                                {/* Bot Header */}
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center">
+                                            <span className="material-symbols-outlined text-primary text-lg">smart_toy</span>
+                                        </div>
+                                        <div>
+                                            <div className="text-white font-bold text-sm">{bot.display_name}</div>
+                                            <div className="text-text-muted text-[10px] font-mono">{bot.model_name}</div>
+                                        </div>
+                                    </div>
+                                    <div className={`text-lg font-bold ${bot.total_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                        {bot.total_pnl >= 0 ? "+" : ""}{fmt.usdShort(bot.total_pnl)}
+                                    </div>
+                                </div>
+
+                                {/* Stats Row */}
+                                <div className="flex items-center gap-4 text-xs">
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-text-muted">Return:</span>
+                                        <span className={bot.return_pct >= 0 ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
+                                            {bot.return_pct >= 0 ? "+" : ""}{bot.return_pct}%
+                                        </span>
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-text-muted">Win Rate:</span>
+                                        <span className="text-white font-bold">{bot.win_rate}%</span>
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-text-muted">Trades:</span>
+                                        <span className="text-white font-bold">{bot.total_trades}</span>
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-text-muted">Drawdown:</span>
+                                        <span className="text-amber-400 font-bold">{(bot.max_drawdown * 100).toFixed(1)}%</span>
+                                    </span>
+                                </div>
+
+                                {/* Equity Sparkline */}
+                                <div className="flex items-center gap-3">
+                                    <Sparkline data={bot.equity_curve} width={200} height={40} />
+                                    <div className="flex flex-col text-[10px] font-mono">
+                                        <span className="text-text-muted">Start: {fmt.usdShort(bot.starting_balance)}</span>
+                                        <span className="text-white">Now: {fmt.usdShort(bot.current_value)}</span>
+                                    </div>
+                                </div>
+
+                                {/* Current Positions */}
+                                {bot.positions.length > 0 && (
+                                    <div>
+                                        <div className="text-[10px] text-text-muted font-mono uppercase mb-1">Positions ({bot.positions.length})</div>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {bot.positions.map(p => (
+                                                <span key={p.ticker}
+                                                    className="px-2 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-bold">
+                                                    {p.ticker} ×{p.qty}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Recent Trades */}
+                                {bot.recent_trades.length > 0 && (
+                                    <div>
+                                        <div className="text-[10px] text-text-muted font-mono uppercase mb-1">Recent Trades</div>
+                                        <div className="flex flex-col gap-1">
+                                            {bot.recent_trades.slice(0, 5).map(t => (
+                                                <div key={t.id} className="flex items-center justify-between text-[11px] font-mono">
+                                                    <span className="flex items-center gap-1.5">
+                                                        <span className={`px-1.5 rounded text-[9px] font-bold ${t.side === "buy"
+                                                            ? "bg-green-500/20 text-green-400"
+                                                            : "bg-red-500/20 text-red-400"}`}>
+                                                            {t.side.toUpperCase()}
+                                                        </span>
+                                                        <span className="text-white font-bold">{t.ticker}</span>
+                                                        <span className="text-text-muted">×{t.qty}</span>
+                                                    </span>
+                                                    <span className="text-text-secondary">${t.price.toFixed(2)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                        {bots.length === 0 && (
+                            <div className="col-span-2 text-center py-12 text-text-muted">
+                                <span className="material-symbols-outlined text-3xl mb-2 block">smart_toy</span>
+                                No active bots found. Add bots in the Autobot Monitor.
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Activity Feed */}
+                {!loading && activeTab === "activity" && (
+                    <div className="bg-onyx-panel border border-border-dark rounded-xl overflow-hidden">
+                        <table className="data-grid">
+                            <thead>
+                                <tr>
+                                    <th>Bot</th>
+                                    <th>Side</th>
+                                    <th>Ticker</th>
+                                    <th>Qty</th>
+                                    <th>Price</th>
+                                    <th>P&L</th>
+                                    <th>Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {activity.map(t => (
+                                    <tr key={t.id}>
+                                        <td>
+                                            <span className="flex items-center gap-1.5">
+                                                <span className="material-symbols-outlined text-primary text-sm">smart_toy</span>
+                                                <span className="text-xs font-bold text-white">{t.bot_name}</span>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${t.side === "buy"
+                                                ? "bg-green-500/20 text-green-400"
+                                                : "bg-red-500/20 text-red-400"}`}>
+                                                {t.side.toUpperCase()}
+                                            </span>
+                                        </td>
+                                        <td className="text-primary font-bold">{t.ticker}</td>
+                                        <td>{t.qty}</td>
+                                        <td className="font-bold">${t.price.toFixed(2)}</td>
+                                        <td className={t.realized_pnl ? (t.realized_pnl > 0 ? "text-green-400 font-bold" : "text-red-400 font-bold") : "text-text-muted"}>
+                                            {t.realized_pnl ? `${t.realized_pnl > 0 ? "+" : ""}$${t.realized_pnl.toFixed(2)}` : "—"}
+                                        </td>
+                                        <td className="text-text-secondary text-xs">
+                                            {t.filled_at ? new Date(t.filled_at).toLocaleString() : "—"}
+                                        </td>
+                                    </tr>
+                                ))}
+                                {activity.length === 0 && (
+                                    <tr><td colSpan={7} className="text-center py-8 text-text-muted">No trade activity yet</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
+                {/* Institutional Movers */}
+                {!loading && activeTab === "movers" && movers && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {/* Top Buys */}
+                        <div className="bg-onyx-panel border border-border-dark rounded-xl p-4">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="material-symbols-outlined text-green-400">trending_up</span>
+                                <h3 className="text-green-400 font-bold text-sm">Top Institutional Buys</h3>
+                                <span className="text-text-muted text-[10px] font-mono ml-auto">{movers.quarter} vs {movers.prior_quarter}</span>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                {movers.buys.map((m, i) => (
+                                    <div key={`${m.ticker}-${m.fund}-${i}`}
+                                        className="flex items-center justify-between py-1.5 border-b border-border-dark/50 last:border-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-primary font-bold text-xs">{m.ticker}</span>
+                                            <span className="text-text-muted text-[10px]">{m.fund}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-green-400 text-xs font-bold">
+                                                +{m.delta.toLocaleString()}
+                                            </span>
+                                            {m.delta_pct && (
+                                                <span className="text-green-400/60 text-[10px]">({m.delta_pct > 0 ? "+" : ""}{m.delta_pct}%)</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                                {movers.buys.length === 0 && (
+                                    <div className="text-center py-4 text-text-muted text-xs">No institutional buys detected</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Top Sells */}
+                        <div className="bg-onyx-panel border border-border-dark rounded-xl p-4">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="material-symbols-outlined text-red-400">trending_down</span>
+                                <h3 className="text-red-400 font-bold text-sm">Top Institutional Sells</h3>
+                                <span className="text-text-muted text-[10px] font-mono ml-auto">{movers.quarter} vs {movers.prior_quarter}</span>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                {movers.sells.map((m, i) => (
+                                    <div key={`${m.ticker}-${m.fund}-${i}`}
+                                        className="flex items-center justify-between py-1.5 border-b border-border-dark/50 last:border-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-primary font-bold text-xs">{m.ticker}</span>
+                                            <span className="text-text-muted text-[10px]">{m.fund}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-red-400 text-xs font-bold">
+                                                {m.delta.toLocaleString()}
+                                            </span>
+                                            {m.delta_pct && (
+                                                <span className="text-red-400/60 text-[10px]">({m.delta_pct}%)</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                                {movers.sells.length === 0 && (
+                                    <div className="text-center py-4 text-text-muted text-xs">No institutional sells detected</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </SidebarLayout>
+    );
+};
+
+// ***************************************************************
 // WATCHLIST PAGE  Home screen
 // ***************************************************************
 
@@ -1444,6 +1822,7 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                 </div>
                 <div className="flex-1 overflow-y-auto py-4 px-2 flex flex-col gap-1">
                     <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Navigation</h3>
+                    <NavLink to="/dashboard" icon="dashboard" label="Dashboard" id="dashboard" />
                     <NavLink to="/" icon="monitoring" label="Watchlist" id="watchlist" />
                     <NavLink to="/data" icon="database" label="Data" id="data" />
                     <NavLink to="/monitor" icon="precision_manufacturing" label="Autobot Monitor" id="monitor" />
@@ -7260,6 +7639,7 @@ const App = () => {
     return (
         <HashRouter>
             <Routes>
+                <Route path="/dashboard" element={<DashboardPage {...terminalData} />} />
                 <Route path="/" element={<WatchlistPage {...terminalData} />} />
                 <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
                 <Route path="/data" element={<DataExplorerPage {...terminalData} />} />

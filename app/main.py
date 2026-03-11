@@ -1933,6 +1933,340 @@ async def get_leaderboard() -> dict:
     return {"count": len(rankings), "leaderboard": rankings}
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  DASHBOARD   Aggregate analytics across all bots + institutional
+# ═══════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/dashboard/summary")
+async def dashboard_summary() -> dict:
+    """Aggregate stats across all bots for the dashboard header."""
+    db = get_db()
+
+    # All active bots
+    bots = db.execute(
+        "SELECT bot_id, display_name, total_pnl, total_trades, "
+        "win_rate, max_drawdown FROM bots WHERE status = 'active'"
+    ).fetchall()
+
+    total_portfolio = 0.0
+    total_pnl = 0.0
+    total_trades = 0
+    combined_wins = 0
+    combined_sells = 0
+    best_bot = {"name": "—", "pnl": 0.0}
+    worst_bot = {"name": "—", "pnl": 0.0}
+
+    for bot_id, name, pnl, trades, wr, dd in bots:
+        # Latest snapshot for portfolio value
+        snap = db.execute(
+            "SELECT total_portfolio_value FROM portfolio_snapshots "
+            "WHERE bot_id = ? ORDER BY timestamp DESC LIMIT 1",
+            [bot_id],
+        ).fetchone()
+        val = snap[0] if snap and snap[0] else 0.0
+        total_portfolio += val
+        total_pnl += pnl or 0
+        total_trades += trades or 0
+
+        # Win/loss counts
+        sells = db.execute(
+            "SELECT COUNT(*) FROM orders "
+            "WHERE bot_id = ? AND side = 'sell'",
+            [bot_id],
+        ).fetchone()[0]
+        wins = db.execute(
+            "SELECT COUNT(*) FROM orders "
+            "WHERE bot_id = ? AND side = 'sell' "
+            "AND CAST(json_extract_string("
+            "CASE WHEN signal LIKE '{%' THEN signal ELSE '{}' END, "
+            "'$.realized_pnl') AS DOUBLE) > 0",
+            [bot_id],
+        ).fetchone()[0]
+        combined_wins += wins
+        combined_sells += sells
+
+        if (pnl or 0) > best_bot["pnl"]:
+            best_bot = {"name": name, "pnl": round(pnl or 0, 2)}
+        if (pnl or 0) < worst_bot["pnl"]:
+            worst_bot = {"name": name, "pnl": round(pnl or 0, 2)}
+
+    overall_wr = (
+        round(combined_wins / combined_sells * 100, 1)
+        if combined_sells > 0
+        else 0.0
+    )
+
+    # Top gaining and losing positions across all bots
+    top_gain = db.execute(
+        "SELECT p.ticker, p.bot_id, b.display_name, p.qty, "
+        "p.avg_entry_price "
+        "FROM positions p JOIN bots b ON p.bot_id = b.bot_id "
+        "WHERE b.status = 'active' "
+        "ORDER BY p.qty * p.avg_entry_price DESC LIMIT 1"
+    ).fetchone()
+
+    return {
+        "total_portfolio_value": round(total_portfolio, 2),
+        "total_pnl": round(total_pnl, 2),
+        "total_trades": total_trades,
+        "overall_win_rate": overall_wr,
+        "bot_count": len(bots),
+        "best_bot": best_bot,
+        "worst_bot": worst_bot,
+        "top_position": {
+            "ticker": top_gain[0],
+            "bot": top_gain[2],
+            "qty": top_gain[3],
+            "avg_price": round(top_gain[4], 2),
+        }
+        if top_gain
+        else None,
+    }
+
+
+@app.get("/api/dashboard/bots/compare")
+async def dashboard_bots_compare() -> dict:
+    """Per-bot comparison data: equity curves, trades, positions."""
+    db = get_db()
+    bots = db.execute(
+        "SELECT bot_id, display_name, model_name, total_pnl, "
+        "total_trades, win_rate, max_drawdown, last_run_at, "
+        "created_at FROM bots WHERE status = 'active' "
+        "ORDER BY total_pnl DESC"
+    ).fetchall()
+
+    result = []
+    for (
+        bot_id, name, model, pnl, trades, wr, dd,
+        last_run, created,
+    ) in bots:
+        # Equity curve (last 30 snapshots)
+        snaps = db.execute(
+            "SELECT timestamp, total_portfolio_value, cash_balance, "
+            "realized_pnl, unrealized_pnl "
+            "FROM portfolio_snapshots WHERE bot_id = ? "
+            "ORDER BY timestamp DESC LIMIT 30",
+            [bot_id],
+        ).fetchall()
+        equity = [
+            {
+                "ts": str(s[0]),
+                "value": round(s[1] or 0, 2),
+                "cash": round(s[2] or 0, 2),
+                "realized": round(s[3] or 0, 2),
+                "unrealized": round(s[4] or 0, 2),
+            }
+            for s in reversed(snaps)
+        ]
+
+        # Starting balance
+        first = db.execute(
+            "SELECT total_portfolio_value FROM portfolio_snapshots "
+            "WHERE bot_id = ? ORDER BY timestamp ASC LIMIT 1",
+            [bot_id],
+        ).fetchone()
+        starting = first[0] if first and first[0] else 0.0
+        current = equity[-1]["value"] if equity else 0.0
+        ret_pct = (
+            round((current - starting) / starting * 100, 2)
+            if starting > 0
+            else 0.0
+        )
+
+        # Current positions
+        positions = db.execute(
+            "SELECT ticker, qty, avg_entry_price FROM positions "
+            "WHERE bot_id = ?",
+            [bot_id],
+        ).fetchall()
+
+        # Recent trades (last 10)
+        recent = db.execute(
+            "SELECT id, ticker, side, qty, price, filled_at, signal "
+            "FROM orders WHERE bot_id = ? "
+            "ORDER BY created_at DESC LIMIT 10",
+            [bot_id],
+        ).fetchall()
+
+        result.append({
+            "bot_id": bot_id,
+            "display_name": name,
+            "model_name": model,
+            "total_pnl": round(pnl or 0, 2),
+            "total_trades": trades or 0,
+            "win_rate": round(wr or 0, 1),
+            "max_drawdown": round(dd or 0, 4),
+            "return_pct": ret_pct,
+            "starting_balance": round(starting, 2),
+            "current_value": round(current, 2),
+            "last_run_at": str(last_run) if last_run else None,
+            "created_at": str(created) if created else None,
+            "equity_curve": equity,
+            "positions": [
+                {
+                    "ticker": p[0],
+                    "qty": p[1],
+                    "avg_price": round(p[2], 2),
+                }
+                for p in positions
+            ],
+            "recent_trades": [
+                {
+                    "id": t[0],
+                    "ticker": t[1],
+                    "side": t[2],
+                    "qty": t[3],
+                    "price": round(t[4], 2),
+                    "filled_at": str(t[5]) if t[5] else None,
+                    "signal": t[6],
+                }
+                for t in recent
+            ],
+        })
+
+    return {"bots": result, "count": len(result)}
+
+
+@app.get("/api/dashboard/activity")
+async def dashboard_activity(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Unified trade log across ALL bots, most recent first."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT o.id, o.ticker, o.side, o.qty, o.price, "
+        "o.filled_at, o.created_at, o.signal, o.bot_id, "
+        "b.display_name "
+        "FROM orders o "
+        "LEFT JOIN bots b ON o.bot_id = b.bot_id "
+        "ORDER BY o.created_at DESC "
+        f"LIMIT {limit}"
+    ).fetchall()
+
+    trades = []
+    for r in rows:
+        # Try to extract realized_pnl from signal JSON
+        pnl = None
+        sig = r[7] or ""
+        if sig.startswith("{"):
+            try:
+                import json as _json
+                sig_data = _json.loads(sig)
+                pnl = sig_data.get("realized_pnl")
+            except Exception:
+                pass
+
+        trades.append({
+            "id": r[0],
+            "ticker": r[1],
+            "side": r[2],
+            "qty": r[3],
+            "price": round(r[4], 2),
+            "filled_at": str(r[5]) if r[5] else None,
+            "created_at": str(r[6]) if r[6] else None,
+            "realized_pnl": round(pnl, 2) if pnl else None,
+            "bot_id": r[8],
+            "bot_name": r[9] or r[8],
+        })
+
+    return {"trades": trades, "count": len(trades)}
+
+
+@app.get("/api/dashboard/institutional/movers")
+async def dashboard_institutional_movers() -> dict:
+    """Top institutional buys and sells from 13F data this quarter."""
+    db = get_db()
+
+    # Get the two most recent quarters
+    quarters = db.execute(
+        "SELECT DISTINCT filing_quarter FROM sec_13f_holdings "
+        "ORDER BY filing_quarter DESC LIMIT 2"
+    ).fetchall()
+
+    if len(quarters) < 2:
+        return {"buys": [], "sells": [], "quarter": None}
+
+    current_q = quarters[0][0]
+    prior_q = quarters[1][0]
+
+    # Current quarter holdings
+    current = db.execute(
+        "SELECT h.ticker, h.cik, f.filer_name, h.shares, h.value_usd "
+        "FROM sec_13f_holdings h "
+        "JOIN sec_13f_filers f ON h.cik = f.cik "
+        "WHERE h.filing_quarter = ?",
+        [current_q],
+    ).fetchall()
+
+    # Prior quarter holdings map: (cik, ticker) -> shares
+    prior = db.execute(
+        "SELECT cik, ticker, shares FROM sec_13f_holdings "
+        "WHERE filing_quarter = ?",
+        [prior_q],
+    ).fetchall()
+    prior_map = {(r[0], r[1]): r[2] for r in prior}
+
+    movers = []
+    for ticker, cik, fund_name, shares, value in current:
+        prev_shares = prior_map.get((cik, ticker), 0)
+        delta = (shares or 0) - (prev_shares or 0)
+        if delta == 0:
+            continue
+        movers.append({
+            "ticker": ticker,
+            "fund": fund_name,
+            "shares": shares,
+            "prev_shares": prev_shares,
+            "delta": delta,
+            "delta_pct": (
+                round(delta / prev_shares * 100, 1)
+                if prev_shares and prev_shares > 0
+                else None
+            ),
+            "value_usd": value,
+            "direction": "BUY" if delta > 0 else "SELL",
+        })
+
+    # Also detect sell-outs (in prior but not in current)
+    current_keys = {(r[1], r[0]) for r in current}  # (cik, ticker)
+    for (cik, ticker), prev_shares in prior_map.items():
+        if (cik, ticker) not in current_keys and prev_shares > 0:
+            fund_row = db.execute(
+                "SELECT filer_name FROM sec_13f_filers WHERE cik = ?",
+                [cik],
+            ).fetchone()
+            movers.append({
+                "ticker": ticker,
+                "fund": fund_row[0] if fund_row else cik,
+                "shares": 0,
+                "prev_shares": prev_shares,
+                "delta": -prev_shares,
+                "delta_pct": -100.0,
+                "value_usd": 0,
+                "direction": "SELL",
+            })
+
+    # Sort: biggest buys and biggest sells
+    buys = sorted(
+        [m for m in movers if m["direction"] == "BUY"],
+        key=lambda m: m["delta"],
+        reverse=True,
+    )[:20]
+    sells = sorted(
+        [m for m in movers if m["direction"] == "SELL"],
+        key=lambda m: m["delta"],
+    )[:20]
+
+    return {
+        "buys": buys,
+        "sells": sells,
+        "quarter": current_q,
+        "prior_quarter": prior_q,
+        "total_movers": len(movers),
+    }
+
+
 @app.get("/api/bots/{bot_id}/portfolio")
 async def get_bot_portfolio(bot_id: str) -> dict:
     """Get portfolio for a specific bot."""

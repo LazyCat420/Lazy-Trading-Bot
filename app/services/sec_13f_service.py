@@ -57,14 +57,15 @@ _QUARTER_FILING_DEADLINES = {
 # Users can extend this via the sec_13f_filers DB table.
 DEFAULT_FILERS: list[dict[str, str]] = [
     {"cik": "0001067983", "name": "Berkshire Hathaway"},
-    {"cik": "0001350694", "name": "Citadel Advisors"},
+    {"cik": "0001423053", "name": "Citadel Advisors"},
     {"cik": "0001037389", "name": "Renaissance Technologies"},
-    {"cik": "0001336528", "name": "Bridgewater Associates"},
+    {"cik": "0001350694", "name": "Bridgewater Associates"},
+    {"cik": "0001336528", "name": "Pershing Square Capital"},
     {"cik": "0001364742", "name": "Elliott Investment Management"},
     {"cik": "0001061768", "name": "Two Sigma Investments"},
     {"cik": "0001649339", "name": "Point72 Asset Management"},
     {"cik": "0001167483", "name": "DE Shaw & Co"},
-    {"cik": "0001040127", "name": "AQR Capital Management"},
+    {"cik": "0001167557", "name": "AQR Capital Management"},
     {"cik": "0001009207", "name": "Millennium Management"},
     {"cik": "0001079114", "name": "Viking Global Investors"},
     {"cik": "0001029160", "name": "Druckenmiller (Duquesne Family Office)"},
