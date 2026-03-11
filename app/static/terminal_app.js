@@ -1092,7 +1092,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 // DASHBOARD PAGE — Fidelity-style overview of all bots + markets
 // ***************************************************************
 
-const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
+const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache, monitorData }) => {
     const [summary, setSummary] = useState(null);
     const [bots, setBots] = useState([]);
     const [activity, setActivity] = useState([]);
@@ -1100,8 +1100,10 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState("bots"); // bots | activity | movers
 
+    // Detect if any bot run is active (from App-level monitorData)
+    const botsActive = monitorData?.runAllRunning || monitorData?.loopRunning || false;
+
     const fetchAll = useCallback(async () => {
-        setLoading(true);
         try {
             const [sumRes, botsRes, actRes, movRes] = await Promise.all([
                 fetch("/api/dashboard/summary").then(r => r.json()),
@@ -1117,7 +1119,14 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
         setLoading(false);
     }, []);
 
-    useEffect(() => { fetchAll(); }, [fetchAll]);
+    // Initial fetch + auto-poll while bots are running
+    useEffect(() => {
+        fetchAll();
+        if (!botsActive) return;
+        // Poll every 5s while bots are actively running
+        const interval = setInterval(fetchAll, 5000);
+        return () => clearInterval(interval);
+    }, [fetchAll, botsActive]);
 
     // Mini sparkline renderer
     const Sparkline = ({ data, width = 120, height = 32 }) => {
@@ -1796,6 +1805,15 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
     const navigate = useNavigate();
     const [sfxMuted, setSfxMuted] = useState(RetroSFX.isMuted());
 
+    // Poll module-level bot state so we can show a live indicator
+    const [botsRunning, setBotsRunning] = useState(_runAllRunning || _loopRunning);
+    useEffect(() => {
+        const check = setInterval(() => {
+            setBotsRunning(_runAllRunning || _loopRunning);
+        }, 1000);
+        return () => clearInterval(check);
+    }, []);
+
     const NavLink = ({ to, icon, label, id }) => (
         <Link to={to}
             onClick={() => RetroSFX.click()}
@@ -1829,7 +1847,18 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                     <NavLink to="/settings" icon="tune" label="Settings" id="settings" />
                     <NavLink to="/diagnostics" icon="bug_report" label="Diagnostics" id="diagnostics" />
 
-                    {/* Watchlist ticker list — shown when watchlist data is available */}
+                    {/* Global bot-running indicator — visible on ALL pages */}
+                    {botsRunning && (
+                        <Link to="/monitor" onClick={() => RetroSFX.click()}
+                            className="mt-3 mx-1 flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-colors cursor-pointer">
+                            <span className="relative flex h-2.5 w-2.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/75" />
+                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary" />
+                            </span>
+                            <span className="text-xs font-bold text-primary tracking-wide">Bots Running</span>
+                        </Link>
+                    )}
+
                     {watchlist && watchlist.length > 0 && (
                         <div className="mt-6">
                             <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Watchlist</h3>
@@ -7147,7 +7176,7 @@ const formatCell = (value, format, row) => {
 };
 
 // ── Main Data Explorer Page ────────────────────────────────────
-const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overviewCache }) => {
+const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overviewCache, monitorData }) => {
     const [expandedRow, setExpandedRow] = useState(null);
     const [activeTab, setActiveTab] = useState("youtube");
     const [rows, setRows] = useState([]);
@@ -7167,6 +7196,9 @@ const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overvi
     const [quarterFilter, setQuarterFilter] = useState("");
     const [filers, setFilers] = useState([]);  // [{cik, filer_name}]
     const searchTimeout = useRef(null);
+
+    // Detect if any bot run is active (from App-level monitorData)
+    const botsActive = monitorData?.runAllRunning || monitorData?.loopRunning || false;
 
     // Fetch filers list for the fund dropdown
     useEffect(() => {
@@ -7204,7 +7236,14 @@ const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overvi
         }
     }, [activeTab, page, pageSize, search, sort, order, cikFilter, quarterFilter]);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
+    // Initial fetch + auto-poll while bots are running
+    useEffect(() => {
+        fetchData();
+        if (!botsActive) return;
+        // Poll every 10s while bots are running (lighter than dashboard)
+        const interval = setInterval(fetchData, 10000);
+        return () => clearInterval(interval);
+    }, [fetchData, botsActive]);
 
     // Reset page & selection when switching tabs
     useEffect(() => {
@@ -7572,10 +7611,10 @@ const App = () => {
     return (
         <HashRouter>
             <Routes>
-                <Route path="/dashboard" element={<DashboardPage {...terminalData} />} />
-                <Route path="/" element={<WatchlistPage {...terminalData} />} />
-                <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} />} />
-                <Route path="/data" element={<DataExplorerPage {...terminalData} />} />
+                <Route path="/dashboard" element={<DashboardPage {...terminalData} monitorData={monitorData} />} />
+                <Route path="/" element={<WatchlistPage {...terminalData} monitorData={monitorData} />} />
+                <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} monitorData={monitorData} />} />
+                <Route path="/data" element={<DataExplorerPage {...terminalData} monitorData={monitorData} />} />
 
                 <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
                 <Route path="/settings" element={<SettingsPage />} />
