@@ -6102,6 +6102,9 @@ const DiagnosticsPage = () => {
     const [audits, setAudits] = useState([]);
     const [auditEnabled, setAuditEnabled] = useState(true);
     const [auditsLoading, setAuditsLoading] = useState(true);
+    const [pipelineEvents, setPipelineEvents] = useState([]);
+    const [eventsLoading, setEventsLoading] = useState(true);
+    const [botMap, setBotMap] = useState({});
 
     const loadStats = async () => {
         setLoading(true);
@@ -6127,15 +6130,50 @@ const DiagnosticsPage = () => {
         } catch (e) { console.error("Toggle error:", e); }
     };
 
-    useEffect(() => { loadStats(); loadAudits(); }, []);
+    const loadPipelineEvents = async () => {
+        setEventsLoading(true);
+        try {
+            const res = await fetch("/api/diagnostics/pipeline-events?limit=30");
+            if (res.ok) setPipelineEvents(await res.json());
+        } catch (e) { console.error("Pipeline events fetch error:", e); }
+        setEventsLoading(false);
+    };
+
+    const loadBots = async () => {
+        try {
+            const res = await fetch("/api/bots");
+            if (res.ok) {
+                const data = await res.json();
+                const map = {};
+                const botList = data.bots || [];
+                botList.forEach(b => map[b.bot_id] = b.display_name || b.model_name);
+                setBotMap(map);
+            }
+        } catch (e) { console.error("Bots fetch error:", e); }
+    };
+
+    useEffect(() => { loadStats(); loadAudits(); loadPipelineEvents(); loadBots(); }, []);
 
     const scoreColor = (s) => s >= 7 ? "text-green-400" : s >= 4 ? "text-yellow-400" : "text-red-400";
+
+    const renderBotName = (id) => {
+        if (!id) return "?";
+        const name = botMap[id];
+        return name ? (
+            <span className="inline-flex items-center gap-1" title={id}>
+                <span className="text-white font-bold">{name}</span>
+                <span className="text-[9px] text-text-muted opacity-60">({id})</span>
+            </span>
+        ) : (
+            <span className="text-white font-bold">{id}</span>
+        );
+    };
 
     return (
         <SidebarLayout active="diagnostics">
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
                 <h2 className="text-white font-bold text-lg">Diagnostics</h2>
-                <button onClick={() => { loadStats(); loadAudits(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
+                <button onClick={() => { loadStats(); loadAudits(); loadPipelineEvents(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-[14px]">refresh</span>
                     Refresh
                 </button>
@@ -6163,7 +6201,62 @@ const DiagnosticsPage = () => {
                             </div>
                         </div>
 
-                        {/* ── Cross-Bot Audit Reports ──────────────────── */}
+                        {/* ── Pipeline Events (parse/repair/tool log) ──── */}
+                        <div className="glass-card p-4">
+                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                <span className="material-symbols-outlined text-primary text-[16px]">terminal</span>
+                                Pipeline Events (Parse / Repair / Tools)
+                            </h3>
+                            {eventsLoading ? (
+                                <div className="text-text-muted text-xs text-center py-3">Loading...</div>
+                            ) : pipelineEvents.length === 0 ? (
+                                <div className="text-center py-4 text-text-muted">
+                                    <div className="text-xs">No pipeline events yet. Run bots to generate data.</div>
+                                </div>
+                            ) : (
+                                <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+                                    {pipelineEvents.map((evt, idx) => {
+                                        const t = evt.event_type || "";
+                                        const d = typeof evt.event_data === "string" ? JSON.parse(evt.event_data || "{}") : (evt.event_data || {});
+                                        const icon = t.includes("failed") || t.includes("forced_hold") ? "❌"
+                                            : t.includes("succeeded") || t.includes("parse_ok") ? "✅"
+                                            : t.includes("no_tools") ? "⚠️" : "🔧";
+                                        const color = t.includes("failed") || t.includes("forced_hold") ? "text-red-400"
+                                            : t.includes("succeeded") || t.includes("parse_ok") ? "text-green-400"
+                                            : t.includes("no_tools") ? "text-yellow-400" : "text-blue-400";
+                                        return (
+                                            <div key={idx} className="bg-black/30 rounded px-3 py-2 border border-border-dark/50 flex items-start gap-2">
+                                                <span className="text-sm shrink-0 mt-0.5">{icon}</span>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className={`text-[10px] font-bold font-mono ${color}`}>
+                                                            {t.replace("trade_parse:", "").replace("trading_agent:", "")}
+                                                        </span>
+                                                        <span className="text-[9px] text-text-muted shrink-0">
+                                                            {evt.created_at ? new Date(evt.created_at).toLocaleTimeString() : ""}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-[10px] text-text-muted mt-0.5">
+                                                        {d.symbol && <span className="text-white font-semibold mr-2">{d.symbol}</span>}
+                                                        {evt.bot_id && <span className="mr-2">bot: {renderBotName(evt.bot_id)}</span>}
+                                                        {d.action && <span className="text-primary mr-2">{d.action}</span>}
+                                                        {d.confidence !== undefined && <span className="mr-2">conf={d.confidence}</span>}
+                                                        {d.tools_count !== undefined && <span className="mr-2">tools={d.tools_count}</span>}
+                                                        {d.tools_used && d.tools_used.length > 0 && <span className="text-blue-300">{d.tools_used.join(", ")}</span>}
+                                                    </div>
+                                                    {d.error && (
+                                                        <div className="text-[9px] text-red-400/70 mt-1 font-mono break-all">
+                                                            {d.error.length > 200 ? d.error.substring(0, 200) + "..." : d.error}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+
                         <div className="glass-card p-4">
                             <div className="flex items-center justify-between mb-3">
                                 <h3 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
@@ -6205,10 +6298,10 @@ const DiagnosticsPage = () => {
                                                     {audit.created_at ? new Date(audit.created_at).toLocaleString() : ""}
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-1 text-[10px] text-text-muted mb-2">
-                                                <span className="text-white font-semibold">{audit.audited_bot_id || "?"}</span>
-                                                <span>audited by</span>
-                                                <span className="text-primary font-semibold">{audit.auditor_bot_id || "?"}</span>
+                                            <div className="flex items-center gap-1.5 text-[11px] text-text-muted mb-3 bg-black/40 p-2 rounded-md border border-border-dark/30">
+                                                {renderBotName(audit.audited_bot_id)}
+                                                <span className="italic opacity-60">audited by</span>
+                                                {renderBotName(audit.auditor_bot_id)}
                                             </div>
 
                                             {/* Category scores */}

@@ -11,6 +11,7 @@ If the LLM outputs a TradeAction on the first turn, no tools are called.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from app.models.trade_action import TradeAction
 from app.services.llm_service import LLMService
@@ -23,6 +24,37 @@ from app.services.trade_action_parser import parse_trade_action
 from app.utils.logger import logger
 
 _llm = LLMService()
+
+
+def _log_tool_usage(
+    symbol: str,
+    bot_id: str,
+    tools_used: list[str],
+    turns_taken: int,
+) -> None:
+    """Log tool usage to pipeline_events for diagnostics."""
+    try:
+        from app.database import get_db
+        conn = get_db()
+        event_type = "tool_usage" if tools_used else "no_tools_used"
+        conn.execute(
+            "INSERT INTO pipeline_events "
+            "(bot_id, event_type, event_data, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                bot_id,
+                f"trading_agent:{event_type}",
+                json.dumps({
+                    "symbol": symbol,
+                    "tools_used": tools_used,
+                    "tools_count": len(tools_used),
+                    "turns_taken": turns_taken,
+                }, default=str),
+                datetime.now().isoformat(),
+            ],
+        )
+    except Exception as exc:
+        logger.debug("[TradingAgent] Failed to log tool event: %s", exc)
 
 
 # ------------------------------------------------------------------
@@ -129,7 +161,8 @@ Your job: decide BUY, SELL, or HOLD based on the data provided.
 
 ## DECISION FLOW
 1. Review the context provided below.
-2. If you need more information, call a research tool (see below).
+2. Call at least 1 research tool to verify your analysis BEFORE deciding.
+   Skipping research is ONLY acceptable when data is already comprehensive.
 3. When ready, output your final trading decision as JSON.
 
 ## HOW TO CALL A RESEARCH TOOL
@@ -137,25 +170,34 @@ To use a research tool, respond with ONLY this JSON:
 {{"tool": "<tool_name>", "params": {{<tool_params>}}}}
 
 You will receive the tool result, then can call another tool or decide.
+You have {max_tools} research tool calls available.
 
 ## HOW TO OUTPUT YOUR FINAL DECISION
-When you're ready to decide, respond with ONLY this JSON:
+When you're ready to decide, respond with ONLY this JSON (no other text):
 {{
-  "action": "BUY" | "SELL" | "HOLD",
-  "symbol": "<TICKER>",
-  "confidence": 0.0 to 1.0,
-  "rationale": "1-3 sentence explanation",
-  "risk_notes": "key risks if any",
-  "risk_level": "LOW" | "MED" | "HIGH",
-  "time_horizon": "INTRADAY" | "SWING" | "POSITION"
+  "action": "BUY",
+  "symbol": "AAPL",
+  "confidence": 0.75,
+  "rationale": "explanation here",
+  "risk_notes": "risks here",
+  "risk_level": "MED",
+  "time_horizon": "SWING"
 }}
+
+## STRICT FIELD RULES (you MUST follow these exactly):
+- "action" → MUST be exactly one of: "BUY", "SELL", "HOLD" (uppercase, no other words)
+- "symbol" → MUST be a valid US stock ticker in uppercase (e.g. "AAPL", "NVDA")
+- "confidence" → MUST be a decimal number between 0.0 and 1.0 (e.g. 0.75, NOT "high")
+- "rationale" → MUST be a string, 1-3 sentences referencing data from the context
+- "risk_notes" → MUST be a string describing key risks
+- "risk_level" → MUST be exactly one of: "LOW", "MED", "HIGH" (uppercase)
+- "time_horizon" → MUST be exactly one of: "INTRADAY", "SWING", "POSITION" (uppercase)
 
 DECISION RULES:
 - Be DECISIVE. Your job is to FIND TRADES, not to avoid them.
 - Your rationale must reference at least one data point from the context.
 - You may ONLY cite numbers and facts explicitly present in the context below.
 - Do NOT use outside knowledge or training data for price targets or fundamentals.
-- You have up to {max_tools} research tool calls available. Use them wisely.
 
 WHEN TO BUY (prefer BUY when these conditions are met):
 - QUANT VERDICT conviction >= 65% → strong BUY signal, favor action.
@@ -395,8 +437,12 @@ class TradingAgent:
                 continue
 
             # ── It's a trading decision ──
-            if "action" in parsed and parsed.get("action") in ("BUY", "SELL", "HOLD"):
+            if "action" in parsed and parsed.get("action", "").upper() in ("BUY", "SELL", "HOLD"):
                 final_raw = raw_text
+
+                # Log tool usage to DB for diagnostics
+                _log_tool_usage(symbol, bot_id, tools_used, turn + 1)
+
                 if tools_used:
                     logger.info(
                         "[TradingAgent] %s decided %s after %d research tool calls: %s",

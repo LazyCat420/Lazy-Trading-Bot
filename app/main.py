@@ -2940,6 +2940,33 @@ async def toggle_cross_audit() -> dict:
     }
 
 
+@app.get("/api/diagnostics/pipeline-events")
+async def get_pipeline_events(limit: int = Query(default=50)) -> list:
+    """Get recent pipeline events (parse failures, repairs, tool usage)."""
+    from app.database import get_db
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT bot_id, event_type, event_data, created_at "
+            "FROM pipeline_events "
+            "WHERE event_type LIKE 'trade_parse:%' OR event_type LIKE 'trading_agent:%' "
+            "ORDER BY created_at DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+        cols = ["bot_id", "event_type", "event_data", "created_at"]
+        events = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            d["created_at"] = str(d["created_at"]) if d["created_at"] else None
+            try:
+                d["event_data"] = json.loads(d["event_data"]) if d["event_data"] else {}
+            except (json.JSONDecodeError, TypeError):
+                pass
+            events.append(d)
+        return events
+    except Exception:
+        return []
+
 @app.post("/api/bots/{bot_id}/reset")
 async def reset_bot_portfolio(
     bot_id: str,

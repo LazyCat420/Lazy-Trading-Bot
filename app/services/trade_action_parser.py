@@ -6,11 +6,13 @@ Flow:
   3. If validation fails → LLM repair prompt (low temperature) → re-parse
   4. Post-parse: run symbol through FilterPipeline
   5. If symbol fails → force HOLD + log rejection
+  6. All parse/repair events logged to pipeline_events for diagnostics
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from app.models.trade_action import TradeAction
 from app.services.llm_service import LLMService
@@ -36,6 +38,31 @@ _REPAIR_SCHEMA = (
 )
 
 
+def _log_parse_event(
+    symbol: str,
+    bot_id: str,
+    event_type: str,
+    details: dict,
+) -> None:
+    """Log a parse/repair event to pipeline_events for diagnostics."""
+    try:
+        from app.database import get_db
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO pipeline_events "
+            "(bot_id, event_type, event_data, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                bot_id,
+                f"trade_parse:{event_type}",
+                json.dumps({"symbol": symbol, **details}, default=str),
+                datetime.now().isoformat(),
+            ],
+        )
+    except Exception as exc:
+        logger.debug("[TradeActionParser] Failed to log event: %s", exc)
+
+
 async def parse_trade_action(
     raw_llm_text: str,
     bot_id: str,
@@ -58,14 +85,31 @@ async def parse_trade_action(
     cleaned = LLMService.clean_json_response(raw_llm_text)
 
     # ── Step 2: Try to parse ──────────────────────────────────────
-    action = _try_parse(cleaned, bot_id, symbol)
+    action, error = _try_parse(cleaned, bot_id, symbol)
     if action is not None:
+        _log_parse_event(symbol, bot_id, "parse_ok", {
+            "action": action.action,
+            "confidence": action.confidence,
+            "attempt": 0,
+        })
         return _post_validate(action, bot_id)
+
+    # ── Log the broken JSON and error ─────────────────────────────
+    logger.warning(
+        "[TradeActionParser] ❌ Parse FAILED for %s — error: %s | raw (first 500 chars): %s",
+        symbol,
+        error,
+        cleaned[:500],
+    )
+    _log_parse_event(symbol, bot_id, "parse_failed", {
+        "error": str(error),
+        "raw_json_preview": cleaned[:500],
+    })
 
     # ── Step 3: Repair loop ───────────────────────────────────────
     for attempt in range(max_repairs):
         logger.warning(
-            "[TradeActionParser] Repair attempt %d/%d for %s",
+            "[TradeActionParser] 🔧 Repair attempt %d/%d for %s — sending to LLM for fixing",
             attempt + 1,
             max_repairs,
             symbol,
@@ -77,20 +121,53 @@ async def parse_trade_action(
             temperature=0.1,
         )
         repaired_cleaned = LLMService.clean_json_response(repaired_text)
-        action = _try_parse(repaired_cleaned, bot_id, symbol)
+        action, repair_error = _try_parse(repaired_cleaned, bot_id, symbol)
+
         if action is not None:
             logger.info(
-                "[TradeActionParser] Repair succeeded for %s on attempt %d",
+                "[TradeActionParser] ✅ Repair SUCCEEDED for %s on attempt %d — "
+                "action=%s confidence=%.2f",
                 symbol,
                 attempt + 1,
+                action.action,
+                action.confidence,
             )
+            _log_parse_event(symbol, bot_id, "repair_succeeded", {
+                "attempt": attempt + 1,
+                "action": action.action,
+                "confidence": action.confidence,
+                "original_error": str(error),
+            })
             return _post_validate(action, bot_id)
+
+        logger.warning(
+            "[TradeActionParser] ❌ Repair attempt %d FAILED for %s — "
+            "error: %s | repaired (first 500 chars): %s",
+            attempt + 1,
+            symbol,
+            repair_error,
+            repaired_cleaned[:500],
+        )
+        _log_parse_event(symbol, bot_id, "repair_failed", {
+            "attempt": attempt + 1,
+            "error": str(repair_error),
+            "repaired_json_preview": repaired_cleaned[:500],
+        })
 
     # ── Step 4: Give up → forced HOLD ─────────────────────────────
     logger.error(
-        "[TradeActionParser] All repair attempts failed for %s — forcing HOLD",
+        "[TradeActionParser] 🚫 All %d repair attempts failed for %s — "
+        "forcing HOLD. Original error: %s",
+        max_repairs,
         symbol,
+        error,
     )
+    _log_parse_event(symbol, bot_id, "forced_hold", {
+        "max_repairs_exhausted": max_repairs,
+        "original_error": str(error),
+        "raw_json_preview": cleaned[:500],
+    })
+
     return TradeAction(
         bot_id=bot_id,
         symbol=symbol.upper(),
@@ -106,16 +183,20 @@ def _try_parse(
     cleaned_json: str,
     bot_id: str,
     expected_symbol: str,
-) -> TradeAction | None:
-    """Attempt to parse cleaned JSON into a TradeAction. Returns None on failure."""
+) -> tuple[TradeAction | None, str | None]:
+    """Attempt to parse cleaned JSON into a TradeAction.
+
+    Returns:
+        (TradeAction, None) on success
+        (None, error_message) on failure
+    """
     try:
         data = json.loads(cleaned_json)
-    except (json.JSONDecodeError, TypeError):
-        logger.debug("[TradeActionParser] json.loads() failed")
-        return None
+    except (json.JSONDecodeError, TypeError) as exc:
+        return None, f"json.loads() failed: {exc}"
 
     if not isinstance(data, dict):
-        return None
+        return None, f"Expected dict, got {type(data).__name__}: {str(data)[:200]}"
 
     # Backfill bot_id and symbol if LLM didn't include them
     data.setdefault("bot_id", bot_id)
@@ -129,11 +210,31 @@ def _try_parse(
     if isinstance(data.get("action"), str):
         data["action"] = data["action"].strip().upper()
 
+    # Normalize confidence to float
+    conf = data.get("confidence")
+    if isinstance(conf, str):
+        try:
+            data["confidence"] = float(conf)
+        except ValueError:
+            # Map text to numbers
+            conf_map = {"low": 0.3, "medium": 0.5, "high": 0.8, "very high": 0.9}
+            data["confidence"] = conf_map.get(conf.lower(), 0.5)
+
     try:
-        return TradeAction.model_validate(data)
+        return TradeAction.model_validate(data), None
     except Exception as exc:
-        logger.debug("[TradeActionParser] Pydantic validation failed: %s", exc)
-        return None
+        # Build a diagnostic message showing what fields are present/missing
+        fields_present = list(data.keys())
+        fields_values = {
+            k: f"{type(v).__name__}={str(v)[:50]}"
+            for k, v in data.items()
+            if k != "bot_id"
+        }
+        return None, (
+            f"Pydantic validation: {exc} | "
+            f"fields_present={fields_present} | "
+            f"values={fields_values}"
+        )
 
 
 def _post_validate(action: TradeAction, bot_id: str) -> TradeAction:

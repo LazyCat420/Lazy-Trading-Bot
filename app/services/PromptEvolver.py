@@ -29,11 +29,19 @@ PERFORMANCE DATA from last trading run:
 - Valid tickers (confirmed real): {valid_tickers}
 - Trades placed: {trades_placed}
 - Profitable trades: {profitable_trades}
+- Parse failures (LLM output couldn't be parsed): {parse_failures}
+- Repair successes (broken JSON fixed): {repair_successes}
+- Repair failures (broken JSON couldn't be fixed): {repair_failures}
+- Forced HOLDs (gave up parsing): {forced_holds}
+- Decisions WITHOUT research tools: {no_tools_decisions}
+- Decisions WITH research tools: {tool_decisions}
 
 TASK: Improve the prompt above based on the performance data.
 - If many extractions returned empty, make the prompt better at finding tickers
 - If many tickers were invalid, add stricter validation instructions
 - If trades lost money, consider adding more risk-awareness instructions
+- If parse failures are high, simplify the output format instructions
+- If no-tools decisions are high, make the prompt encourage tool usage
 - Keep the prompt CONCISE — under 200 words
 - Return ONLY the improved prompt text, nothing else."""
 
@@ -143,7 +151,27 @@ class PromptEvolver:
       "valid_tickers": valid_tickers,
       "trades_placed": trades_placed,
       "profitable_trades": profitable_trades,
+      "parse_failures": self._count_events("trade_parse:parse_failed"),
+      "repair_successes": self._count_events("trade_parse:repair_succeeded"),
+      "repair_failures": self._count_events("trade_parse:repair_failed"),
+      "forced_holds": self._count_events("trade_parse:forced_hold"),
+      "no_tools_decisions": self._count_events("trading_agent:no_tools_used"),
+      "tool_decisions": self._count_events("trading_agent:tool_usage"),
     }
+
+  def _count_events(self, event_type: str) -> int:
+    """Count pipeline events of a given type in the last 24 hours."""
+    conn = get_db()
+    try:
+      row = conn.execute(
+        "SELECT COUNT(*) FROM pipeline_events "
+        "WHERE bot_id = ? AND event_type = ? "
+        "AND created_at > CURRENT_TIMESTAMP - INTERVAL 24 HOUR",
+        [self.bot_id, event_type],
+      ).fetchone()
+      return row[0] if row else 0
+    except Exception:
+      return 0
 
   async def _evolve_step(
     self, step_name: str, stats: dict[str, Any],
