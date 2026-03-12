@@ -39,6 +39,7 @@ class AutonomousLoop:
         self.deep_analysis = DeepAnalysisService()
         self.max_tickers = max_tickers  # Cap discovery results for faster runs
         self.price_monitor = PriceMonitor(self.paper_trader)
+        self._cancelled = False
 
         # Live state the frontend can poll
         self._state: dict[str, Any] = {
@@ -57,7 +58,17 @@ class AutonomousLoop:
 
     def get_status(self) -> dict:
         """Return current loop state (for polling)."""
-        return dict(self._state)
+        status = dict(self._state)
+        status["cancelled"] = self._cancelled
+        return status
+
+    def cancel(self) -> None:
+        """Request graceful cancellation — loop stops after current phase."""
+        self._cancelled = True
+        self._state["running"] = False
+        self._state["phase"] = "cancelled"
+        self._log("⛔ Emergency stop requested — cancelling after current phase")
+        logger.info("[AutoLoop] Cancel requested for bot=%s", self.bot_id)
 
     async def run_full_loop(self) -> dict:
         """Execute the complete autonomous pipeline.
@@ -814,6 +825,11 @@ class AutonomousLoop:
         coro_fn: Any,
     ) -> dict:
         """Execute a phase with timing, error handling, and state updates."""
+        # ── Cancellation gate: skip phase if stop was requested ──
+        if self._cancelled:
+            self._log(f"⛔ Skipping {phase_name} — emergency stop active")
+            return {"status": "cancelled", "duration_seconds": 0}
+
         self._state["phase"] = phase_name
         self._state["phases"][phase_name] = "running"
         self._log(description)
@@ -888,6 +904,7 @@ class AutonomousLoop:
         self._state["log"].append(entry)
 
     def _reset_state(self) -> None:
+        self._cancelled = False
         self._state = {
             "running": True,
             "phase": "starting",

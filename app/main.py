@@ -1560,6 +1560,107 @@ async def run_trading_phase() -> dict:
     return {"status": "started", "phase": "trading"}
 
 
+# ── Stop / Emergency Stop / Shutdown ──────────────────────────────────
+
+
+async def _unload_ollama_model() -> None:
+    """Tell Ollama to unload the current model from VRAM."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.OLLAMA_URL.rstrip('/')}/api/generate",
+                json={"model": settings.LLM_MODEL, "keep_alive": "0"},
+            )
+            logger.info(
+                "[Shutdown] Unloaded Ollama model: %s", settings.LLM_MODEL,
+            )
+    except Exception as exc:
+        logger.warning("[Shutdown] Failed to unload Ollama model: %s", exc)
+
+
+async def _do_emergency_stop() -> dict:
+    """Core logic shared by the emergency-stop endpoint and shutdown handler."""
+    global _loop, _loop_task
+
+    from app.services.llm_service import (
+        close_shared_client,
+        request_shutdown,
+    )
+
+    # 1. Signal all LLM operations to stop
+    request_shutdown()
+
+    # 2. Cancel the single-bot loop
+    if _loop._state.get("running"):
+        _loop.cancel()
+    if _loop_task and not _loop_task.done():
+        _loop_task.cancel()
+        logger.info("[EmergencyStop] Cancelled single-bot loop task")
+
+    # 3. Cancel the run-all loop
+    global _run_all_task
+    if _run_all_state.get("running"):
+        _run_all_state["running"] = False
+        _run_all_state["current_phase"] = "stopped"
+    if _run_all_task and not _run_all_task.done():
+        _run_all_task.cancel()
+        logger.info("[EmergencyStop] Cancelled run-all task")
+
+    # 4. Close the shared HTTP client (aborts in-flight requests)
+    await close_shared_client()
+
+    # 5. Unload the Ollama model from VRAM
+    await _unload_ollama_model()
+
+    # 6. Re-enable LLM operations for future use
+    from app.services.llm_service import cancel_shutdown
+    cancel_shutdown()
+
+    logger.info("[EmergencyStop] All operations stopped")
+    return {"status": "stopped", "message": "All operations cancelled, model unloaded"}
+
+
+@app.post("/api/bot/stop-loop")
+async def stop_loop() -> dict:
+    """Stop the current bot loop gracefully."""
+    global _loop, _loop_task
+
+    if not _loop._state.get("running"):
+        return {"status": "not_running"}
+
+    _loop.cancel()
+    if _loop_task and not _loop_task.done():
+        _loop_task.cancel()
+
+    # Unload the model to free VRAM
+    await _unload_ollama_model()
+
+    return {"status": "stopped", "message": "Loop cancelled, model unloaded"}
+
+
+@app.post("/api/bot/emergency-stop")
+async def emergency_stop() -> dict:
+    """Nuclear stop — cancel ALL bot operations and unload the Ollama model.
+
+    Stops: single-bot loop, run-all, scheduler jobs, in-flight LLM requests.
+    """
+    return await _do_emergency_stop()
+
+
+@app.on_event("shutdown")
+async def _on_server_shutdown() -> None:
+    """Called when the server is killed (Ctrl+C, SIGTERM, etc).
+
+    Ensures Ollama stops processing by unloading the model and closing
+    all HTTP connections.
+    """
+    logger.info("[Shutdown] Server shutting down — stopping all operations")
+    try:
+        await _do_emergency_stop()
+    except Exception as exc:
+        logger.warning("[Shutdown] Cleanup error: %s", exc)
+    logger.info("[Shutdown] Cleanup complete")
+
 # ══════════════════════════════════════════════════════════════════════
 # AUTONOMOUS SCHEDULER API (Phase 4)
 # ══════════════════════════════════════════════════════════════════════

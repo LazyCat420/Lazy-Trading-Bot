@@ -517,10 +517,10 @@ class TradingAgent:
         if quant:
             parts.append(f"\nQUANT SIGNALS:\n{quant}")
 
-        # News
+        # Analysis digest (chart, fundamentals, risk — from dossier)
         news = ctx.get("news_summary", "")
         if news:
-            parts.append(f"\nNEWS DIGEST:\n{news}")
+            parts.append(f"\nANALYSIS DIGEST:\n{news}")
 
         # RAG-retrieved market intelligence
         rag = ctx.get("rag_context", "")
@@ -528,6 +528,16 @@ class TradingAgent:
             parts.append(
                 f"\nMARKET INTELLIGENCE (retrieved context from recent market sources):\n{rag}"
             )
+
+        # Delta since last decision — what changed since the bot last looked
+        delta = ctx.get("delta_since_last", "")
+        if delta:
+            parts.append(f"\nSINCE LAST DECISION:\n{delta}")
+
+        # YouTube catalyst intelligence — fresh analyst perspectives
+        yt_intel = ctx.get("youtube_intel", "")
+        if yt_intel:
+            parts.append(f"\nCATALYST INTELLIGENCE (from recent YouTube analysis):\n{yt_intel}")
 
         # Portfolio context
         cash = ctx.get("portfolio_cash", 0)

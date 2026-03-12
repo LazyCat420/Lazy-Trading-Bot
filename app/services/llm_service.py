@@ -35,6 +35,11 @@ _shared_client: httpx.AsyncClient | None = None
 _llm_queue: asyncio.Semaphore | None = None
 _llm_queue_waiters: int = 0  # Track how many requests are waiting
 
+# ── Graceful Shutdown Flag ────────────────────────────────────────────
+# When True, all new LLM requests are skipped and in-flight requests
+# are cancelled as soon as possible.
+_shutdown_requested: bool = False
+
 
 def _get_llm_queue() -> asyncio.Semaphore:
     """Lazy-init the LLM request queue (must be called inside an event loop)."""
@@ -42,6 +47,30 @@ def _get_llm_queue() -> asyncio.Semaphore:
     if _llm_queue is None:
         _llm_queue = asyncio.Semaphore(1)
     return _llm_queue
+
+
+def request_shutdown() -> None:
+    """Signal all LLM operations to stop. Closes the shared HTTP client
+    to abort any in-flight request to Ollama/Prism."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("[LLM] Shutdown requested — cancelling all LLM operations")
+
+
+def cancel_shutdown() -> None:
+    """Reset the shutdown flag so LLM operations can resume."""
+    global _shutdown_requested
+    _shutdown_requested = False
+    logger.info("[LLM] Shutdown cancelled — LLM operations resumed")
+
+
+async def close_shared_client() -> None:
+    """Close the shared httpx client, aborting any in-flight HTTP request."""
+    global _shared_client
+    if _shared_client and not _shared_client.is_closed:
+        await _shared_client.aclose()
+        _shared_client = None
+        logger.info("[LLM] Shared HTTP client closed")
 
 
 async def _get_shared_client() -> httpx.AsyncClient:
@@ -145,17 +174,66 @@ class LLMService:
         import time as _time
 
         t0 = _time.monotonic()
-        content = await self._call_prism(
-            effective_msgs,
-            response_format,
-            max_tokens,
-            effective_temp,
-            schema=schema,
-            audit_ticker=audit_ticker,
-            audit_step=audit_step,
-            audit_cycle_id=audit_cycle_id,
-        )
+        try:
+            content = await self._call_prism(
+                effective_msgs,
+                response_format,
+                max_tokens,
+                effective_temp,
+                schema=schema,
+                audit_ticker=audit_ticker,
+                audit_step=audit_step,
+                audit_cycle_id=audit_cycle_id,
+            )
+        except (TimeoutError, Exception) as exc:
+            content = ""
+            logger.warning(
+                "[LLM] Primary model %s failed: %s — trying fallback",
+                self.model, str(exc)[:100],
+            )
+
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
+
+        # ── Model fallback: if primary returned empty/failed, try smaller model ──
+        FALLBACK_MODEL = "nemotron-3-nano:latest"
+        if not content.strip() and self.model != FALLBACK_MODEL:
+            logger.warning(
+                "[LLM] Primary model %s returned empty after %.1fs — "
+                "falling back to %s",
+                self.model, elapsed_ms / 1000, FALLBACK_MODEL,
+            )
+            original_model = self.model
+            self.model = FALLBACK_MODEL
+            try:
+                t1 = _time.monotonic()
+                content = await self._call_prism(
+                    effective_msgs,
+                    response_format,
+                    max_tokens,
+                    effective_temp,
+                    schema=schema,
+                    audit_ticker=audit_ticker,
+                    audit_step=f"{audit_step}_fallback",
+                    audit_cycle_id=audit_cycle_id,
+                )
+                fb_elapsed = int((_time.monotonic() - t1) * 1000)
+                if content.strip():
+                    logger.info(
+                        "[LLM] Fallback %s succeeded (%.1fs, %d chars)",
+                        FALLBACK_MODEL, fb_elapsed / 1000, len(content),
+                    )
+                else:
+                    logger.error(
+                        "[LLM] Fallback %s also returned empty",
+                        FALLBACK_MODEL,
+                    )
+            except Exception as fb_exc:
+                logger.error(
+                    "[LLM] Fallback %s also failed: %s",
+                    FALLBACK_MODEL, str(fb_exc)[:100],
+                )
+            finally:
+                self.model = original_model  # Always restore
 
         # Non-blocking audit log (never crashes the pipeline)
         try:
@@ -215,6 +293,14 @@ class LLMService:
         (some models can't handle grammar constraints), the call is retried
         with text format and explicit JSON instructions.
         """
+        # ── Shutdown gate: skip immediately if shutdown requested ──
+        if _shutdown_requested:
+            logger.info(
+                "[LLM] Shutdown in progress — skipping request (%s %s)",
+                audit_ticker or self.model, audit_step or "",
+            )
+            return ""
+
         # ── Queue: serialize all LLM requests ──────────────────
         # Only one request hits Ollama at a time; others wait in
         # a FIFO queue to maximize single-GPU throughput.

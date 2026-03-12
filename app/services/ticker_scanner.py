@@ -21,7 +21,7 @@ from app.utils.logger import logger
 
 # Maximum chars of transcript to send to the LLM per video.
 # Keeps prompt size reasonable while capturing the key content.
-_MAX_TRANSCRIPT_CHARS = 8000
+_MAX_TRANSCRIPT_CHARS = 16000
 
 _EXTRACTION_PROMPT = """You are a financial data extraction engine. Your job is to extract EVERY piece of investment-relevant information from this YouTube transcript. Be thorough — do NOT skip information.
 

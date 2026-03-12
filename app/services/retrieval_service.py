@@ -127,18 +127,23 @@ class RetrievalService:
                 "score": round(float(score), 4),
             })
 
-        # Boost decision scores by 10% so the bot's own past
-        # experience is prioritized in retrieval results
-        for chunk in results:
-            if chunk["source_type"] == "decision":
-                chunk["score"] = min(
-                    round(chunk["score"] * 1.1, 4), 1.0,
-                )
-
-        # Deduplicate: keep only best chunk per (source_type, source_id)
+        # ── Deduplicate + source-type diversity ───────────────────
+        # Remove near-identical chunks, then cap past decisions
+        # so they don't crowd out YouTube/news/Reddit intel.
         deduped = self._deduplicate(results)
+        MAX_DECISIONS = 2
+        decisions = [c for c in deduped if c["source_type"] == "decision"]
+        non_decisions = [c for c in deduped if c["source_type"] != "decision"]
 
-        return deduped[:top_k]
+        # Take at most MAX_DECISIONS past decisions + fill rest with diverse sources
+        capped_decisions = decisions[:MAX_DECISIONS]
+        remaining_slots = top_k - len(capped_decisions)
+        diverse_results = capped_decisions + non_decisions[:remaining_slots]
+
+        # Re-sort by score so LLM sees most relevant first
+        diverse_results.sort(key=lambda c: c["score"], reverse=True)
+
+        return diverse_results[:top_k]
 
     async def retrieve_for_trading(
         self,
@@ -197,16 +202,35 @@ class RetrievalService:
     ) -> list[dict[str, Any]]:
         """Keep only the highest-scored chunk per (source_type, source_id).
 
-        This prevents showing 3 overlapping chunks from the same
-        YouTube transcript.
+        Also collapses near-identical text (>85% overlap) to prevent
+        the echo chamber of repeated HOLD rationales.
         """
+        from difflib import SequenceMatcher
+
+        # Phase 1: dedup by (source_type, source_id)
         seen: dict[tuple[str, str], dict[str, Any]] = {}
         for chunk in chunks:
             key = (chunk["source_type"], chunk["source_id"])
             if key not in seen or chunk["score"] > seen[key]["score"]:
                 seen[key] = chunk
-        # Return sorted by score descending
-        return sorted(seen.values(), key=lambda c: c["score"], reverse=True)
+
+        candidates = sorted(seen.values(), key=lambda c: c["score"], reverse=True)
+
+        # Phase 2: collapse near-identical text (>85% similarity)
+        final: list[dict[str, Any]] = []
+        for chunk in candidates:
+            is_dup = False
+            for existing in final:
+                ratio = SequenceMatcher(
+                    None, chunk["text"][:300], existing["text"][:300]
+                ).ratio()
+                if ratio > 0.85:
+                    is_dup = True
+                    break
+            if not is_dup:
+                final.append(chunk)
+
+        return final
 
     @staticmethod
     def _format_chunks(

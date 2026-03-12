@@ -70,11 +70,20 @@ class PeerFetcher:
                 )
 
             if isinstance(peers, list):
-                # Filter to valid-looking symbols and uppercase
+                # Known junk symbols that LLMs hallucinate as "peers"
+                JUNK_SYMBOLS = {
+                    "SPY", "QQQ", "DIA", "IWM", "VOO", "VTI", "ARKK",
+                    "DJI", "SPX", "IXIC", "VIX", "BTC", "ETH", "USD",
+                }
+                # Filter to valid-looking symbols, exclude self and junk
                 candidates = [
                     str(p).strip().upper()
                     for p in peers
-                    if isinstance(p, str) and 1 <= len(p.strip()) <= 5 and p.strip().isalpha()
+                    if isinstance(p, str)
+                    and 2 <= len(p.strip()) <= 5
+                    and p.strip().isalpha()
+                    and str(p).strip().upper() != ticker.upper()
+                    and str(p).strip().upper() not in JUNK_SYMBOLS
                 ][:5]  # Allow up to 5 candidates for validation
 
                 if candidates:

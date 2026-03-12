@@ -1849,14 +1849,34 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
 
                     {/* Global bot-running indicator — visible on ALL pages */}
                     {botsRunning && (
-                        <Link to="/monitor" onClick={() => RetroSFX.click()}
-                            className="mt-3 mx-1 flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-colors cursor-pointer">
-                            <span className="relative flex h-2.5 w-2.5">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/75" />
-                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary" />
-                            </span>
-                            <span className="text-xs font-bold text-primary tracking-wide">Bots Running</span>
-                        </Link>
+                        <div className="mt-3 mx-1 flex flex-col gap-1.5">
+                            <Link to="/monitor" onClick={() => RetroSFX.click()}
+                                className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-colors cursor-pointer">
+                                <span className="relative flex h-2.5 w-2.5">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/75" />
+                                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary" />
+                                </span>
+                                <span className="text-xs font-bold text-primary tracking-wide">Bots Running</span>
+                            </Link>
+                            <button
+                                onClick={async () => {
+                                    if (!window.confirm("⛔ Emergency Stop — This will cancel ALL running bots and unload the model from VRAM. Continue?")) return;
+                                    try {
+                                        const res = await fetch("/api/bot/emergency-stop", { method: "POST" });
+                                        const data = await res.json();
+                                        console.log("[EmergencyStop]", data);
+                                        RetroSFX.click();
+                                    } catch (e) {
+                                        console.error("[EmergencyStop] Failed:", e);
+                                    }
+                                }}
+                                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/15 border border-red-500/40 hover:bg-red-500/30 transition-colors cursor-pointer"
+                                title="Cancel all running bots and unload model from VRAM"
+                            >
+                                <span className="material-symbols-outlined text-red-400" style={{ fontSize: "16px" }}>stop_circle</span>
+                                <span className="text-xs font-bold text-red-400 tracking-wide">Emergency Stop</span>
+                            </button>
+                        </div>
                     )}
 
                     {watchlist && watchlist.length > 0 && (

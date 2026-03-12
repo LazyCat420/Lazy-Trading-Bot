@@ -397,15 +397,16 @@ class TradingPipelineService:
                 quant_parts.append(f"Sharpe: {sc['sharpe_ratio']:.2f}")
             context["quant_summary"] = " | ".join(quant_parts) if quant_parts else ""
 
-            # News/analysis digest
+            # Analysis digest (chart, fundamentals, risk — no longer truncated;
+            # context budget guard in TradingAgent handles overflow)
             parts = []
             if dossier.get("executive_summary"):
-                parts.append(dossier["executive_summary"][:300])
+                parts.append(f"CHART ANALYSIS:\n{dossier['executive_summary']}")
             if dossier.get("bull_case"):
-                parts.append(f"BULL: {dossier['bull_case'][:150]}")
+                parts.append(f"FUNDAMENTALS:\n{dossier['bull_case']}")
             if dossier.get("bear_case"):
-                parts.append(f"BEAR: {dossier['bear_case'][:150]}")
-            context["news_summary"] = "\n".join(parts) if parts else ""
+                parts.append(f"RISK PROFILE:\n{dossier['bear_case']}")
+            context["news_summary"] = "\n\n".join(parts) if parts else ""
 
             # Dossier conviction + signal for the trading agent
             context["dossier_conviction"] = dossier.get("conviction_score", 0)
@@ -479,6 +480,78 @@ class TradingPipelineService:
                 exc,
             )
             context["rag_context"] = ""
+
+        # ── Delta indicators from last decision ──────────────
+        # Shows the LLM what changed since it last analyzed this ticker,
+        # breaking the HOLD stagnation loop.
+        try:
+            from app.database import get_db as _get_db
+
+            _db = _get_db()
+            last_dec = _db.execute(
+                "SELECT action, confidence, ts, rationale "
+                "FROM trade_decisions "
+                "WHERE symbol = ? AND bot_id = ? "
+                "ORDER BY ts DESC LIMIT 1",
+                [ticker, self._bot_id or "default"],
+            ).fetchone()
+            if last_dec and context.get("last_price"):
+                # Get the price at the time of last decision
+                last_action, last_conf, last_ts, last_rationale = last_dec
+                last_price_row = _db.execute(
+                    "SELECT close FROM technicals "
+                    "WHERE ticker = ? AND date <= ? "
+                    "ORDER BY date DESC LIMIT 1",
+                    [ticker, last_ts],
+                ).fetchone()
+                last_price_at_decision = float(last_price_row[0]) if last_price_row and last_price_row[0] else 0
+                current_price = context["last_price"]
+                if last_price_at_decision > 0:
+                    price_delta_pct = ((current_price / last_price_at_decision) - 1) * 100
+                    context["delta_since_last"] = (
+                        f"Last decision: {last_action} @ ${last_price_at_decision:.2f} "
+                        f"(confidence={last_conf:.0%}) on {str(last_ts)[:10]}\n"
+                        f"Price since: {price_delta_pct:+.2f}% "
+                        f"(${last_price_at_decision:.2f} → ${current_price:.2f})"
+                    )
+                else:
+                    context["delta_since_last"] = (
+                        f"Last decision: {last_action} (confidence={last_conf:.0%}) "
+                        f"on {str(last_ts)[:10]}"
+                    )
+            else:
+                context["delta_since_last"] = ""
+        except Exception as exc:
+            logger.debug("[TradingPipeline] Delta indicators failed for %s: %s", ticker, exc)
+            context["delta_since_last"] = ""
+
+        # ── YouTube catalyst intelligence ─────────────────────
+        # Inject recent YouTube trading data that RAG may have missed.
+        try:
+            from app.database import get_db as _get_db2
+
+            _db2 = _get_db2()
+            yt_rows = _db2.execute(
+                "SELECT title, channel, trading_data "
+                "FROM youtube_trading_data "
+                "WHERE ticker = ? "
+                "ORDER BY collected_at DESC LIMIT 3",
+                [ticker],
+            ).fetchall()
+            if yt_rows:
+                yt_parts = []
+                for yt in yt_rows:
+                    title, channel, data = yt
+                    snippet = f"[{channel}] {title}"
+                    if data and len(str(data)) > 10:
+                        snippet += f"\n{str(data)[:500]}"
+                    yt_parts.append(snippet)
+                context["youtube_intel"] = "\n\n".join(yt_parts)
+            else:
+                context["youtube_intel"] = ""
+        except Exception as exc:
+            logger.debug("[TradingPipeline] YouTube intel failed for %s: %s", ticker, exc)
+            context["youtube_intel"] = ""
 
         # ── Portfolio context ─────────────────────────────────
         context["portfolio_cash"] = portfolio.get("cash_balance", 0)

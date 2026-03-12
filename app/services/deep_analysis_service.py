@@ -201,9 +201,9 @@ class DeepAnalysisService:
             ticker=ticker,
             quant_scorecard=scorecard,
             signal_summary=self._build_signal_summary(scorecard),
-            executive_summary=price_analysis[:500] if price_analysis else "",
-            bull_case=fund_analysis[:300] if fund_analysis else "",
-            bear_case=risk_analysis[:300] if risk_analysis else "",
+            executive_summary=price_analysis[:2000] if price_analysis else "",
+            bull_case=fund_analysis[:1000] if fund_analysis else "",
+            bear_case=risk_analysis[:1000] if risk_analysis else "",
             conviction_score=conviction,
         )
 
