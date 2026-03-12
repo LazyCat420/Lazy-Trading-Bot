@@ -282,14 +282,60 @@ class TickerScanner:
         title: str,
         channel: str,
         transcript: str,
+        *,
+        bot_id: str = "default",
     ) -> tuple[list[str], dict | None]:
         """Ask the LLM to list stock tickers and extract trading data.
 
+        Uses the per-model AgenticExtractor pipeline. Falls back to the
+        legacy hardcoded prompt if agentic extraction fails.
+
         Returns (tickers, trading_data) tuple.
         """
-        # Truncate transcript to keep prompt reasonable
-        truncated = transcript[:_MAX_TRANSCRIPT_CHARS]
+        # ── Try agentic extraction first ──────────────────────────
+        try:
+            from app.services.AgenticExtractor import AgenticExtractor
 
+            extractor = AgenticExtractor(bot_id=bot_id)
+            result = await extractor.extract_from_transcript(
+                transcript=transcript[:_MAX_TRANSCRIPT_CHARS],
+                title=title,
+                channel=channel,
+            )
+
+            tickers = result.get("tickers", [])
+            trading_data = result.get("trading_data")
+
+            # Clean and validate tickers
+            if isinstance(tickers, list):
+                tickers = [
+                    t.upper().strip()
+                    for t in tickers
+                    if isinstance(t, str)
+                    and 1 <= len(t.strip()) <= 5
+                    and t.strip().isalpha()
+                ]
+
+            steps = result.get("extraction_meta", {}).get("steps_completed", 0)
+            logger.info(
+                "[YouTube Scanner] Agentic extracted %d tickers from '%s' "
+                "(%d steps)%s",
+                len(tickers),
+                title[:40],
+                steps,
+                " (+ trading data)" if trading_data else "",
+            )
+            return tickers, trading_data
+
+        except Exception as e:
+            logger.warning(
+                "[YouTube Scanner] Agentic extraction failed for '%s': %s — "
+                "falling back to legacy prompt",
+                title[:40], e,
+            )
+
+        # ── Legacy fallback: hardcoded prompt ─────────────────────
+        truncated = transcript[:_MAX_TRANSCRIPT_CHARS]
         prompt = _EXTRACTION_PROMPT.format(
             title=title,
             channel=channel,
@@ -301,17 +347,13 @@ class TickerScanner:
                 system=(
                     "You are a financial data extraction engine. "
                     "You extract stock tickers from company names AND "
-                    "pull ALL investment-relevant data points: price levels, "
-                    "valuations, analyst ratings, technicals, catalysts, risks. "
-                    "Be thorough — extract every dollar amount, percentage, "
-                    "and fact mentioned. "
-                    "Return ONLY raw, valid JSON. Do not include markdown "
-                    "formatting, code blocks like ```json, or conversational text."
+                    "pull ALL investment-relevant data points. "
+                    "Return ONLY raw, valid JSON."
                 ),
                 user=prompt,
                 response_format="json",
                 temperature=settings.LLM_DISCOVERY_TEMPERATURE,
-                audit_step="youtube_ticker_scan",
+                audit_step="youtube_ticker_scan_legacy",
                 audit_ticker=title[:60] if title else "unknown",
             )
             cleaned = LLMService.clean_json_response(raw)
@@ -321,7 +363,6 @@ class TickerScanner:
             trading_data = None
 
             if isinstance(parsed, dict):
-                # New structured format: {"tickers": [...], "trading_data": {...}}
                 raw_tickers = (
                     parsed.get("tickers")
                     or parsed.get("symbols")
@@ -339,7 +380,6 @@ class TickerScanner:
                         and t.strip().isalpha()
                     ]
             elif isinstance(parsed, list):
-                # Backwards-compatible: old-style ["AAPL", "TSLA"] array
                 tickers = [
                     t.upper().strip()
                     for t in parsed
@@ -349,7 +389,7 @@ class TickerScanner:
                 ]
 
             logger.info(
-                "[YouTube Scanner] LLM extracted %d tickers from '%s': %s%s",
+                "[YouTube Scanner] Legacy extracted %d tickers from '%s': %s%s",
                 len(tickers),
                 title[:40],
                 tickers[:10],
@@ -364,3 +404,4 @@ class TickerScanner:
                 e,
             )
             return [], None
+

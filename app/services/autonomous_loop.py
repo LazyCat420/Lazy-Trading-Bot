@@ -279,6 +279,45 @@ class AutonomousLoop:
         finally:
             clear_active_tracker()
 
+        # ── Self-improve prompts (per-model evolution) ──
+        if not self._cancelled:
+            try:
+                from app.services.PromptEvolver import PromptEvolver
+                evolver = PromptEvolver(bot_id=self.bot_id)
+                evolution_result = await evolver.evolve()
+                if evolution_result.get("evolved_steps"):
+                    steps = [s["step"] for s in evolution_result["evolved_steps"]]
+                    self._log(f"🧬 Evolved prompts: {', '.join(steps)}")
+                    report["prompt_evolution"] = evolution_result
+                else:
+                    self._log("🧬 No prompt evolution (not enough data)")
+            except Exception as exc:
+                logger.warning("[AutoLoop] Prompt evolution failed: %s", exc)
+
+        # ── Cross-bot audit (independent verification) ──
+        if not self._cancelled:
+            try:
+                from app.config import settings as _settings
+                if getattr(_settings, "CROSS_AUDIT_ENABLED", True):
+                    from app.services.CrossBotAuditor import CrossBotAuditor
+                    auditor = CrossBotAuditor()
+                    audit_result = await auditor.audit_bot_run(
+                        audited_bot_id=self.bot_id,
+                        run_report=report,
+                    )
+                    if audit_result:
+                        score = audit_result.get("overall_score", 0)
+                        auditor_name = audit_result.get("auditor_name", "?")
+                        self._log(
+                            f"🔍 Cross-audit by {auditor_name}: "
+                            f"{score:.1f}/10"
+                        )
+                        report["cross_audit"] = audit_result
+                    else:
+                        self._log("🔍 Cross-audit skipped (no other bots)")
+            except Exception as exc:
+                logger.warning("[AutoLoop] Cross-bot audit failed: %s", exc)
+
         logger.info("[AutoLoop] ✓ Full loop completed in %.1fs", elapsed)
         return report
 

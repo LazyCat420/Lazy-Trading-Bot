@@ -90,6 +90,9 @@ class Settings:
     USE_NEW_PIPELINE: bool = os.getenv("USE_NEW_PIPELINE", "true").lower() == "true"
     DRY_RUN_TRADES: bool = os.getenv("DRY_RUN_TRADES", "false").lower() == "true"
 
+    # Cross-Bot Audit: randomly select a different bot to audit after each run
+    CROSS_AUDIT_ENABLED: bool = os.getenv("CROSS_AUDIT_ENABLED", "true").lower() == "true"
+
     # ── LLM Config JSON path ──────────────────────────────────────
     LLM_CONFIG_PATH: Path = (
         Path(__file__).resolve().parent / "user_config" / "llm_config.json"

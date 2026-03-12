@@ -6099,6 +6099,9 @@ const AutobotMonitorPage = ({ monitorData }) => {
 const DiagnosticsPage = () => {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [audits, setAudits] = useState([]);
+    const [auditEnabled, setAuditEnabled] = useState(true);
+    const [auditsLoading, setAuditsLoading] = useState(true);
 
     const loadStats = async () => {
         setLoading(true);
@@ -6107,13 +6110,32 @@ const DiagnosticsPage = () => {
         setLoading(false);
     };
 
-    useEffect(() => { loadStats(); }, []);
+    const loadAudits = async () => {
+        setAuditsLoading(true);
+        try {
+            const res = await fetch("/api/audit/reports?limit=20");
+            if (res.ok) setAudits(await res.json());
+        } catch (e) { console.error("Audit fetch error:", e); }
+        setAuditsLoading(false);
+    };
+
+    const toggleAudit = async () => {
+        try {
+            const res = await fetch("/api/audit/toggle", { method: "POST" });
+            const data = await res.json();
+            setAuditEnabled(data.cross_audit_enabled);
+        } catch (e) { console.error("Toggle error:", e); }
+    };
+
+    useEffect(() => { loadStats(); loadAudits(); }, []);
+
+    const scoreColor = (s) => s >= 7 ? "text-green-400" : s >= 4 ? "text-yellow-400" : "text-red-400";
 
     return (
         <SidebarLayout active="diagnostics">
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
                 <h2 className="text-white font-bold text-lg">Diagnostics</h2>
-                <button onClick={loadStats} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
+                <button onClick={() => { loadStats(); loadAudits(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-[14px]">refresh</span>
                     Refresh
                 </button>
@@ -6121,24 +6143,114 @@ const DiagnosticsPage = () => {
             <div className="flex-1 overflow-y-auto p-6">
                 {loading ? <Spinner /> : stats && (
                     <div className="space-y-6">
-                        <div className="glass-card p-5">
-                            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                                <span className="material-symbols-outlined text-primary text-[18px]">database</span>
+                        {/* ── Database Table Sizes (compact) ────────────── */}
+                        <div className="glass-card p-4">
+                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                <span className="material-symbols-outlined text-primary text-[16px]">database</span>
                                 Database Table Sizes
                             </h3>
-                            <div className="grid grid-cols-3 gap-3">
+                            <div className="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 gap-2">
                                 {Object.entries(stats.counts || {}).map(([table, count]) => (
-                                    <div key={table} className="glass-card p-3 text-center">
-                                        <div className={`text-2xl font-bold font-mono mb-1 ${count > 0 ? "text-green-400" : count < 0 ? "text-red-400" : "text-text-muted"}`}>
+                                    <div key={table} className="bg-black/30 rounded px-2 py-1.5 text-center border border-border-dark/50">
+                                        <div className={`text-sm font-bold font-mono ${count > 0 ? "text-green-400" : count < 0 ? "text-red-400" : "text-text-muted"}`}>
                                             {count >= 0 ? count.toLocaleString() : "N/A"}
                                         </div>
-                                        <div className="text-[10px] text-text-muted uppercase">{table.replace(/_/g, " ")}</div>
-                                        <div className={`text-[10px] mt-1 font-mono ${count > 0 ? "text-green-400" : "text-text-muted"}`}>
-                                            {count > 0 ? "-- Active" : count < 0 ? "-- Missing" : "-- Empty"}
+                                        <div className="text-[9px] text-text-muted uppercase leading-tight mt-0.5 truncate" title={table.replace(/_/g, " ")}>
+                                            {table.replace(/_/g, " ")}
                                         </div>
                                     </div>
                                 ))}
                             </div>
+                        </div>
+
+                        {/* ── Cross-Bot Audit Reports ──────────────────── */}
+                        <div className="glass-card p-4">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
+                                    <span className="material-symbols-outlined text-primary text-[16px]">verified</span>
+                                    Cross-Bot Audit Reports
+                                </h3>
+                                <button
+                                    onClick={toggleAudit}
+                                    className={`px-3 py-1 text-[10px] font-bold rounded transition ${
+                                        auditEnabled
+                                            ? "bg-green-500/20 text-green-400 hover:bg-green-500/30"
+                                            : "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                                    }`}
+                                >
+                                    {auditEnabled ? "✓ ENABLED" : "✕ DISABLED"}
+                                </button>
+                            </div>
+
+                            {auditsLoading ? (
+                                <div className="text-text-muted text-xs text-center py-4">Loading audits...</div>
+                            ) : audits.length === 0 ? (
+                                <div className="text-center py-6 text-text-muted">
+                                    <span className="material-symbols-outlined text-[32px] block mb-2 opacity-40">search_off</span>
+                                    <div className="text-xs">No audit reports yet.</div>
+                                    <div className="text-[10px] mt-1">Run All bots to generate cross-audits.</div>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {audits.map((audit, idx) => (
+                                        <div key={idx} className="bg-black/30 rounded-lg border border-border-dark/50 p-3">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`text-lg font-bold font-mono ${scoreColor(audit.overall_score || 0)}`}>
+                                                        {(audit.overall_score || 0).toFixed(1)}
+                                                    </span>
+                                                    <span className="text-text-muted text-[10px]">/10</span>
+                                                </div>
+                                                <div className="text-[10px] text-text-muted">
+                                                    {audit.created_at ? new Date(audit.created_at).toLocaleString() : ""}
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-1 text-[10px] text-text-muted mb-2">
+                                                <span className="text-white font-semibold">{audit.audited_bot_id || "?"}</span>
+                                                <span>audited by</span>
+                                                <span className="text-primary font-semibold">{audit.auditor_bot_id || "?"}</span>
+                                            </div>
+
+                                            {/* Category scores */}
+                                            {audit.categories && (() => {
+                                                let cats = audit.categories;
+                                                if (typeof cats === "string") try { cats = JSON.parse(cats); } catch(e) { cats = {}; }
+                                                return Object.keys(cats).length > 0 ? (
+                                                    <div className="grid grid-cols-3 gap-1.5 mb-2">
+                                                        {Object.entries(cats).map(([cat, data]) => {
+                                                            const s = typeof data === "object" ? data.score : data;
+                                                            const reason = typeof data === "object" ? data.reason : "";
+                                                            return (
+                                                                <div key={cat} className="bg-black/40 rounded px-2 py-1" title={reason}>
+                                                                    <div className={`text-xs font-bold font-mono ${scoreColor(s || 0)}`}>{s || 0}</div>
+                                                                    <div className="text-[8px] text-text-muted uppercase truncate">{cat.replace(/_/g, " ")}</div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                ) : null;
+                                            })()}
+
+                                            {/* Recommendations */}
+                                            {audit.recommendations && (() => {
+                                                let recs = audit.recommendations;
+                                                if (typeof recs === "string") try { recs = JSON.parse(recs); } catch(e) { recs = []; }
+                                                return recs.length > 0 ? (
+                                                    <div className="mt-1">
+                                                        <div className="text-[9px] text-text-muted uppercase mb-1">Recommendations</div>
+                                                        {recs.slice(0, 3).map((r, i) => (
+                                                            <div key={i} className="text-[10px] text-yellow-300/70 flex items-start gap-1">
+                                                                <span className="shrink-0">→</span>
+                                                                <span>{r}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : null;
+                                            })()}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

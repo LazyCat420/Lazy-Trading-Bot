@@ -769,6 +769,43 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Per-Model Logic Loops: self-improving prompt store ─────────
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS logic_loop_seq START 1;
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS model_logic_loops (
+            id               INTEGER PRIMARY KEY DEFAULT nextval('logic_loop_seq'),
+            bot_id           VARCHAR NOT NULL,
+            step_name        VARCHAR NOT NULL,
+            system_prompt    TEXT NOT NULL,
+            version          INTEGER DEFAULT 1,
+            performance_score FLOAT DEFAULT 0.0,
+            is_active        BOOLEAN DEFAULT TRUE,
+            parent_version   INTEGER,
+            mutation_reason  TEXT DEFAULT '',
+            extraction_stats TEXT DEFAULT '{}',
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # ── Cross-Bot Audit Reports ───────────────────────────────────
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS audit_report_seq START 1;
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_audit_reports (
+            id               INTEGER PRIMARY KEY DEFAULT nextval('audit_report_seq'),
+            audited_bot_id   VARCHAR NOT NULL,
+            auditor_bot_id   VARCHAR NOT NULL,
+            overall_score    FLOAT DEFAULT 0.0,
+            categories       TEXT DEFAULT '{}',
+            recommendations  TEXT DEFAULT '[]',
+            critical_issues  TEXT DEFAULT '[]',
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     # ── RAG: Embedding vectors for retrieval-augmented generation ──
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS embeddings_seq START 1;

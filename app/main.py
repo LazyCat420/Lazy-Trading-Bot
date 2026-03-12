@@ -2904,6 +2904,41 @@ async def get_run_all_status() -> dict:
     return dict(_run_all_state)
 
 
+# ── Cross-Bot Audit API ───────────────────────────────────────────────
+
+
+@app.get("/api/audit/reports")
+async def get_recent_audits(limit: int = Query(default=10)) -> list:
+    """Get recent cross-bot audit reports."""
+    from app.services.CrossBotAuditor import CrossBotAuditor
+    return CrossBotAuditor.get_recent_audits(limit=limit)
+
+
+@app.get("/api/audit/bot/{bot_id}")
+async def get_bot_audits(bot_id: str, limit: int = Query(default=10)) -> dict:
+    """Get audit reports for a specific bot."""
+    from app.services.CrossBotAuditor import CrossBotAuditor
+    audits = CrossBotAuditor.get_recent_audits(bot_id=bot_id, limit=limit)
+    avg_score = CrossBotAuditor.get_bot_audit_score(bot_id)
+    return {
+        "bot_id": bot_id,
+        "average_score": avg_score,
+        "audits": audits,
+    }
+
+
+@app.post("/api/audit/toggle")
+async def toggle_cross_audit() -> dict:
+    """Toggle the cross-bot audit feature on/off."""
+    current = settings.CROSS_AUDIT_ENABLED
+    settings.CROSS_AUDIT_ENABLED = not current
+    new_state = settings.CROSS_AUDIT_ENABLED
+    logger.info("[Settings] Cross-bot audit toggled: %s", new_state)
+    return {
+        "cross_audit_enabled": new_state,
+        "message": f"Cross-bot audit {'enabled' if new_state else 'disabled'}",
+    }
+
 
 @app.post("/api/bots/{bot_id}/reset")
 async def reset_bot_portfolio(

@@ -66,6 +66,14 @@ class BotRegistry:
             ],
         )
         logger.info("[BotRegistry] Registered bot %s (%s)", bot_id, display_name)
+
+        # Seed per-model logic loop prompts
+        try:
+            from app.services.AgenticExtractor import AgenticExtractor
+            AgenticExtractor(bot_id=bot_id).seed_all_prompts()
+        except Exception as exc:
+            logger.warning("[BotRegistry] Failed to seed prompts for %s: %s", bot_id, exc)
+
         return BotRegistry.get_bot(bot_id)  # type: ignore[return-value]
 
     # ── Read ───────────────────────────────────────────────────
@@ -126,6 +134,7 @@ class BotRegistry:
                 "price_triggers",
                 "watchlist",
                 "pipeline_events",
+                "model_logic_loops",
             ):
                 try:
                     conn.execute(

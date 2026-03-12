@@ -100,13 +100,16 @@ class LLMService:
     takes effect immediately — no restart needed.
     """
 
+    def __init__(self, *, model_override: str = "") -> None:
+        self._model_override = model_override
+
     @property
     def base_url(self) -> str:
         return settings.LLM_BASE_URL
 
     @property
     def model(self) -> str:
-        return settings.LLM_MODEL
+        return self._model_override or settings.LLM_MODEL
 
     @property
     def temperature(self) -> float:
