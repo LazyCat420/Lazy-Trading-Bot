@@ -9,7 +9,8 @@ This service:
   2. Validates templates by checking for family-specific signature tokens
   3. Creates an ephemeral wrapper model with the correct native template
      via POST /api/create (instant -- no re-download, just a new manifest)
-  4. Cleans up the wrapper via DELETE /api/delete when done
+  4. Bakes num_ctx into the modelfile so context size survives reloads
+  5. Cleans up the wrapper via DELETE /api/delete when done
 
 Template data is loaded from user_config/template_registry.json so users
 can add new families or tweak templates without editing Python code.
@@ -25,19 +26,51 @@ import httpx
 from app.utils.logger import logger
 
 # -- Constants ----------------------------------------------------------------
-TEMPLATED_SUFFIX = "-templated"
+TRADINGBOT_SUFFIX = "_tradingbot"
+LEGACY_SUFFIX = "-templated"  # Old suffix to clean up during transition
 
 _REGISTRY_PATH = (
     Path(__file__).resolve().parent.parent / "user_config" / "template_registry.json"
+)
+
+_EPHEMERAL_REGISTRY_PATH = (
+    Path(__file__).resolve().parent.parent / "user_config" / "ephemeral_models.json"
 )
 
 # In-memory cache of known-good templates learned from running models.
 # Key = family name, value = template string.
 _dynamic_cache: dict[str, str] = {}
 
-# Track which ephemeral models we created so we can clean them up.
-_active_ephemeral_models: set[str] = set()
 
+# -- Disk-persisted ephemeral model registry ----------------------------------
+
+def _load_ephemeral_registry() -> set[str]:
+    """Load the set of ephemeral models we created from disk."""
+    if not _EPHEMERAL_REGISTRY_PATH.exists():
+        return set()
+    try:
+        data = json.loads(_EPHEMERAL_REGISTRY_PATH.read_text(encoding="utf-8"))
+        return set(data.get("models", []))
+    except Exception:
+        return set()
+
+
+def _save_ephemeral_registry() -> None:
+    """Persist the set of ephemeral models to disk."""
+    try:
+        _EPHEMERAL_REGISTRY_PATH.write_text(
+            json.dumps({"models": sorted(_active_ephemeral_models)}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("[TemplateRegistry] Could not save ephemeral registry: %s", exc)
+
+
+# Track which ephemeral models we created so we can clean them up.
+_active_ephemeral_models: set[str] = _load_ephemeral_registry()
+
+
+# -- Registry loading --------------------------------------------------------
 
 def _load_registry() -> dict:
     """Load the family template registry from JSON."""
@@ -143,19 +176,28 @@ def cache_good_template(family: str, template: str) -> None:
         )
 
 
-def ephemeral_model_name(base_model: str) -> str:
-    """Generate the name for an ephemeral templated model."""
-    # Remove existing :tag if present, append our suffix
+# -- Ephemeral model naming ---------------------------------------------------
+
+def ephemeral_model_name(base_model: str, num_ctx: int = 0) -> str:
+    """Generate the name for an ephemeral tradingbot model.
+
+    Examples:
+      granite3.2:8b + ctx=32768 → granite3.2_tradingbot_32768:8b
+      granite3.2:8b + ctx=0     → granite3.2_tradingbot:8b
+    """
+    ctx_part = f"_{num_ctx}" if num_ctx else ""
     if ":" in base_model:
         name, tag = base_model.rsplit(":", 1)
-        return f"{name}{TEMPLATED_SUFFIX}:{tag}"
-    return f"{base_model}{TEMPLATED_SUFFIX}"
+        return f"{name}{TRADINGBOT_SUFFIX}{ctx_part}:{tag}"
+    return f"{base_model}{TRADINGBOT_SUFFIX}{ctx_part}"
 
 
 def is_ephemeral_model(model_name: str) -> bool:
     """Check if a model name is one of our ephemeral wrappers."""
-    return TEMPLATED_SUFFIX in model_name
+    return TRADINGBOT_SUFFIX in model_name or LEGACY_SUFFIX in model_name
 
+
+# -- Create / Delete ephemeral models -----------------------------------------
 
 async def create_ephemeral_model(
     base_url: str,
@@ -163,6 +205,7 @@ async def create_ephemeral_model(
     template: str,
     *,
     system: str = "",
+    num_ctx: int = 0,
 ) -> str | None:
     """Create an ephemeral wrapper model with the given template injected.
 
@@ -170,10 +213,31 @@ async def create_ephemeral_model(
     pointing at the same GGUF blobs but with an overridden template layer.
     Takes less than 1 second, no re-download needed.
 
+    If num_ctx is provided, it is baked into the modelfile parameters so
+    the context size survives model reloads.
+
     Returns the ephemeral model name on success, None on failure.
     """
     base_url = base_url.rstrip("/")
-    eph_name = ephemeral_model_name(base_model)
+    eph_name = ephemeral_model_name(base_model, num_ctx)
+
+    # Idempotent check: if model already exists with correct ctx, reuse it
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{base_url}/api/show",
+                json={"name": eph_name},
+            )
+            if resp.status_code == 200:
+                _active_ephemeral_models.add(eph_name)
+                _save_ephemeral_registry()
+                logger.info(
+                    "[TemplateRegistry] Ephemeral model '%s' already exists — reusing",
+                    eph_name,
+                )
+                return eph_name
+    except Exception:
+        pass  # Model doesn't exist, create it
 
     payload: dict = {
         "model": eph_name,
@@ -183,6 +247,8 @@ async def create_ephemeral_model(
     }
     if system:
         payload["system"] = system
+    if num_ctx:
+        payload["parameters"] = {"num_ctx": num_ctx}
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -210,10 +276,12 @@ async def create_ephemeral_model(
 
             if status == "success" or resp.status_code == 200:
                 _active_ephemeral_models.add(eph_name)
+                _save_ephemeral_registry()
+                ctx_info = f" num_ctx={num_ctx}" if num_ctx else ""
                 logger.info(
                     "[TemplateRegistry] Created ephemeral model '%s' from '%s' "
-                    "with injected template (%d chars)",
-                    eph_name, base_model, len(template),
+                    "with injected template (%d chars)%s",
+                    eph_name, base_model, len(template), ctx_info,
                 )
                 return eph_name
 
@@ -246,6 +314,7 @@ async def delete_ephemeral_model(base_url: str, model_name: str) -> bool:
             )
             if resp.status_code in (200, 404):
                 _active_ephemeral_models.discard(model_name)
+                _save_ephemeral_registry()
                 logger.info(
                     "[TemplateRegistry] Deleted ephemeral model '%s'",
                     model_name,
@@ -264,11 +333,44 @@ async def delete_ephemeral_model(base_url: str, model_name: str) -> bool:
         return False
 
 
+async def delete_tradingbot_models_for(base_url: str, base_model: str) -> int:
+    """Delete all _tradingbot ephemeral variants of a given base model.
+
+    Call this when a user removes a model from the leaderboard.
+    Returns count deleted.
+    """
+    base_url = base_url.rstrip("/")
+    base_name = base_model.split(":")[0]  # e.g. "granite3.2" from "granite3.2:8b"
+    deleted = 0
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{base_url}/api/tags")
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+            for m in models:
+                name = m.get("name", "")
+                if f"{base_name}{TRADINGBOT_SUFFIX}" in name:
+                    ok = await delete_ephemeral_model(base_url, name)
+                    if ok:
+                        deleted += 1
+    except Exception as exc:
+        logger.warning(
+            "[TemplateRegistry] delete_tradingbot_models_for(%s) failed: %s",
+            base_model, exc,
+        )
+    if deleted:
+        logger.info(
+            "[TemplateRegistry] Deleted %d tradingbot model(s) for '%s'",
+            deleted, base_model,
+        )
+    return deleted
+
+
 async def cleanup_all_ephemeral_models(base_url: str) -> int:
     """Delete ALL ephemeral models (call on startup/shutdown).
 
     Scans Ollama's model list for any model containing our suffix
-    and deletes them.  Returns count of models deleted.
+    (or the legacy suffix) and deletes them.  Returns count deleted.
     """
     base_url = base_url.rstrip("/")
     deleted = 0
@@ -280,7 +382,8 @@ async def cleanup_all_ephemeral_models(base_url: str) -> int:
 
             for m in models:
                 name = m.get("name", "")
-                if TEMPLATED_SUFFIX in name:
+                # Clean both new and legacy suffixes
+                if TRADINGBOT_SUFFIX in name or LEGACY_SUFFIX in name:
                     ok = await delete_ephemeral_model(base_url, name)
                     if ok:
                         deleted += 1
@@ -296,6 +399,8 @@ async def cleanup_all_ephemeral_models(base_url: str) -> int:
         )
     return deleted
 
+
+# -- Model inspection ---------------------------------------------------------
 
 async def inspect_model_template(base_url: str, model: str) -> dict:
     """Query /api/show to get a model's template and family info.
@@ -345,11 +450,14 @@ async def inspect_model_template(base_url: str, model: str) -> dict:
     return result
 
 
+# -- Main entry point ---------------------------------------------------------
+
 async def ensure_template(
     base_url: str,
     model: str,
     *,
     mode: str = "missing_only",
+    num_ctx: int = 0,
 ) -> str:
     """Main entry point: ensure a model has a correct template.
 
@@ -357,6 +465,9 @@ async def ensure_template(
       - "missing_only": Only inject if template is missing or broken (default)
       - "always": Always create an ephemeral model with our template
       - "never": Skip injection entirely (passthrough)
+
+    If num_ctx is provided, it is baked into the ephemeral model's parameters
+    so the context window survives model reloads.
 
     Returns the effective model name to use (either original or ephemeral).
     """
@@ -425,9 +536,9 @@ async def ensure_template(
             model, family,
         )
 
-    # Create the ephemeral model
+    # Create the ephemeral model with baked-in num_ctx
     eph_name = await create_ephemeral_model(
-        base_url, model, correct_template,
+        base_url, model, correct_template, num_ctx=num_ctx,
     )
     if eph_name:
         return eph_name

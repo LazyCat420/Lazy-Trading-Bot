@@ -1157,21 +1157,39 @@ class LLMService:
                 model_file_size = 0
 
                 if not model_found:
-                    alt = f"{model}:latest" if ":" not in model else model.split(":")[0]
+                    # Normalize: "ibm/granite-3.2-8b" → "granite328b"
+                    #            "granite3.2:8b"       → "granite328b"
+                    import re as _re
+
+                    def _norm(n: str) -> str:
+                        if "/" in n:
+                            n = n.split("/", 1)[1]
+                        return _re.sub(r"[.\-:_]", "", n).lower()
+
+                    req_norm = _norm(model)
                     for avail_model in tags_data:
+                        avail_name = avail_model["name"]
                         if (
-                            avail_model["name"] == alt
-                            or avail_model["name"].split(":")[0] == model.split(":")[0]
+                            avail_name == f"{model}:latest"
+                            or _norm(avail_name) == req_norm
+                            or req_norm in _norm(avail_name)
+                            or _norm(avail_name) in req_norm
                         ):
-                            model = avail_model["name"]
+                            model = avail_name
                             model_found = True
                             break
 
                 if not model_found:
+                    suggestions = [
+                        m for m in available
+                        if _norm(model) in _norm(m)
+                        or _norm(m) in _norm(model)
+                    ] if "_norm" in dir() else available[:5]
                     return {
                         "status": "model_not_found",
                         "model": model,
                         "available_models": available,
+                        "suggestions": suggestions,
                         "model_found": False,
                     }
 
@@ -1214,7 +1232,17 @@ class LLMService:
                         exc,
                     )
 
-                # -- Step 2.5: Template injection (if needed) ----------
+                # -- Step 2.5: Compute desired context FIRST ------
+                # (Needed before template injection so num_ctx can
+                #  be baked into the ephemeral modelfile.)
+                from app.config import settings as _cfg
+
+                desired_ctx = _cfg.LLM_CONTEXT_SIZE
+                if model_max_ctx > 0:
+                    desired_ctx = min(desired_ctx, model_max_ctx)
+                desired_ctx = max(desired_ctx, 2048)
+
+                # -- Step 2.6: Template injection (if needed) ----------
                 # Check if the model's template is missing or broken
                 # and create an ephemeral wrapper with the correct one.
                 from app.config import settings as _ti_cfg
@@ -1228,7 +1256,7 @@ class LLMService:
 
                         mode = _ti_cfg.TEMPLATE_INJECTION_MODE
                         injected_model = await ensure_template(
-                            base_url, model, mode=mode,
+                            base_url, model, mode=mode, num_ctx=desired_ctx,
                         )
                         if injected_model != model:
                             effective_model = injected_model
@@ -1243,15 +1271,8 @@ class LLMService:
                             ti_exc,
                         )
 
-                # —— Step 3: Determine desired context ————————————
-                from app.config import settings as _cfg
-
-                desired_ctx = _cfg.LLM_CONTEXT_SIZE
-                if model_max_ctx > 0:
-                    desired_ctx = min(desired_ctx, model_max_ctx)
-                desired_ctx = max(desired_ctx, 2048)
-
-                # —— Step 4: VRAM estimation (informational) ———————
+                # —— Step 3: VRAM estimation (informational) ———————
+                # (desired_ctx already computed above in Step 2.5)
                 estimate = LLMService.estimate_model_vram(
                     model_info,
                     model_file_size,

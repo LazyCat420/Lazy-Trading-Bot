@@ -12,6 +12,7 @@ from urllib.parse import quote_plus
 
 import feedparser
 
+from app.config import settings
 from app.database import get_db
 from app.models.market_data import NewsArticle
 from app.utils.logger import logger
@@ -26,7 +27,7 @@ class NewsCollector:
     # SEC EDGAR full-text search RSS
     SEC_EDGAR_RSS = "https://efts.sec.gov/LATEST/search-index?q={query}&dateRange=custom&startdt={start}&enddt={end}&forms=10-K,10-Q,8-K&from=0&size=10"
 
-    async def collect(self, ticker: str, limit: int = 30) -> list[NewsArticle]:
+    async def collect(self, ticker: str, limit: int = 0) -> list[NewsArticle]:
         """Fetch news from all sources and persist to DuckDB.
 
         Sources: yfinance, Google News RSS, SEC EDGAR RSS.
@@ -51,7 +52,9 @@ class NewsCollector:
             )
             return []
 
-        logger.info("Collecting news for %s from all sources", ticker)
+        if limit <= 0:
+            limit = settings.NEWS_FETCH_LIMIT
+        logger.info("Collecting news for %s from all sources (limit=%d)", ticker, limit)
 
         articles: list[NewsArticle] = []
 

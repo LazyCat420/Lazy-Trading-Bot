@@ -988,7 +988,9 @@ async def dashboard_cached_analysis(ticker: str) -> dict:
                 data = json.loads(fpath.read_text(encoding="utf-8"))
                 if key == "decision":
                     decision = data
-                elif key != "pooled":
+                elif key == "pooled":
+                    agents["pooled"] = {"status": "ok", "report": data}
+                else:
                     agents[key] = {"status": "ok", "report": data}
             except (json.JSONDecodeError, OSError):
                 pass
@@ -1137,6 +1139,12 @@ def _set_active_bot(bot_id: str) -> None:
     _active_bot_id = bot_id
     logger.info("[ActiveBot] Switched to bot_id=%s", bot_id)
 
+    # Refresh PriceMonitor to track the new bot's positions
+    try:
+        _refresh_price_monitor()
+    except Exception:
+        pass  # _refresh_price_monitor may not be defined yet at import time
+
     # Sync global LLM settings to match this bot's stored config
     # so the next run_full_loop uses the correct model.
     from app.services.bot_registry import BotRegistry as _BReg
@@ -1164,8 +1172,16 @@ def _active_trader() -> PaperTrader:
     return PaperTrader(bot_id=_active_bot_id)
 
 
-_paper_trader = PaperTrader()  # Default trader for price monitor
+_paper_trader = PaperTrader()  # Default trader (overridden on bot switch)
 _price_monitor = PriceMonitor(_paper_trader)
+
+
+def _refresh_price_monitor() -> None:
+    """Re-create the PriceMonitor scoped to the currently active bot."""
+    global _paper_trader, _price_monitor
+    _paper_trader = PaperTrader(bot_id=_active_bot_id)
+    _price_monitor = PriceMonitor(_paper_trader)
+    logger.info("[PriceMonitor] Refreshed for bot_id=%s", _active_bot_id)
 
 
 @app.get("/api/active-bot")
@@ -1976,14 +1992,38 @@ async def delete_bot_endpoint(bot_id: str, hard: bool = False) -> dict:
 
     ?hard=true  → permanently delete bot + all related data
     ?hard=false → soft delete (set status='deleted')
+
+    Also cleans up any ephemeral _tradingbot models on the Ollama server.
     """
+    # Fetch bot config BEFORE deletion so we know the model/url
+    bot = BotRegistry.get_bot(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+
+    model_name = bot.get("model_name", "")
+    provider_url = bot.get("provider_url", settings.OLLAMA_URL)
+
     deleted = BotRegistry.delete_bot(bot_id, hard=hard)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+
+    # Clean up ephemeral tradingbot models on the Ollama server
+    cleaned = 0
+    if model_name:
+        try:
+            from app.services.TemplateRegistry import delete_tradingbot_models_for
+            cleaned = await delete_tradingbot_models_for(provider_url, model_name)
+        except Exception as exc:
+            logger.warning(
+                "[Bots] Ephemeral model cleanup failed for %s: %s",
+                bot_id, exc,
+            )
+
     return {
         "status": "deleted",
         "bot_id": bot_id,
         "hard": hard,
+        "ephemeral_models_cleaned": cleaned,
     }
 
 
@@ -2079,12 +2119,15 @@ async def dashboard_summary() -> dict:
             "WHERE bot_id = ? AND side = 'sell'",
             [bot_id],
         ).fetchone()[0]
+        # Win/loss: compare each SELL's price against the average buy price
         wins = db.execute(
-            "SELECT COUNT(*) FROM orders "
-            "WHERE bot_id = ? AND side = 'sell' "
-            "AND CAST(json_extract_string("
-            "CASE WHEN signal LIKE '{%' THEN signal ELSE '{}' END, "
-            "'$.realized_pnl') AS DOUBLE) > 0",
+            "SELECT COUNT(*) FROM orders o1 "
+            "WHERE o1.bot_id = ? AND o1.side = 'sell' "
+            "AND o1.price > ("
+            "  SELECT COALESCE(AVG(o2.price), 0) FROM orders o2 "
+            "  WHERE o2.bot_id = o1.bot_id AND o2.ticker = o1.ticker "
+            "  AND o2.side = 'buy' AND o2.created_at < o1.created_at"
+            ")",
             [bot_id],
         ).fetchone()[0]
         combined_wins += wins
@@ -3197,7 +3240,7 @@ async def toggle_cross_audit() -> dict:
 
 
 @app.get("/api/diagnostics/pipeline-events")
-async def get_pipeline_events(limit: int = Query(default=50)) -> list:
+async def get_diagnostics_pipeline_events(limit: int = Query(default=50)) -> list:
     """Get recent pipeline events (parse failures, repairs, tool usage)."""
     from app.database import get_db
     conn = get_db()

@@ -47,7 +47,7 @@ class RedditCollector:
         "options",
     ]
 
-    MAX_POSTS_PER_SUB = 10
+    MAX_POSTS_PER_SUB = 3  # Overridden by settings.REDDIT_MAX_POSTS_PER_SUB at runtime
     MAX_COMMENTS_PER_THREAD = 20
     MAX_THREADS_TO_SCRAPE = 8
     MAX_RETRIES = 3
@@ -55,6 +55,7 @@ class RedditCollector:
     def __init__(self) -> None:
         self.validator = TickerValidator()
         self.llm = LLMService()
+        self.MAX_POSTS_PER_SUB = settings.REDDIT_MAX_POSTS_PER_SUB
 
     def _get_headers(self) -> dict[str, str]:
         """Random user-agent to avoid Reddit blocking."""

@@ -20,6 +20,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app.config import settings
 from app.database import get_db
 from app.models.market_data import YouTubeTranscript
 from app.utils.logger import logger
@@ -78,7 +79,7 @@ class YouTubeCollector:
     async def collect(
         self,
         ticker: str,
-        max_videos: int = 3,
+        max_videos: int = 0,
         *,
         discovery_mode: bool = False,
         min_duration_secs: int = 0,
@@ -117,7 +118,9 @@ class YouTubeCollector:
                 return []
 
         mode_label = "discovery" if discovery_mode else "24h filter"
-        logger.info("Collecting YouTube transcripts for %s (%s)", ticker, mode_label)
+        if max_videos <= 0:
+            max_videos = settings.YOUTUBE_MAX_VIDEOS
+        logger.info("Collecting YouTube transcripts for %s (%s, max=%d)", ticker, mode_label, max_videos)
         cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
 
         # Step 1: Multi-query search (full metadata for duration filtering)
@@ -273,7 +276,9 @@ class YouTubeCollector:
                     (ticker, video_id, title, channel, published_at,
                      duration_seconds, raw_transcript)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (ticker, video_id) DO NOTHING
+                ON CONFLICT (ticker, video_id) DO UPDATE
+                SET raw_transcript = EXCLUDED.raw_transcript
+                WHERE LENGTH(EXCLUDED.raw_transcript) > LENGTH(youtube_transcripts.raw_transcript)
                 """,
                 [
                     yt.ticker,
@@ -296,7 +301,7 @@ class YouTubeCollector:
 
     async def collect_general_market(
         self,
-        max_videos: int = 3,
+        max_videos: int = 0,
         min_duration_secs: int = 900,
     ) -> list[YouTubeTranscript]:
         """Scrape general market news videos to discover NEW tickers.
@@ -331,9 +336,12 @@ class YouTubeCollector:
             )
             return []
 
+        if max_videos <= 0:
+            max_videos = settings.YOUTUBE_MAX_VIDEOS
         logger.info(
-            "Collecting general market YouTube transcripts (%d queries, min duration %ds)...",
+            "Collecting general market YouTube transcripts (%d queries, max=%d, min duration %ds)...",
             len(self.GENERAL_MARKET_QUERIES),
+            max_videos,
             min_duration_secs,
         )
 
@@ -443,7 +451,9 @@ class YouTubeCollector:
                     (ticker, video_id, title, channel, published_at,
                      duration_seconds, raw_transcript)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (ticker, video_id) DO NOTHING
+                ON CONFLICT (ticker, video_id) DO UPDATE
+                SET raw_transcript = EXCLUDED.raw_transcript
+                WHERE LENGTH(EXCLUDED.raw_transcript) > LENGTH(youtube_transcripts.raw_transcript)
                 """,
                 [
                     yt.ticker,

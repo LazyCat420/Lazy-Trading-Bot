@@ -203,6 +203,15 @@ class SEC13FCollector:
             "SELECT cik, filer_name FROM sec_13f_filers WHERE is_active = TRUE"
         ).fetchall()
 
+        # Cap filers to settings limit for faster debugging
+        max_filers = settings.SEC_13F_MAX_FILERS
+        if max_filers > 0 and len(filers) > max_filers:
+            logger.info(
+                "[SEC 13F] Capping filers from %d to %d (settings.SEC_13F_MAX_FILERS)",
+                len(filers), max_filers,
+            )
+            filers = filers[:max_filers]
+
         total_holdings = 0
         for cik, name in filers:
             t0 = time.time()

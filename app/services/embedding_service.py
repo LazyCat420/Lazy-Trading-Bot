@@ -24,7 +24,7 @@ class EmbeddingService:
     CHUNK_SIZE = 2048       # chars per chunk (~512 tokens)
     CHUNK_OVERLAP = 200     # char overlap between chunks
     MAX_BATCH_SIZE = 32     # max texts per /api/embed call
-    MIN_CHUNK_LEN = 50      # discard chunks shorter than this
+    MIN_CHUNK_LEN = 30      # discard chunks shorter than this (matches SQL filters)
 
     def __init__(self, model: str | None = None) -> None:
         self.base_url = settings.OLLAMA_URL.rstrip("/")
@@ -115,7 +115,7 @@ class EmbeddingService:
         text: str,
         chunk_size: int = 2048,
         overlap: int = 200,
-        min_len: int = 50,
+        min_len: int = 30,
     ) -> list[str]:
         """Split long text into overlapping chunks.
 
@@ -413,10 +413,11 @@ class EmbeddingService:
         }
 
     async def embed_news_articles(self) -> dict[str, Any]:
-        """Embed full news articles from news_full_articles table.
+        """Embed news articles from both news_full_articles and news_articles.
 
-        Articles are longer and may need chunking. Multi-ticker articles
-        are stored with ticker=NULL so all tickers can retrieve them.
+        Reads from news_full_articles (RSS full content) first, then falls
+        back to news_articles (yfinance summaries) so news gets embedded
+        regardless of which collection service populated data.
 
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
@@ -427,17 +428,28 @@ class EmbeddingService:
 
         db = get_db()
 
+        # UNION both news tables: full articles (RSS) + summaries (yfinance)
         rows = db.execute("""
-            SELECT nfa.article_hash, nfa.title, nfa.publisher,
-                   nfa.content, nfa.tickers_found
-            FROM news_full_articles nfa
+            SELECT article_hash, title, publisher, content, tickers_found
+            FROM (
+                SELECT nfa.article_hash, nfa.title, nfa.publisher,
+                       nfa.content, nfa.tickers_found
+                FROM news_full_articles nfa
+                WHERE LENGTH(nfa.content) > 50
+
+                UNION ALL
+
+                SELECT na.article_hash, na.title, na.publisher,
+                       na.summary AS content, na.ticker AS tickers_found
+                FROM news_articles na
+                WHERE LENGTH(na.summary) > 50
+            ) combined
             LEFT JOIN (
                 SELECT DISTINCT source_id
                 FROM embeddings
                 WHERE source_type = 'news'
-            ) e ON nfa.article_hash = e.source_id
-            WHERE LENGTH(nfa.content) > 50
-              AND e.source_id IS NULL
+            ) e ON combined.article_hash = e.source_id
+            WHERE e.source_id IS NULL
         """).fetchall()
 
         if not rows:

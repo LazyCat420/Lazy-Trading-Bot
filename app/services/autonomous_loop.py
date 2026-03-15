@@ -126,6 +126,17 @@ class AutonomousLoop:
                 ),
             )
         elif warm_result.get("pre_warmed"):
+            # Persist the resolved model name (e.g. "ibm/granite-3.2-8b" → "granite3.2:8b")
+            # so all LLMService instances (including Prism calls) use the Ollama name.
+            # Use 'base_model' (resolved Ollama name), NOT 'model' (may be ephemeral wrapper).
+            resolved_model = warm_result.get("base_model", settings.LLM_MODEL)
+            if resolved_model != settings.LLM_MODEL:
+                logger.info(
+                    "[AutoLoop] Model name resolved: '%s' → '%s'",
+                    settings.LLM_MODEL, resolved_model,
+                )
+                settings.LLM_MODEL = resolved_model
+
             rec_ctx = warm_result.get("recommended_ctx", 32768)
             model_max = warm_result.get("model_max_ctx", 0)
             vram_bytes = warm_result.get("vram_bytes", 0)
@@ -488,6 +499,16 @@ class AutonomousLoop:
                 detail=f"{settings.LLM_MODEL} OOM → ctx={sug_ctx}",
             )
         elif warm_result.get("pre_warmed"):
+            # Persist resolved model name for Prism calls
+            # Use 'base_model' (resolved Ollama name), NOT 'model' (may be ephemeral wrapper).
+            resolved_model = warm_result.get("base_model", settings.LLM_MODEL)
+            if resolved_model != settings.LLM_MODEL:
+                logger.info(
+                    "[AutoLoop] Model name resolved: '%s' → '%s'",
+                    settings.LLM_MODEL, resolved_model,
+                )
+                settings.LLM_MODEL = resolved_model
+
             rec_ctx = warm_result.get("recommended_ctx", 32768)
             old_ctx = settings.LLM_CONTEXT_SIZE
             settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx, settings.MAX_CONTEXT_SIZE)

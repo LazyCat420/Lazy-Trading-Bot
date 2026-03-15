@@ -95,6 +95,14 @@ class Settings:
         "LazyTradingBot/1.0 (contact@example.com)",
     )
 
+    # ── Data Collection Limits ──────────────────────────────────
+    # How many items to fetch per source per ticker during collection.
+    # Lower these for faster debugging, raise for production.
+    YOUTUBE_MAX_VIDEOS: int = int(os.getenv("YOUTUBE_MAX_VIDEOS", "3"))
+    REDDIT_MAX_POSTS_PER_SUB: int = int(os.getenv("REDDIT_MAX_POSTS_PER_SUB", "3"))
+    NEWS_FETCH_LIMIT: int = int(os.getenv("NEWS_FETCH_LIMIT", "3"))
+    SEC_13F_MAX_FILERS: int = int(os.getenv("SEC_13F_MAX_FILERS", "3"))
+
     @property
     def LLM_BASE_URL(self) -> str:
         """Computed: returns the Prism gateway URL for LLM calls."""
@@ -190,6 +198,15 @@ class Settings:
             self.RAG_TOP_K = int(data["rag_top_k"])
         if "rag_max_chars" in data:
             self.RAG_MAX_CHARS = int(data["rag_max_chars"])
+        # Data collection limits
+        if "youtube_max_videos" in data:
+            self.YOUTUBE_MAX_VIDEOS = int(data["youtube_max_videos"])
+        if "reddit_max_posts_per_sub" in data:
+            self.REDDIT_MAX_POSTS_PER_SUB = int(data["reddit_max_posts_per_sub"])
+        if "news_fetch_limit" in data:
+            self.NEWS_FETCH_LIMIT = int(data["news_fetch_limit"])
+        if "sec_13f_max_filers" in data:
+            self.SEC_13F_MAX_FILERS = int(data["sec_13f_max_filers"])
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.
@@ -240,6 +257,11 @@ class Settings:
             "rag_enabled": self.RAG_ENABLED,
             "rag_top_k": self.RAG_TOP_K,
             "rag_max_chars": self.RAG_MAX_CHARS,
+            # Data collection limits
+            "youtube_max_videos": self.YOUTUBE_MAX_VIDEOS,
+            "reddit_max_posts_per_sub": self.REDDIT_MAX_POSTS_PER_SUB,
+            "news_fetch_limit": self.NEWS_FETCH_LIMIT,
+            "sec_13f_max_filers": self.SEC_13F_MAX_FILERS,
         }
         return cfg
 
