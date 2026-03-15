@@ -70,11 +70,12 @@ An autonomous stock trading bot that combines data collection, quant analysis, a
 
 ### Data Flow
 
-1. **Lazy Trading Bot** sends all LLM requests to **Prism** (not directly to Ollama/LM Studio)
+1. **Lazy Trading Bot** sends all LLM requests to **Prism** via `POST /chat?stream=false`
 2. **Prism** forwards the request to the configured LLM provider (Ollama, LM Studio, OpenAI, etc.)
 3. **Prism** logs the request metadata (tokens, timing, cost) to the `requests` MongoDB collection
-4. **Prism** stores the full conversation (prompts + responses) in the `conversations` MongoDB collection
+4. **Prism** auto-creates conversations via `conversationMeta` in the chat payload
 5. **Retina** reads from Prism's admin API to display dashboards, conversation history, and analytics
+6. At the end of each pipeline cycle, the bot posts a **workflow** to `POST /workflows` so the full run appears as a visual graph in Retna
 
 ### Why This Matters
 
@@ -223,7 +224,8 @@ Lazy-Trading-Bot/
 
 | Service | File | Description |
 |---------|------|-------------|
-| `LLMService` | `llm_service.py` | Routes all LLM calls through Prism, handles retries, JSON repair, conversation tracking |
+| `LLMService` | `llm_service.py` | Routes all LLM calls through Prism (`/chat`), handles retries, JSON repair, conversation tracking |
+| `WorkflowService` | `WorkflowService.py` | Posts pipeline workflows to Prism (`/workflows`) for Retna dashboard display |
 | `PipelineService` | `pipeline_service.py` | Orchestrates 14-step data collection per ticker |
 | `TradingAgent` | `trading_agent.py` | Multi-turn LLM agent — research tools → trading decision |
 | `TradingPipelineService` | `trading_pipeline_service.py` | Builds context, gets LLM decision, applies guardrails, executes |

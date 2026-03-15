@@ -34,6 +34,7 @@ def mock_paper_trader():
     trader.get_orders_today_count.return_value = 0
     trader.get_daily_pnl_pct.return_value = 0.0
     trader.get_positions.return_value = []
+    trader.get_cash_balance.return_value = 10000.0
     trader.buy.return_value = MagicMock(qty=10, price=150.0, side="buy")
     trader.sell.return_value = MagicMock(qty=5, price=200.0, side="sell")
     return trader
@@ -73,7 +74,7 @@ class TestPortfolioStrategist:
             tickers=["AAPL"],
         )
         with patch(
-            "app.engine.portfolio_strategist.DeepAnalysisService"
+            "app.services.portfolio_strategist.DeepAnalysisService"
         ) as mock_das:
             mock_das.get_latest_dossier.return_value = {
                 "scorecard": {
@@ -110,7 +111,7 @@ class TestPortfolioStrategist:
             tickers=["AAPL"],
         )
         with patch(
-            "app.engine.portfolio_strategist.DeepAnalysisService"
+            "app.services.portfolio_strategist.DeepAnalysisService"
         ) as mock_das:
             mock_das.get_latest_dossier.return_value = None
             result = await strategist._tool_get_market_overview({})
@@ -125,7 +126,7 @@ class TestPortfolioStrategist:
             tickers=["AAPL"],
         )
         with patch(
-            "app.engine.portfolio_strategist.DeepAnalysisService"
+            "app.services.portfolio_strategist.DeepAnalysisService"
         ) as mock_das:
             mock_das.get_latest_dossier.return_value = {
                 "scorecard": {"signal_summary": "Bullish"},
@@ -152,7 +153,7 @@ class TestPortfolioStrategist:
             tickers=["AAPL"],
         )
         with patch(
-            "app.engine.portfolio_strategist.DeepAnalysisService"
+            "app.services.portfolio_strategist.DeepAnalysisService"
         ) as mock_das:
             mock_das.get_latest_dossier.return_value = None
             result = await strategist._tool_get_dossier({"ticker": "ZZZZ"})
@@ -592,8 +593,35 @@ class TestActionSchema:
             "get_portfolio", "get_market_overview", "get_dossier",
             "get_sector_peers", "place_buy", "place_sell", "set_triggers",
             "get_market_status", "remove_from_watchlist", "schedule_wakeup",
+            "pass",
             "finish",
             # Research tools
             *RESEARCH_TOOL_NAMES,
         ]
         assert set(enum) == set(expected)
+
+@pytest.mark.asyncio
+async def test_strategist_pass_with_trigger(monkeypatch, use_test_db):
+    """Test that the pass tool correctly registers a ticker as failed-buy and saves a trigger."""
+    from app.services.portfolio_strategist import PortfolioStrategist
+    from app.services.paper_trader import PaperTrader
+    from app.database import get_db
+
+    trader = PaperTrader()
+    strat = PortfolioStrategist(trader, ["NVDA"])
+
+    res = await strat._tool_pass({
+        "ticker": "NVDA",
+        "reason": "Waiting for pullback",
+        "trigger_price": 105.50
+    })
+
+    assert res["status"] == "ok"
+    assert "NVDA" in strat._failed_buy_tickers
+
+    db = get_db()
+    row = db.execute("SELECT trigger_price, trigger_type FROM price_triggers WHERE ticker = 'NVDA'").fetchone()
+    assert row is not None
+    assert float(row[0]) == 105.50
+    assert row[1] == "limit_buy"
+

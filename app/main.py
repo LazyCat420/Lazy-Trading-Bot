@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from app.config import settings
 from app.database import get_db
 from app.services.llm_service import LLMService
 from app.services.pipeline_service import PipelineService
+from app.services.ws_broadcaster import broadcaster
 from app.utils.logger import logger
 
 app = FastAPI(
@@ -42,6 +43,10 @@ app.add_middleware(
 _app_dir = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(_app_dir / "static")), name="static")
 templates = Jinja2Templates(directory=str(_app_dir / "templates"))
+
+ui_dir = _app_dir.parent / "ui" / "dist"
+if ui_dir.exists():
+    app.mount("/pipeline", StaticFiles(directory=str(ui_dir), html=True), name="pipeline_ui")
 
 
 # ── Models ──────────────────────────────────────────────────────────
@@ -158,6 +163,32 @@ async def health() -> dict:
     }
 
 
+@app.get("/api/improvement-feed")
+async def get_improvement_feed(
+    regenerate: bool = Query(default=False),
+    lookback_hours: int = Query(default=24, ge=1, le=168),
+) -> dict:
+    """Return the latest improvement feed report.
+
+    Query params:
+      - regenerate: if true, generate a fresh report instead of reading cached
+      - lookback_hours: hours to look back for data (default 24, max 168 = 1 week)
+    """
+    from app.services.ImprovementFeed import ImprovementFeed
+
+    feed = ImprovementFeed(lookback_hours=lookback_hours)
+
+    if regenerate:
+        path = feed.generate_report()
+        content = Path(path).read_text(encoding="utf-8")
+        return {"status": "generated", "path": path, "content": content}
+
+    # Return cached latest report if available
+    content = feed.get_latest_report_content()
+    path = feed.get_latest_report_path()
+    return {"status": "ok", "path": path, "content": content}
+
+
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest) -> dict:
     """Run the full analysis pipeline for a ticker."""
@@ -218,6 +249,35 @@ async def analyze_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Node-Based Pipeline UI Endpoints ────────────────────────────────
+@app.websocket("/ws/pipeline")
+async def websocket_pipeline(websocket: WebSocket):
+    """Real-time pipeline event stream for the Node Graph UI."""
+    await broadcaster.connect(websocket)
+    try:
+        from app.services.autonomous_loop import autonomous_loop
+        # Send initial snapshot on connect
+        await websocket.send_json({
+            "type": "snapshot",
+            "data": autonomous_loop.get_status()
+        })
+        while True:
+            # We just need to keep the connection open to receive broadcasts
+            # Clients shouldn't need to send messages, but we await to detect disconnects
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        broadcaster.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        broadcaster.disconnect(websocket)
+
+@app.get("/api/pipeline/snapshot")
+async def get_pipeline_snapshot() -> dict:
+    """Get the current state of the pipeline nodes."""
+    from app.services.autonomous_loop import autonomous_loop
+    return autonomous_loop.get_status()
 
 
 @app.get("/api/watchlist")
@@ -1084,7 +1144,10 @@ def _set_active_bot(bot_id: str) -> None:
     bot = _BReg.get_bot(bot_id)
     if bot:
         settings.LLM_MODEL = bot.get("model_name", settings.LLM_MODEL)
-        settings.LLM_CONTEXT_SIZE = bot.get("context_length", settings.LLM_CONTEXT_SIZE)
+        settings.LLM_CONTEXT_SIZE = min(
+            bot.get("context_length", settings.LLM_CONTEXT_SIZE),
+            settings.MAX_CONTEXT_SIZE,
+        )
         settings.LLM_TEMPERATURE = bot.get("temperature", settings.LLM_TEMPERATURE)
         settings.LLM_TOP_P = bot.get("top_p", settings.LLM_TOP_P)
         provider_url = bot.get("provider_url", "")
@@ -2457,12 +2520,100 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
         phase="system",
     )
 
+    async def _resolve_ollama_model_name(
+        ollama_url: str, bot_model: str,
+    ) -> str:
+        """Resolve a bot's model name to an actual Ollama model name.
+
+        Queries Ollama's /api/tags for installed models and finds the
+        best match using progressively looser matching strategies:
+          1. Exact match
+          2. Case-insensitive match
+          3. Normalized match (strip vendor prefix, convert separators)
+          4. Substring/fuzzy match on the base model name
+
+        Returns the resolved model name, or the original if no match found.
+        """
+        import re
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(f"{ollama_url}/api/tags")
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            logger.warning(
+                "[RunAll] Could not query Ollama models: %s — using '%s' as-is",
+                exc, bot_model,
+            )
+            return bot_model
+
+        installed = [m.get("name", "") for m in data.get("models", [])]
+        if not installed:
+            logger.warning("[RunAll] Ollama returned no models — using '%s' as-is", bot_model)
+            return bot_model
+
+        # 1. Exact match
+        if bot_model in installed:
+            return bot_model
+
+        # 2. Case-insensitive
+        lower_map = {m.lower(): m for m in installed}
+        if bot_model.lower() in lower_map:
+            resolved = lower_map[bot_model.lower()]
+            logger.info("[RunAll] Model resolved (case): '%s' → '%s'", bot_model, resolved)
+            return resolved
+
+        # Helper: normalize a model name to a canonical form for comparison
+        # "ibm/granite-3.2-8b" → "granite328b"
+        # "granite3.2:8b" → "granite328b"
+        def _normalize(name: str) -> str:
+            # Strip vendor prefix (e.g. "ibm/", "meta/", "nvidia/")
+            if "/" in name:
+                name = name.split("/", 1)[1]
+            # Remove separators: dots, dashes, colons, underscores
+            return re.sub(r"[.\-:_]", "", name).lower()
+
+        bot_norm = _normalize(bot_model)
+        norm_map = {_normalize(m): m for m in installed}
+
+        # 3. Normalized exact match
+        if bot_norm in norm_map:
+            resolved = norm_map[bot_norm]
+            logger.info("[RunAll] Model resolved (normalized): '%s' → '%s'", bot_model, resolved)
+            return resolved
+
+        # 4. Substring match — check if normalized bot name is contained
+        #    in any installed model or vice versa
+        candidates = []
+        for norm, real in norm_map.items():
+            if bot_norm in norm or norm in bot_norm:
+                candidates.append(real)
+
+        if len(candidates) == 1:
+            resolved = candidates[0]
+            logger.info("[RunAll] Model resolved (substring): '%s' → '%s'", bot_model, resolved)
+            return resolved
+        elif candidates:
+            # Multiple matches — pick the shortest (most specific)
+            resolved = min(candidates, key=len)
+            logger.info(
+                "[RunAll] Model resolved (best of %d): '%s' → '%s'",
+                len(candidates), bot_model, resolved,
+            )
+            return resolved
+
+        # No match found
+        logger.warning(
+            "[RunAll] Could not resolve model '%s' — installed models: %s",
+            bot_model, ", ".join(installed[:10]),
+        )
+        return bot_model
+
     async def _run_all() -> None:
         from app.services.llm_service import LLMService
 
         # ── Snapshot the user's config so we can restore after ──
-        # The loop hot-patches settings.LLM_MODEL per bot, but
-        # the user's chosen model should be restored when done.
         _saved_model = settings.LLM_MODEL
         _saved_ctx = settings.LLM_CONTEXT_SIZE
         _saved_temp = settings.LLM_TEMPERATURE
@@ -2470,6 +2621,86 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
         _saved_url = settings.OLLAMA_URL
         _saved_bot_id = _get_active_bot_id()
 
+        # ══════════════════════════════════════════════════════════
+        #  PHASE A: SHARED DATA-GATHERING (run ONCE for all bots)
+        #  Discovery → Import → Collection → Embedding
+        #  Uses: PC CPU + network (scraping Yahoo, Reddit, YouTube)
+        #  Does NOT use: Jetson Orin GPU (no LLM calls)
+        # ══════════════════════════════════════════════════════════
+        _run_all_state["current_phase"] = "shared_data"
+        _run_all_log(
+            f"📊 Starting shared data-gathering for all {len(bots)} bots…",
+            level="info",
+            phase="system",
+        )
+        logger.info(
+            "[RunAll] ═══ PHASE A: Shared data-gathering (1 scan for all %d bots) ═══",
+            len(bots),
+        )
+
+        shared_loop = AutonomousLoop(
+            max_tickers=max_tickers,
+            bot_id="data-scraper",
+            model_name="data-scraper",
+        )
+
+        import asyncio as _aio
+
+        shared_future = _aio.ensure_future(shared_loop.run_shared_phases())
+        last_sub_log_len = 0
+
+        while not shared_future.done():
+            await _aio.sleep(2)
+            sub_log = shared_loop._state.get("log", [])
+            if len(sub_log) > last_sub_log_len:
+                for entry in sub_log[last_sub_log_len:]:
+                    msg = entry.get("message", "")
+                    phase_val = shared_loop._state.get("phase", "system")
+                    lvl = "info"
+                    if "error" in msg.lower() or "failed" in msg.lower():
+                        lvl = "error"
+                    elif "⚠" in msg or "warning" in msg.lower():
+                        lvl = "warn"
+                    elif "✅" in msg or "complete" in msg.lower():
+                        lvl = "success"
+                    _run_all_log(msg, level=lvl, phase=phase_val)
+                last_sub_log_len = len(sub_log)
+            _run_all_state["current_phase"] = shared_loop._state.get(
+                "phase", "shared_data",
+            )
+
+        shared_result = await shared_future
+
+        # Final sub-log merge
+        sub_log = shared_loop._state.get("log", [])
+        if len(sub_log) > last_sub_log_len:
+            for entry in sub_log[last_sub_log_len:]:
+                msg = entry.get("message", "")
+                lvl = "info"
+                if "error" in msg.lower():
+                    lvl = "error"
+                elif "✅" in msg:
+                    lvl = "success"
+                _run_all_log(msg, level=lvl, phase="shared_data")
+
+        shared_secs = shared_result.get("total_seconds", 0)
+        _run_all_log(
+            f"✅ Shared data-gathering complete in {shared_secs}s — "
+            f"starting {len(bots)} bot LLM runs…",
+            level="success",
+            phase="system",
+        )
+        logger.info(
+            "[RunAll] ═══ Shared data-gathering done in %.1fs — "
+            "starting per-bot LLM loops ═══",
+            shared_secs,
+        )
+
+        # ══════════════════════════════════════════════════════════
+        #  PHASE B: PER-BOT LLM WORK (deep analysis + trading)
+        #  Uses: Jetson Orin GPU (LLM inference via Prism/Ollama)
+        #  Does NOT re-run: discovery, collection, embedding
+        # ══════════════════════════════════════════════════════════
         for idx, bot in enumerate(bots):
             bot_id = bot["bot_id"]
             model_name = bot.get("model_name", "")
@@ -2507,20 +2738,95 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
 
             try:
                 # ── 1. Hot-patch global settings with this bot's config ──
+                # Set provider URL first so resolver queries the correct Ollama
+                provider_url = bot.get("provider_url", "")
+                if provider_url:
+                    settings.OLLAMA_URL = provider_url
+
+                # Resolve model name against Ollama's installed models
+                ollama_url = settings.OLLAMA_URL.rstrip("/")
+                resolved_model = await _resolve_ollama_model_name(
+                    ollama_url, model_name,
+                )
+                if resolved_model != model_name:
+                    _run_all_log(
+                        f"🔄 Model name resolved: {model_name} → {resolved_model}",
+                        level="info",
+                        phase="model_load",
+                        bot_id=bot_id,
+                        bot_name=display_name,
+                    )
+                    logger.info(
+                        "[RunAll] Model resolved: '%s' → '%s'",
+                        model_name, resolved_model,
+                    )
+                    model_name = resolved_model
+                    # Update the state so the frontend shows the resolved name
+                    _run_all_state["current_bot"]["model_name"] = resolved_model
+
+                # ── Pre-flight: verify model actually exists in Ollama ──
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as _pf_client:
+                        _pf_resp = await _pf_client.post(
+                            f"{ollama_url}/api/show",
+                            json={"name": model_name},
+                        )
+                        if _pf_resp.status_code == 404 or (
+                            _pf_resp.status_code == 200
+                            and "error" in _pf_resp.json()
+                        ):
+                            _run_all_log(
+                                f"❌ Model '{model_name}' not found in Ollama "
+                                f"— skipping bot",
+                                level="error",
+                                phase="model_load",
+                                bot_id=bot_id,
+                                bot_name=display_name,
+                            )
+                            logger.error(
+                                "[RunAll] ❌ Model '%s' not found in Ollama "
+                                "— skipping bot %s",
+                                model_name, display_name,
+                            )
+                            bot_result["status"] = "skipped"
+                            bot_result["error"] = (
+                                f"Model '{model_name}' not found in Ollama"
+                            )
+                            _run_all_state["results"].append(bot_result)
+                            _run_all_state["completed"] = idx + 1
+                            continue
+                except Exception as _pf_exc:
+                    logger.warning(
+                        "[RunAll] Pre-flight model check failed: %s "
+                        "— proceeding anyway",
+                        _pf_exc,
+                    )
+
                 settings.LLM_MODEL = model_name
-                settings.LLM_CONTEXT_SIZE = bot.get("context_length", 8192)
+                settings.LLM_CONTEXT_SIZE = min(
+                    bot.get("context_length", 8192),
+                    settings.MAX_CONTEXT_SIZE,
+                )
                 settings.LLM_TEMPERATURE = bot.get("temperature", 0.3)
                 settings.LLM_TOP_P = bot.get("top_p", 1.0)
 
                 # Sync active bot so Portfolio tab shows this bot's data
                 _set_active_bot(bot_id)
 
-                provider_url = bot.get("provider_url", "")
-                if provider_url:
-                    settings.OLLAMA_URL = provider_url
+                # Upgrade stale prompts for this bot (detects & replaces
+                # old SEED_PROMPTS with improved versions)
+                try:
+                    from app.services.AgenticExtractor import AgenticExtractor
+                    AgenticExtractor(bot_id=bot_id).seed_all_prompts()
+                except Exception as _seed_exc:
+                    logger.warning(
+                        "[RunAll] Failed to seed prompts for %s: %s",
+                        bot_id, _seed_exc,
+                    )
 
                 _run_all_log(
-                    f"Config applied: ollama / ctx={bot.get('context_length', 8192)} "
+                    f"Config applied: ollama / model={model_name} / "
+                    f"ctx={bot.get('context_length', 8192)} "
                     f"/ temp={bot.get('temperature', 0.3)}",
                     level="info",
                     phase="model_load",
@@ -2548,12 +2854,57 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                             bot_id=bot_id,
                             bot_name=display_name,
                         )
-                        logger.info(
-                            "[RunAll] 🧹 Unloaded %d Ollama model(s) "
-                            "before warming %s",
-                            freed,
-                            model_name,
+
+                    # Verify: check /api/ps to make sure nothing is left
+                    import asyncio as _aio2
+                    await _aio2.sleep(1)
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as _ps_client:
+                            _ps_resp = await _ps_client.get(
+                                f"{ollama_url}/api/ps",
+                            )
+                            _ps_data = _ps_resp.json()
+                            loaded = _ps_data.get("models", [])
+                            if loaded:
+                                loaded_names = [m.get("name", "?") for m in loaded]
+                                logger.warning(
+                                    "[RunAll] ⚠️ Models still in VRAM after unload: %s "
+                                    "— force-evicting each",
+                                    ", ".join(loaded_names),
+                                )
+                                # Force-evict each individually
+                                for lm in loaded:
+                                    lm_name = lm.get("name", "")
+                                    if lm_name:
+                                        try:
+                                            await _ps_client.post(
+                                                f"{ollama_url}/api/generate",
+                                                json={
+                                                    "model": lm_name,
+                                                    "prompt": "",
+                                                    "keep_alive": "0",
+                                                    "stream": False,
+                                                },
+                                                timeout=10.0,
+                                            )
+                                        except Exception:
+                                            pass
+                                _run_all_log(
+                                    f"🧹 Force-evicted {len(loaded)} lingering model(s)",
+                                    level="info",
+                                    phase="model_unload",
+                                    bot_id=bot_id,
+                                    bot_name=display_name,
+                                )
+                            else:
+                                logger.info(
+                                    "[RunAll] ✅ VRAM clear — no models loaded",
+                                )
+                    except Exception as _ps_exc:
+                        logger.warning(
+                            "[RunAll] Could not verify VRAM state: %s", _ps_exc,
                         )
+
                 except Exception as exc:
                     _run_all_log(
                         f"⚠️ Ollama pre-unload failed: {exc}",
@@ -2561,85 +2912,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         phase="model_unload",
                         bot_id=bot_id,
                         bot_name=display_name,
-                    )
-                    logger.warning(
-                        "[RunAll] ⚠️ Ollama pre-unload failed, "
-                        "attempting warm anyway",
-                    )
-
-                # Pre-warm the new model into VRAM
-                _run_all_log(
-                    f"Pre-warming Ollama model: {model_name}…",
-                    level="info",
-                    phase="model_load",
-                    bot_id=bot_id,
-                    bot_name=display_name,
-                )
-                _run_all_state["current_phase"] = "model_load"
-                try:
-                    warm = await LLMService.verify_and_warm_ollama_model(
-                        ollama_url,
-                        model_name,
-                        keep_alive="2h",
-                    )
-                    if warm.get("status") == "oom_error":
-                        sug = warm.get("suggested_ctx", 8192)
-                        settings.LLM_CONTEXT_SIZE = sug
-                        _run_all_log(
-                            f"⚠️ OOM at ctx={warm.get('requested_ctx')} "
-                            f"— using suggested ctx={sug}",
-                            level="warn",
-                            phase="model_load",
-                            bot_id=bot_id,
-                            bot_name=display_name,
-                        )
-                        logger.warning(
-                            "[RunAll] OOM for %s — using ctx=%d",
-                            model_name, sug,
-                        )
-                    elif warm.get("pre_warmed"):
-                        rec_ctx = warm.get("recommended_ctx", "?")
-                        vram_bytes = warm.get("vram_bytes", 0)
-                        vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
-
-                        _run_all_log(
-                            f"✅ Ollama model warmed: {model_name} | "
-                            f"VRAM Used: {vram_gb:.1f}GB | "
-                            f"eff_ctx={rec_ctx}",
-                            level="success",
-                            phase="model_load",
-                            bot_id=bot_id,
-                            bot_name=display_name,
-                        )
-                        logger.info(
-                            "[RunAll] ✅ Ollama model warmed: %s",
-                            model_name,
-                        )
-                    else:
-                        _run_all_log(
-                            f"⚠️ Ollama warm returned: {warm.get('status')}",
-                            level="warn",
-                            phase="model_load",
-                            bot_id=bot_id,
-                            bot_name=display_name,
-                        )
-                        logger.warning(
-                            "[RunAll] ⚠️ Ollama warm failed for %s: %s",
-                            model_name,
-                            warm.get("status"),
-                        )
-                except Exception as exc:
-                    _run_all_log(
-                        f"⚠️ Ollama warm failed: {exc} — attempting loop anyway",
-                        level="warn",
-                        phase="model_load",
-                        bot_id=bot_id,
-                        bot_name=display_name,
-                    )
-                    logger.exception(
-                        "[RunAll] ⚠️ Ollama warm failed for %s, "
-                        "attempting loop anyway",
-                        model_name,
                     )
 
                 # ── 2b. Smoke-test the model before running the loop ──
@@ -2687,15 +2959,16 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                     _run_all_state["completed"] = idx + 1
                     continue
 
-                # ── 3. Run the autonomous loop for this bot ──
+                # ── 3. Run LLM-ONLY loop (analysis + trading) ──
+                # Data was already gathered in Phase A — only LLM work here
                 _run_all_log(
-                    f"Starting autonomous loop (max_tickers={max_tickers})…",
+                    f"Starting LLM analysis + trading (data already collected)…",
                     level="info",
-                    phase="discovery",
+                    phase="analysis",
                     bot_id=bot_id,
                     bot_name=display_name,
                 )
-                _run_all_state["current_phase"] = "discovery"
+                _run_all_state["current_phase"] = "analysis"
 
                 loop = AutonomousLoop(
                     max_tickers=max_tickers,
@@ -2704,25 +2977,20 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                 )
                 BotRegistry.record_run(bot_id)
 
-                # Run the loop — periodically merge sub-logs
-                import asyncio as _aio
-
-                loop_future = _aio.ensure_future(loop.run_full_loop())
+                # Run LLM-only loop — periodically merge sub-logs
+                loop_future = _aio.ensure_future(loop.run_llm_only_loop())
                 last_sub_log_len = 0
 
                 while not loop_future.done():
                     await _aio.sleep(2)
-                    # Merge new sub-log entries from the AutonomousLoop
                     sub_log = loop._state.get("log", [])
                     if len(sub_log) > last_sub_log_len:
                         for entry in sub_log[last_sub_log_len:]:
                             msg = entry.get("message", "")
-                            # Detect phase from message content
                             phase_guess = "system"
                             phase_val = loop._state.get("phase", "")
                             if phase_val:
                                 phase_guess = phase_val
-                            # Detect level from message
                             lvl = "info"
                             if "error" in msg.lower() or "failed" in msg.lower():
                                 lvl = "error"
@@ -2738,7 +3006,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                                 bot_name=display_name,
                             )
                         last_sub_log_len = len(sub_log)
-                    # Update current phase
                     _run_all_state["current_phase"] = loop._state.get(
                         "phase", "running",
                     )
@@ -2814,10 +3081,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                         bot_id=bot_id,
                         bot_name=display_name,
                     )
-                    logger.warning(
-                        "[RunAll] ⚠️ Post-run unload failed for %s",
-                        model_name,
-                    )
 
             except Exception as exc:
                 bot_result["status"] = "error"
@@ -2839,13 +3102,6 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                     await LLMService.unload_ollama_model(
                         settings.OLLAMA_URL.rstrip("/"),
                         model_name,
-                    )
-                    _run_all_log(
-                        "🧹 Emergency unload after error completed",
-                        level="info",
-                        phase="model_unload",
-                        bot_id=bot_id,
-                        bot_name=display_name,
                     )
                 except Exception:
                     pass

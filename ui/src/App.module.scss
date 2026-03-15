@@ -1,0 +1,105 @@
+.appContainer {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #121212;
+  color: #eeeeee;
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+.graphSection {
+  flex: 3;
+  position: relative;
+  border-right: 1px solid #333;
+}
+
+.sidebar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e1e1e;
+  min-width: 300px;
+  max-width: 450px;
+}
+
+.statusBar {
+  padding: 16px;
+  background-color: #18181b;
+  border-bottom: 1px solid #333;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #f7fafc;
+}
+
+.connectionStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+  color: #a0aec0;
+  
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    
+    &.connected {
+      background-color: #22c55e;
+      box-shadow: 0 0 5px #22c55e;
+    }
+    
+    &.disconnected {
+      background-color: #ef4444;
+      box-shadow: 0 0 5px #ef4444;
+    }
+  }
+}
+
+.activityFeed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feedItem {
+  background-color: #27272a;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  border-left: 4px solid #4a5568;
+
+  &.running { border-color: #facc15; }
+  &.done { border-color: #22c55e; }
+  &.error { border-color: #ef4444; }
+  
+  .time {
+    color: #a0aec0;
+    font-size: 0.75rem;
+    margin-bottom: 4px;
+    display: block;
+  }
+  
+  .phase {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #e2e8f0;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+  }
+
+  .text {
+    color: #d4d4d8;
+    line-height: 1.4;
+  }
+}

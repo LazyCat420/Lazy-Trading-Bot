@@ -44,3 +44,4 @@ hypothesis>=6.100.0
 freezegun>=1.4.0
 respx>=0.22.0
 icecream>=2.1.0
+json-repair

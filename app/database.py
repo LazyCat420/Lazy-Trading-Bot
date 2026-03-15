@@ -806,6 +806,20 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Pipeline Events ───────────────────────────────────────────
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS pipeline_events_seq START 1;
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_events (
+            id               INTEGER PRIMARY KEY DEFAULT nextval('pipeline_events_seq'),
+            bot_id           VARCHAR NOT NULL,
+            event_type       VARCHAR NOT NULL,
+            event_data       TEXT,
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     # ── RAG: Embedding vectors for retrieval-augmented generation ──
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS embeddings_seq START 1;
@@ -822,6 +836,29 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             metadata    VARCHAR DEFAULT '',
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (source_type, source_id, chunk_index)
+        );
+    """)
+
+    # ── Improvement Feed: per-cycle benchmark statistics ────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS benchmark_stats (
+            id                       VARCHAR PRIMARY KEY,
+            cycle_id                 VARCHAR DEFAULT '',
+            bot_id                   VARCHAR DEFAULT 'default',
+            timestamp                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            json_parse_success_rate  DOUBLE DEFAULT 0.0,
+            trade_accuracy           DOUBLE DEFAULT 0.0,
+            avg_llm_latency_ms       INTEGER DEFAULT 0,
+            data_completeness        DOUBLE DEFAULT 0.0,
+            cross_audit_score        DOUBLE DEFAULT 0.0,
+            total_errors             INTEGER DEFAULT 0,
+            total_warnings           INTEGER DEFAULT 0,
+            total_llm_calls          INTEGER DEFAULT 0,
+            total_tokens_used        INTEGER DEFAULT 0,
+            decisions_made           INTEGER DEFAULT 0,
+            trades_executed          INTEGER DEFAULT 0,
+            trades_rejected          INTEGER DEFAULT 0,
+            portfolio_pnl            DOUBLE DEFAULT 0.0
         );
     """)
 

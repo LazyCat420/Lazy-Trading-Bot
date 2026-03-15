@@ -1,0 +1,111 @@
+.nodeWrapper {
+  position: relative;
+  padding: 12px 16px;
+  background-color: #1e1e1e;
+  border-radius: 6px;
+  border: 2px solid #4a5568;
+  min-width: 150px;
+  transition: all 0.3s ease;
+  color: #f7fafc;
+  
+  &.idle {
+    border-color: #4a5568;
+    opacity: 0.6;
+  }
+  
+  &.running {
+    border-color: #facc15;
+    box-shadow: 0 0 10px rgba(250, 204, 21, 0.6);
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  &.done {
+    border-color: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+  }
+  
+  &.error {
+    border-color: #ef4444;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+  }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.label {
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.statusIndicators {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.primaryDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  
+  &.idle { background-color: #718096; }
+  &.running { 
+    background-color: #facc15; 
+  }
+  &.done { background-color: #22c55e; }
+  &.error { background-color: #ef4444; }
+}
+
+.pingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #facc15;
+  position: absolute;
+  right: 0;
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.dataText {
+  font-size: 10px;
+  color: #a0aec0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 4px;
+}
+
+.timestamp {
+  font-size: 9px;
+  color: #718096;
+  text-align: right;
+  margin-top: 8px;
+}
+
+/* React Flow handle overrides */
+:global(.react-flow__handle) {
+  width: 8px;
+  height: 8px;
+  background-color: #a0aec0 !important;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@keyframes ping {
+  75%, 100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}

@@ -21,6 +21,7 @@ from app.services.pipeline_health import (
 from app.services.pipeline_service import PipelineService
 from app.services.price_monitor import PriceMonitor
 from app.services.watchlist_manager import WatchlistManager
+from app.services.WorkflowService import WorkflowTracker
 from app.utils.logger import logger
 
 # Tickers analyzed within this window are skipped by collection / analysis.
@@ -111,7 +112,7 @@ class AutonomousLoop:
         if warm_result.get("status") == "oom_error":
             # OOM — apply the suggested (lower) context size
             sug_ctx = warm_result.get("suggested_ctx", 8192)
-            settings.LLM_CONTEXT_SIZE = sug_ctx
+            settings.LLM_CONTEXT_SIZE = min(sug_ctx, settings.MAX_CONTEXT_SIZE)
             logger.warning(
                 "[AutoLoop] ⚠️ OOM at ctx=%d — using suggested ctx=%d",
                 warm_result.get("requested_ctx", 0), sug_ctx,
@@ -132,7 +133,7 @@ class AutonomousLoop:
 
             # Apply the VRAM-based cap to settings
             old_ctx = settings.LLM_CONTEXT_SIZE
-            settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx)
+            settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx, settings.MAX_CONTEXT_SIZE)
 
             logger.info(
                 "[AutoLoop] ✅ Model pre-warmed | "
@@ -269,6 +270,29 @@ class AutonomousLoop:
         )
         end_loop()
 
+        # ── Post workflow to Prism/Retna ──
+        if not self._cancelled:
+            try:
+                tracker = WorkflowTracker(
+                    title=f"Full Pipeline — {self.bot_id} ({self.model_name})",
+                    source="lazy-trading-bot",
+                )
+                for phase_name, phase_data in report.get("phases", {}).items():
+                    tracker.add_step(
+                        model=self.model_name or settings.LLM_MODEL,
+                        label=phase_name.replace("_", " ").title(),
+                        system_prompt=f"Phase: {phase_name}",
+                        user_input=str(phase_data)[:500],
+                        output=str(phase_data)[:500],
+                        duration=phase_data.get("seconds", 0) if isinstance(phase_data, dict) else 0,
+                    )
+                wf_id = await tracker.post_workflow()
+                if wf_id:
+                    report["workflow_id"] = wf_id
+                    self._log(f"📋 Workflow posted to Retna: {wf_id}")
+            except Exception as exc:
+                logger.warning("[AutoLoop] Workflow posting failed: %s", exc)
+
         # ── Generate health report ──
         try:
             health_path = self._health.generate_report()
@@ -318,7 +342,311 @@ class AutonomousLoop:
             except Exception as exc:
                 logger.warning("[AutoLoop] Cross-bot audit failed: %s", exc)
 
+        # ── Generate Improvement Feed (self-improving diagnostics) ──
+        if not self._cancelled:
+            try:
+                from app.services.ImprovementFeed import ImprovementFeed
+                feed = ImprovementFeed(lookback_hours=24)
+                feed_path = feed.generate_report()
+                report["improvement_feed"] = feed_path
+                self._log(f"📊 Improvement feed: {feed_path}")
+                logger.info("[AutoLoop] Improvement feed: %s", feed_path)
+            except Exception as exc:
+                logger.warning("[AutoLoop] Improvement feed failed: %s", exc)
+
         logger.info("[AutoLoop] ✓ Full loop completed in %.1fs", elapsed)
+        return report
+
+    async def run_shared_phases(self) -> dict:
+        """Run ONLY the data-gathering phases (no LLM required).
+
+        Used by run-all to gather data ONCE before cycling through bots.
+        Phases: discovery → import → collection → embedding
+        """
+        if self._state["running"]:
+            return {"error": "Loop is already running"}
+
+        self._reset_state()
+        t0 = time.time()
+        loop_id = start_loop()
+        set_bot_context(self.bot_id, self.model_name or "data-scraper")
+
+        self._health = HealthTracker(loop_id=loop_id)
+        set_active_tracker(self._health)
+
+        logger.info("=" * 60)
+        logger.info("[AutoLoop] ▶ Starting SHARED data-gathering phases (%s)", loop_id)
+        logger.info("=" * 60)
+        log_event("system", "shared_phases_start", "Shared data-gathering started")
+
+        report: dict[str, Any] = {
+            "started_at": datetime.now().isoformat(),
+            "phases": {},
+            "mode": "shared",
+        }
+
+        # ── Step 1: Discovery ─────────────────────────────────────
+        discovery_result = await self._run_phase(
+            "discovery",
+            "Scanning Reddit + YouTube + SEC 13F + Congress for tickers…",
+            self._do_discovery,
+        )
+        report["phases"]["discovery"] = discovery_result
+
+        # ── Step 2: Auto-Import ───────────────────────────────────
+        import_result = await self._run_phase(
+            "import",
+            "Importing top tickers to watchlist…",
+            self._do_import,
+        )
+        report["phases"]["import"] = import_result
+
+        # ── Step 3: Data Collection ───────────────────────────────
+        collection_result = await self._run_phase(
+            "collection",
+            "Collecting financial data for all active tickers…",
+            self._do_collection,
+        )
+        report["phases"]["collection"] = collection_result
+
+        # ── Step 4: RAG Embedding ─────────────────────────────────
+        embedding_result = await self._run_phase(
+            "embedding",
+            "Embedding collected data for RAG retrieval…",
+            self._do_embedding,
+        )
+        report["phases"]["embedding"] = embedding_result
+
+        elapsed = round(time.time() - t0, 1)
+        report["total_seconds"] = elapsed
+        report["completed_at"] = datetime.now().isoformat()
+
+        self._state["running"] = False
+        self._state["phase"] = "shared_done"
+        self._log(f"Shared data-gathering completed in {elapsed}s")
+
+        log_event(
+            "system", "shared_phases_complete",
+            f"Shared data-gathering completed in {elapsed}s",
+            metadata={"total_seconds": elapsed},
+        )
+        end_loop()
+        clear_active_tracker()
+
+        logger.info("[AutoLoop] ✓ Shared phases completed in %.1fs", elapsed)
+        return report
+
+    async def run_llm_only_loop(self) -> dict:
+        """Run ONLY the LLM-dependent phases (deep analysis + trading).
+
+        Used by run-all after shared phases have already gathered data.
+        Skips: discovery, import, collection, embedding.
+        Runs: model warm → deep analysis → trading → prompt evolution → audit
+        """
+        if self._state["running"]:
+            return {"error": "Loop is already running"}
+
+        self._reset_state()
+        t0 = time.time()
+        loop_id = start_loop()
+        set_bot_context(self.bot_id, self.model_name)
+
+        self._health = HealthTracker(loop_id=loop_id)
+        set_active_tracker(self._health)
+
+        logger.info("=" * 60)
+        logger.info(
+            "[AutoLoop] ▶ Starting LLM-only loop for %s (%s)",
+            self.model_name, loop_id,
+        )
+        logger.info("=" * 60)
+        log_event("system", "llm_loop_start", f"LLM-only loop started for {self.model_name}")
+
+        # ── Pre-warm the LLM model ──
+        from app.config import settings
+        from app.services.llm_service import LLMService
+
+        logger.info(
+            "[AutoLoop] Pre-warming Ollama model: %s @ %s",
+            settings.LLM_MODEL, settings.OLLAMA_URL,
+        )
+        warm_result = await LLMService.verify_and_warm_ollama_model(
+            settings.OLLAMA_URL,
+            settings.LLM_MODEL,
+            keep_alive="2h",
+        )
+        if warm_result.get("status") == "oom_error":
+            sug_ctx = warm_result.get("suggested_ctx", 8192)
+            settings.LLM_CONTEXT_SIZE = min(sug_ctx, settings.MAX_CONTEXT_SIZE)
+            logger.warning(
+                "[AutoLoop] ⚠️ OOM at ctx=%d — using suggested ctx=%d",
+                warm_result.get("requested_ctx", 0), sug_ctx,
+            )
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=True,
+                detail=f"{settings.LLM_MODEL} OOM → ctx={sug_ctx}",
+            )
+        elif warm_result.get("pre_warmed"):
+            rec_ctx = warm_result.get("recommended_ctx", 32768)
+            old_ctx = settings.LLM_CONTEXT_SIZE
+            settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx, settings.MAX_CONTEXT_SIZE)
+            vram_bytes = warm_result.get("vram_bytes", 0)
+            vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
+            self._log(
+                f"✅ Pre-warmed {settings.LLM_MODEL} | "
+                f"VRAM: {vram_gb:.1f}GB | ctx={settings.LLM_CONTEXT_SIZE}"
+            )
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=True,
+                detail=f"{settings.LLM_MODEL} ctx={settings.LLM_CONTEXT_SIZE}",
+            )
+        else:
+            logger.warning("[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result)
+            self._health.record_check(
+                "LLM model pre-warmed",
+                passed=False,
+                detail=warm_result.get("status", "unknown"),
+            )
+
+        report: dict[str, Any] = {
+            "started_at": datetime.now().isoformat(),
+            "phases": {},
+            "mode": "llm_only",
+        }
+
+        # ── Step 0: Import tickers to THIS bot's watchlist ─────────
+        # The shared phase saved discovered tickers to the global
+        # ticker_scores table. Each bot needs its OWN watchlist entries
+        # (scoped by bot_id) to see those tickers for analysis/trading.
+        import_result = await self._run_phase(
+            "import",
+            "Importing discovered tickers to this bot's watchlist…",
+            self._do_import,
+        )
+        report["phases"]["import"] = import_result
+
+        imported = import_result.get("total_imported", 0)
+        self._health.record_check(
+            "Watchlist import",
+            passed=True,  # Not critical — zero is fine if all already imported
+            detail=f"{imported} tickers imported",
+        )
+
+        # ── Step 1: Deep Analysis (LLM-dependent) ─────────────────
+        analysis_result = await self._run_phase(
+            "analysis",
+            "Running 4-layer deep analysis on all active tickers…",
+            self._do_deep_analysis,
+        )
+        report["phases"]["analysis"] = analysis_result
+
+        analyzed = analysis_result.get("analyzed", 0)
+        total_tickers = analysis_result.get("total", 0)
+        self._health.record_check(
+            "Dossiers generated",
+            passed=analyzed > 0,
+            detail=f"{analyzed}/{total_tickers} tickers"
+            if total_tickers else "no tickers to analyze",
+        )
+
+        # ── Step 2: Trading (LLM-dependent) ───────────────────────
+        trading_result = await self._run_phase(
+            "trading",
+            "Processing signals through paper trader…",
+            self._do_trading,
+        )
+        report["phases"]["trading"] = trading_result
+
+        orders_count = trading_result.get("orders", 0)
+        self._health.record_check(
+            "Strategist placed trades",
+            passed=orders_count > 0,
+            detail=f"{orders_count} orders" if orders_count else "0 orders",
+        )
+
+        # ── Done ──────────────────────────────────────────────────
+        elapsed = round(time.time() - t0, 1)
+        report["total_seconds"] = elapsed
+        report["completed_at"] = datetime.now().isoformat()
+
+        self._state["running"] = False
+        self._state["phase"] = "done"
+        self._log(f"LLM-only loop completed in {elapsed}s")
+
+        log_event(
+            "system", "llm_loop_complete",
+            f"LLM-only loop completed in {elapsed}s",
+            metadata={"total_seconds": elapsed},
+        )
+        end_loop()
+
+        # ── Post workflow to Prism/Retna ──
+        if not self._cancelled:
+            try:
+                tracker = WorkflowTracker(
+                    title=f"LLM Pipeline — {self.bot_id} ({self.model_name})",
+                    source="lazy-trading-bot",
+                )
+                for phase_name, phase_data in report.get("phases", {}).items():
+                    tracker.add_step(
+                        model=self.model_name or settings.LLM_MODEL,
+                        label=phase_name.replace("_", " ").title(),
+                        system_prompt=f"Phase: {phase_name}",
+                        user_input=str(phase_data)[:500],
+                        output=str(phase_data)[:500],
+                        duration=phase_data.get("seconds", 0) if isinstance(phase_data, dict) else 0,
+                    )
+                wf_id = await tracker.post_workflow()
+                if wf_id:
+                    report["workflow_id"] = wf_id
+                    self._log(f"📋 Workflow posted to Retna: {wf_id}")
+            except Exception as exc:
+                logger.warning("[AutoLoop] Workflow posting failed: %s", exc)
+
+        # ── Health report ──
+        try:
+            health_path = self._health.generate_report()
+            report["health_report"] = health_path
+        except Exception as exc:
+            logger.warning("[AutoLoop] Health report generation failed: %s", exc)
+        finally:
+            clear_active_tracker()
+
+        # ── Self-improve prompts ──
+        if not self._cancelled:
+            try:
+                from app.services.PromptEvolver import PromptEvolver
+                evolver = PromptEvolver(bot_id=self.bot_id)
+                evolution_result = await evolver.evolve()
+                if evolution_result.get("evolved_steps"):
+                    steps = [s["step"] for s in evolution_result["evolved_steps"]]
+                    self._log(f"🧬 Evolved prompts: {', '.join(steps)}")
+                    report["prompt_evolution"] = evolution_result
+            except Exception as exc:
+                logger.warning("[AutoLoop] Prompt evolution failed: %s", exc)
+
+        # ── Cross-bot audit ──
+        if not self._cancelled:
+            try:
+                from app.config import settings as _settings
+                if getattr(_settings, "CROSS_AUDIT_ENABLED", True):
+                    from app.services.CrossBotAuditor import CrossBotAuditor
+                    auditor = CrossBotAuditor()
+                    audit_result = await auditor.audit_bot_run(
+                        audited_bot_id=self.bot_id,
+                        run_report=report,
+                    )
+                    if audit_result:
+                        score = audit_result.get("overall_score", 0)
+                        auditor_name = audit_result.get("auditor_name", "?")
+                        self._log(f"🔍 Cross-audit by {auditor_name}: {score:.1f}/10")
+                        report["cross_audit"] = audit_result
+            except Exception as exc:
+                logger.warning("[AutoLoop] Cross-bot audit failed: %s", exc)
+
+        logger.info("[AutoLoop] ✓ LLM-only loop completed in %.1fs", elapsed)
         return report
 
     # ------------------------------------------------------------------
@@ -433,7 +761,7 @@ class AutonomousLoop:
 
         import asyncio
 
-        sem = asyncio.Semaphore(3)  # Up to 3 tickers concurrently
+        sem = asyncio.Semaphore(1)  # Sequential: 1 at a time for clear UI log
 
         async def _collect_one(ticker: str) -> str | None:
             async with sem:

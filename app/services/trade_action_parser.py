@@ -19,13 +19,17 @@ from app.services.llm_service import LLMService
 from app.services.symbol_filter import _log_rejection, get_filter_pipeline
 from app.utils.logger import logger
 
+try:
+    from json_repair import repair_json as _repair_json
+except ImportError:
+    _repair_json = None  # Graceful fallback if not installed
+
 _llm = LLMService()
 
 _REPAIR_SYSTEM = (
-    "You are a JSON repair assistant. The user will give you a broken JSON "
-    "object that was supposed to match a specific schema. Fix it so it is "
-    "valid JSON matching the schema exactly. Return ONLY the fixed JSON, "
-    "nothing else."
+    "You are a JSON repair assistant. Fix the broken JSON below so it is "
+    "valid JSON matching the schema. Return ONLY the fixed JSON — "
+    "no thinking, no explanations, no markdown fences, just pure JSON."
 )
 
 _REPAIR_SCHEMA = (
@@ -34,7 +38,12 @@ _REPAIR_SCHEMA = (
     '"confidence": 0.0-1.0, "rationale": "<string>", '
     '"risk_notes": "<string>", "risk_level": "LOW"|"MED"|"HIGH", '
     '"time_horizon": "INTRADAY"|"SWING"|"POSITION"}\n'
-    "All fields except risk_notes, risk_level, time_horizon are required.\n"
+    "All fields except risk_notes, risk_level, time_horizon are required.\n\n"
+    "Example of valid output:\n"
+    '{"action": "HOLD", "symbol": "AAPL", "confidence": 0.45, '
+    '"rationale": "Mixed signals on RSI and MACD", '
+    '"risk_notes": "Earnings next week", "risk_level": "MED", '
+    '"time_horizon": "SWING"}\n'
 )
 
 
@@ -106,7 +115,40 @@ async def parse_trade_action(
         "raw_json_preview": cleaned[:500],
     })
 
-    # ── Step 3: Repair loop ───────────────────────────────────────
+    # ── Step 2.5: Try json_repair (fast, no LLM round-trip) ───────
+    if _repair_json is not None and cleaned.strip():
+        try:
+            repaired_str = _repair_json(cleaned, return_objects=False)
+            if isinstance(repaired_str, str) and repaired_str.strip():
+                action, repair_err = _try_parse(repaired_str, bot_id, symbol)
+                if action is not None:
+                    logger.info(
+                        "[TradeActionParser] ✅ json_repair fixed %s (no LLM needed)",
+                        symbol,
+                    )
+                    _log_parse_event(symbol, bot_id, "json_repair_ok", {
+                        "action": action.action,
+                        "confidence": action.confidence,
+                    })
+                    return _post_validate(action, bot_id)
+        except Exception as exc:
+            logger.debug("[TradeActionParser] json_repair failed for %s: %s", symbol, exc)
+
+    # ── Step 3: LLM Repair loop ──────────────────────────────────
+    # Skip repair if the original response was empty (model timeout).
+    # Sending another request to the same timed-out model will just
+    # waste another 180s with the same result.
+    if not cleaned.strip():
+        logger.warning(
+            "[TradeActionParser] ⚠️ Skipping repair for %s — "
+            "original response was empty (model likely timed out)",
+            symbol,
+        )
+        _log_parse_event(symbol, bot_id, "skip_repair_empty", {
+            "reason": "empty_response_timeout",
+        })
+        max_repairs = 0  # Skip the repair loop below
+
     for attempt in range(max_repairs):
         logger.warning(
             "[TradeActionParser] 🔧 Repair attempt %d/%d for %s — sending to LLM for fixing",
@@ -190,10 +232,18 @@ def _try_parse(
         (TradeAction, None) on success
         (None, error_message) on failure
     """
+    # Try parsing with strict=False to handle control chars (newlines, tabs)
+    # inside JSON string values — LLMs frequently emit these.
     try:
-        data = json.loads(cleaned_json)
-    except (json.JSONDecodeError, TypeError) as exc:
-        return None, f"json.loads() failed: {exc}"
+        data = json.loads(cleaned_json, strict=False)
+    except (json.JSONDecodeError, TypeError):
+        # Fallback: strip all C0 control characters except structural whitespace
+        import re as _re
+        sanitized = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned_json)
+        try:
+            data = json.loads(sanitized, strict=False)
+        except (json.JSONDecodeError, TypeError) as exc:
+            return None, f"json.loads() failed: {exc}"
 
     if not isinstance(data, dict):
         return None, f"Expected dict, got {type(data).__name__}: {str(data)[:200]}"

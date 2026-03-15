@@ -37,7 +37,15 @@ class Settings:
 
     # Model name (e.g. "gemma3:27b" for Ollama)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
-    LLM_CONTEXT_SIZE: int = int(os.getenv("LLM_CONTEXT_SIZE", "8192"))
+
+    # Hard cap on context size to prevent OOM / timeout on large models.
+    # No model will ever load above this, regardless of DB or config.
+    MAX_CONTEXT_SIZE: int = 32768
+
+    LLM_CONTEXT_SIZE: int = min(
+        int(os.getenv("LLM_CONTEXT_SIZE", "8192")),
+        MAX_CONTEXT_SIZE,
+    )
     LLM_CALL_TIMEOUT_SECONDS: int = int(
         os.getenv("LLM_CALL_TIMEOUT_SECONDS", "180")
     )
@@ -54,6 +62,17 @@ class Settings:
     )
     LLM_NUM_EXPERTS: int = int(os.getenv("LLM_NUM_EXPERTS", "0"))
     LLM_GPU_OFFLOAD: bool = os.getenv("LLM_GPU_OFFLOAD", "true").lower() == "true"
+
+    # Template injection: ephemeral wrapper models with correct chat templates
+    TEMPLATE_INJECTION_ENABLED: bool = (
+        os.getenv("TEMPLATE_INJECTION_ENABLED", "true").lower() == "true"
+    )
+    # "missing_only" = inject only when template is missing/broken
+    # "always"       = always create ephemeral model with our template
+    # "never"        = disable template injection entirely
+    TEMPLATE_INJECTION_MODE: str = os.getenv(
+        "TEMPLATE_INJECTION_MODE", "missing_only",
+    )
 
     # Persistent VRAM measurement cache.
     # Key = model name, value = {"ctx": int, "size_vram": int, "kv_rate": float}
@@ -131,7 +150,9 @@ class Settings:
         if "model" in data:
             self.LLM_MODEL = str(data["model"])
         if "context_size" in data:
-            self.LLM_CONTEXT_SIZE = int(data["context_size"])
+            self.LLM_CONTEXT_SIZE = min(
+                int(data["context_size"]), self.MAX_CONTEXT_SIZE,
+            )
         if "temperature" in data:
             self.LLM_TEMPERATURE = float(data["temperature"])
         if "discovery_temperature" in data:
@@ -150,6 +171,10 @@ class Settings:
             self.LLM_NUM_EXPERTS = int(data["num_experts"])
         if "gpu_offload" in data:
             self.LLM_GPU_OFFLOAD = bool(data["gpu_offload"])
+        if "template_injection_enabled" in data:
+            self.TEMPLATE_INJECTION_ENABLED = bool(data["template_injection_enabled"])
+        if "template_injection_mode" in data:
+            self.TEMPLATE_INJECTION_MODE = str(data["template_injection_mode"])
         if "system_total_vram_gb" in data:
             self.SYSTEM_TOTAL_VRAM_GB = int(data["system_total_vram_gb"])
         if "vram_measurements" in data and isinstance(
@@ -207,6 +232,8 @@ class Settings:
             "flash_attention": self.LLM_FLASH_ATTENTION,
             "num_experts": self.LLM_NUM_EXPERTS,
             "gpu_offload": self.LLM_GPU_OFFLOAD,
+            "template_injection_enabled": self.TEMPLATE_INJECTION_ENABLED,
+            "template_injection_mode": self.TEMPLATE_INJECTION_MODE,
             "system_total_vram_gb": self.SYSTEM_TOTAL_VRAM_GB,
             # RAG settings
             "embedding_model": self.RAG_EMBEDDING_MODEL,

@@ -1,8 +1,11 @@
 """LLM service — sends chat requests via Prism AI Gateway.
 
-All LLM calls are routed through Prism (POST /text-to-text) which
+All LLM calls are routed through Prism (POST /chat?stream=false) which
 proxies to the configured Ollama backend.  Prism logs all requests,
 tracks usage/cost, and provides centralized data collection.
+
+Conversation tracking uses `conversationMeta` in the chat payload —
+Prism auto-creates conversations when a conversationId is provided.
 
 Direct Ollama access is only used for model warm-up and VRAM estimation.
 
@@ -111,6 +114,10 @@ class LLMService:
     def model(self) -> str:
         return self._model_override or settings.LLM_MODEL
 
+    @model.setter
+    def model(self, value: str) -> None:
+        self._model_override = value
+
     @property
     def temperature(self) -> float:
         return settings.LLM_TEMPERATURE
@@ -197,46 +204,18 @@ class LLMService:
 
         elapsed_ms = int((_time.monotonic() - t0) * 1000)
 
-        # ── Model fallback: if primary returned empty/failed, try smaller model ──
-        FALLBACK_MODEL = "nemotron-3-nano:latest"
-        if not content.strip() and self.model != FALLBACK_MODEL:
+        # ── Log empty responses but do NOT fall back to a different model ──
+        # Each bot must use only its assigned model. If the model returns
+        # empty, the caller (TradingAgent, TradeActionParser) has its own
+        # retry/skip logic. Silently swapping to a different model produces
+        # mixed, unreliable results.
+        if not content.strip():
             logger.warning(
-                "[LLM] Primary model %s returned empty after %.1fs — "
-                "falling back to %s",
-                self.model, elapsed_ms / 1000, FALLBACK_MODEL,
+                "[LLM] ⚠️ Model %s returned empty after %.1fs — "
+                "NOT falling back to another model. "
+                "The caller will handle this via retry/skip.",
+                self.model, elapsed_ms / 1000,
             )
-            original_model = self.model
-            self.model = FALLBACK_MODEL
-            try:
-                t1 = _time.monotonic()
-                content = await self._call_prism(
-                    effective_msgs,
-                    response_format,
-                    max_tokens,
-                    effective_temp,
-                    schema=schema,
-                    audit_ticker=audit_ticker,
-                    audit_step=f"{audit_step}_fallback",
-                    audit_cycle_id=audit_cycle_id,
-                )
-                fb_elapsed = int((_time.monotonic() - t1) * 1000)
-                if content.strip():
-                    logger.info(
-                        "[LLM] Fallback %s succeeded (%.1fs, %d chars)",
-                        FALLBACK_MODEL, fb_elapsed / 1000, len(content),
-                    )
-                else:
-                    logger.error(
-                        "[LLM] Fallback %s also returned empty",
-                        FALLBACK_MODEL,
-                    )
-            except Exception as fb_exc:
-                logger.error(
-                    "[LLM] Fallback %s also failed: %s",
-                    FALLBACK_MODEL, str(fb_exc)[:100],
-                )
-            finally:
-                self.model = original_model  # Always restore
 
         # Non-blocking audit log (never crashes the pipeline)
         try:
@@ -385,12 +364,13 @@ class LLMService:
     ) -> str:
         """Send a single request to the Prism AI Gateway.
 
-        Routes through Prism's POST /text-to-text endpoint which forwards
-        to the configured Ollama backend.  Prism logs all calls centrally.
-        When audit metadata is provided, a Prism conversation is created
-        so the call appears in Prism's live activity dashboard.
+        Routes through Prism's POST /chat?stream=false endpoint which
+        forwards to the configured Ollama backend.  Prism logs all calls
+        centrally.  When audit metadata is provided, a conversationMeta
+        object is included so the call auto-creates a conversation in
+        Prism's live activity dashboard.
         """
-        url = f"{self.base_url}/text-to-text"
+        url = f"{self.base_url}/chat?stream=false"
 
         # Build Prism options
         options: dict = {"temperature": temperature}
@@ -431,9 +411,18 @@ class LLMService:
             "options": options,
         }
 
-        # ── Create a Prism conversation for live activity tracking ──
-        # Every text-to-text call gets a conversation so it shows in
-        # Prism's live activity dashboard.
+        # ── Pass `format` field for Ollama constrained decoding ──
+        # When Ollama receives a JSON Schema in the `format` field,
+        # it uses GBNF grammar to guarantee valid JSON at the token
+        # generation level — no more malformed output.
+        if schema is not None:
+            payload["format"] = schema  # Full JSON Schema → GBNF enforcement
+        elif response_format == "json":
+            payload["format"] = "json"  # Generic JSON mode
+
+        # ── Conversation tracking via conversationMeta ──
+        # Prism auto-creates a conversation when conversationId +
+        # conversationMeta are present in the payload.
         import uuid
         from datetime import datetime as _dt, timezone as _tz
 
@@ -447,36 +436,21 @@ class LLMService:
             title_parts.append(f"cycle:{audit_cycle_id[:8]}")
         conv_title = " — ".join(title_parts) if title_parts else f"{self.model} generation"
 
-        # Fire-and-forget conversation start
-        try:
-            conv_client = await _get_shared_client()
-            await conv_client.post(
-                f"{self.base_url}/conversations/start",
-                json={
-                    "id": conversation_id,
-                    "title": conv_title,
-                    "systemPrompt": (
-                        effective_msgs[0].get("content", "")[:500]
-                        if effective_msgs and effective_msgs[0].get("role") == "system"
-                        else ""
-                    ),
-                    "settings": {
-                        "provider": "ollama",
-                        "model": self.model,
-                        "temperature": temperature,
-                        "maxTokens": options.get("maxTokens"),
-                    },
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-secret": settings.PRISM_SECRET,
-                    "x-project": settings.PRISM_PROJECT,
-                    "x-username": "trading-bot",
-                },
-                timeout=5.0,
-            )
-        except Exception:
-            pass  # Never block trading for conversation logging
+        payload["conversationId"] = conversation_id
+        payload["conversationMeta"] = {
+            "title": conv_title,
+            "systemPrompt": (
+                effective_msgs[0].get("content", "")[:500]
+                if effective_msgs and effective_msgs[0].get("role") == "system"
+                else ""
+            ),
+            "settings": {
+                "provider": "ollama",
+                "model": self.model,
+                "temperature": temperature,
+                "maxTokens": options.get("maxTokens"),
+            },
+        }
 
         # Extract user message content for Prism conversation auto-append
         user_content = ""
@@ -485,7 +459,6 @@ class LLMService:
                 user_content = m.get("content", "")
                 break
 
-        payload["conversationId"] = conversation_id
         payload["userMessage"] = {
             "content": user_content,
             "timestamp": _dt.now(_tz.utc).isoformat(),
@@ -496,7 +469,7 @@ class LLMService:
             "Content-Type": "application/json",
             "x-api-secret": settings.PRISM_SECRET,
             "x-project": settings.PRISM_PROJECT,
-            "x-username": "trading-bot",
+            "x-username": self.model,
         }
 
         # Derive a short context label from the system prompt
@@ -519,83 +492,105 @@ class LLMService:
         )
         t0 = time.perf_counter()
 
+        # ── Heartbeat: log every 30s so the user knows we're not stuck ──
+        _hb_label = f"{self.model}"
+        if audit_ticker:
+            _hb_label += f" — {audit_ticker}"
+        if audit_step:
+            _hb_label += f" {audit_step}"
+
+        async def _heartbeat() -> None:
+            _elapsed = 0
+            while True:
+                await asyncio.sleep(30)
+                _elapsed += 30
+                logger.info(
+                    "[LLM] ⏳ Still waiting on %s (%ds elapsed)…",
+                    _hb_label, _elapsed,
+                )
+
+        _hb_task = asyncio.create_task(_heartbeat())
+
         try:
-            client = await _get_shared_client()
-            resp = await asyncio.wait_for(
-                client.post(url, json=payload, headers=headers),
-                timeout=_timeout,
-            )
-            resp.raise_for_status()
-        except (TimeoutError, httpx.ReadTimeout):
-            elapsed = time.perf_counter() - t0
-            logger.error(
-                "Prism request TIMEOUT after %.1fs (limit=%ds)",
-                elapsed,
-                _timeout,
-            )
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                timed_out=True,
-            )
-            raise
-        except httpx.HTTPStatusError as exc:
-            elapsed = time.perf_counter() - t0
-            error_body = ""
             try:
-                error_body = exc.response.text[:500]
-            except Exception:
-                pass
-            logger.warning(
-                "Prism request FAILED -> %.1fs: HTTP %d — %s",
-                elapsed,
-                exc.response.status_code,
-                error_body or str(exc)[:120],
-            )
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
-            )
-            if exc.response.status_code >= 500:
+                client = await _get_shared_client()
+                resp = await asyncio.wait_for(
+                    client.post(url, json=payload, headers=headers),
+                    timeout=_timeout,
+                )
+                resp.raise_for_status()
+            except (TimeoutError, httpx.ReadTimeout):
+                elapsed = time.perf_counter() - t0
+                logger.error(
+                    "Prism request TIMEOUT after %.1fs (limit=%ds)",
+                    elapsed,
+                    _timeout,
+                )
+                log_llm_call(
+                    context=_ctx,
+                    model=self.model,
+                    duration_seconds=elapsed,
+                    timed_out=True,
+                )
+                raise
+            except httpx.HTTPStatusError as exc:
+                elapsed = time.perf_counter() - t0
+                error_body = ""
+                try:
+                    error_body = exc.response.text[:500]
+                except Exception:
+                    pass
+                logger.warning(
+                    "Prism request FAILED -> %.1fs: HTTP %d — %s",
+                    elapsed,
+                    exc.response.status_code,
+                    error_body or str(exc)[:120],
+                )
+                log_llm_call(
+                    context=_ctx,
+                    model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
+                )
+                if exc.response.status_code >= 500:
+                    return ""
+                raise
+            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+                # Connection-level failures — Prism may be loading the model
+                elapsed = time.perf_counter() - t0
+                exc_type = type(exc).__name__
+                logger.warning(
+                    "Prism request CONN_ERROR -> %.1fs: %s: %s",
+                    elapsed,
+                    exc_type,
+                    str(exc)[:200] or "(no message)",
+                )
+                log_llm_call(
+                    context=_ctx,
+                    model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"{exc_type}: {str(exc)[:120]}",
+                )
+                # Return empty so dual-mode retry can attempt again
                 return ""
-            raise
-        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
-            # Connection-level failures — Prism may be loading the model
-            elapsed = time.perf_counter() - t0
-            exc_type = type(exc).__name__
-            logger.warning(
-                "Prism request CONN_ERROR -> %.1fs: %s: %s",
-                elapsed,
-                exc_type,
-                str(exc)[:200] or "(no message)",
-            )
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                error=f"{exc_type}: {str(exc)[:120]}",
-            )
-            # Return empty so dual-mode retry can attempt again
-            return ""
-        except Exception as exc:
-            elapsed = time.perf_counter() - t0
-            exc_type = type(exc).__name__
-            logger.warning(
-                "Prism request FAILED -> %.1fs: %s: %s",
-                elapsed,
-                exc_type,
-                str(exc)[:200] or repr(exc)[:200],
-            )
-            log_llm_call(
-                context=_ctx,
-                model=self.model,
-                duration_seconds=elapsed,
-                error=f"{exc_type}: {str(exc)[:120]}",
-            )
-            raise
+            except Exception as exc:
+                elapsed = time.perf_counter() - t0
+                exc_type = type(exc).__name__
+                logger.warning(
+                    "Prism request FAILED -> %.1fs: %s: %s",
+                    elapsed,
+                    exc_type,
+                    str(exc)[:200] or repr(exc)[:200],
+                )
+                log_llm_call(
+                    context=_ctx,
+                    model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"{exc_type}: {str(exc)[:120]}",
+                )
+                raise
+        finally:
+            _hb_task.cancel()
 
         data = resp.json()
         content = data.get("text", "")
@@ -643,16 +638,18 @@ class LLMService:
 
         if thinking:
             logger.info(
-                "Prism request DONE  -> %.2fs, %d chars (thinking: %d chars)",
+                "Prism request DONE  -> %.2fs, %d chars (thinking: %d chars) [%s]",
                 elapsed,
                 len(content),
                 len(thinking),
+                _hb_label,
             )
         else:
             logger.info(
-                "Prism request DONE  -> %.2fs, %d chars",
+                "Prism request DONE  -> %.2fs, %d chars [%s]",
                 elapsed,
                 len(content),
+                _hb_label,
             )
 
         log_llm_call(
@@ -857,6 +854,18 @@ class LLMService:
                     "[LLM] Ollama model %s unloaded (keep_alive=0)",
                     model,
                 )
+
+                # Clean up ephemeral templated model if applicable
+                try:
+                    from app.services.TemplateRegistry import (
+                        delete_ephemeral_model,
+                        is_ephemeral_model,
+                    )
+                    if is_ephemeral_model(model):
+                        await delete_ephemeral_model(base_url, model)
+                except Exception:
+                    pass  # Non-fatal
+
                 return True
         except Exception as exc:
             logger.warning(
@@ -912,6 +921,21 @@ class LLMService:
             "[LLM] Ollama unload complete: %d models freed",
             unloaded,
         )
+
+        # Also clean up any stale ephemeral templated models
+        try:
+            from app.services.TemplateRegistry import (
+                cleanup_all_ephemeral_models,
+            )
+            cleaned = await cleanup_all_ephemeral_models(base_url)
+            if cleaned:
+                logger.info(
+                    "[LLM] Cleaned up %d stale ephemeral model(s)",
+                    cleaned,
+                )
+        except Exception:
+            pass  # Non-fatal
+
         return unloaded
 
     @staticmethod
@@ -1190,6 +1214,35 @@ class LLMService:
                         exc,
                     )
 
+                # -- Step 2.5: Template injection (if needed) ----------
+                # Check if the model's template is missing or broken
+                # and create an ephemeral wrapper with the correct one.
+                from app.config import settings as _ti_cfg
+
+                effective_model = model  # May change if we inject
+                if _ti_cfg.TEMPLATE_INJECTION_ENABLED:
+                    try:
+                        from app.services.TemplateRegistry import (
+                            ensure_template,
+                        )
+
+                        mode = _ti_cfg.TEMPLATE_INJECTION_MODE
+                        injected_model = await ensure_template(
+                            base_url, model, mode=mode,
+                        )
+                        if injected_model != model:
+                            effective_model = injected_model
+                            logger.info(
+                                "[LLM] \u2705 Template injected: using '%s' "
+                                "instead of '%s'",
+                                effective_model, model,
+                            )
+                    except Exception as ti_exc:
+                        logger.warning(
+                            "[LLM] Template injection failed (non-fatal): %s",
+                            ti_exc,
+                        )
+
                 # —— Step 3: Determine desired context ————————————
                 from app.config import settings as _cfg
 
@@ -1222,71 +1275,117 @@ class LLMService:
                     total_gb,
                 )
 
-                # —— Step 5: Flush other models then load —————————
+                # —— Step 5: Flush OTHER models then load —————————
                 import asyncio
 
+                # Check if our model is already loaded in VRAM
+                already_loaded = False
                 try:
-                    freed = await LLMService.unload_all_ollama_models(
-                        base_url,
-                    )
-                    if freed > 0:
-                        logger.info(
-                            "[LLM] Flushed %d model(s) before load",
-                            freed,
-                        )
-                        await asyncio.sleep(2)
-                except Exception:
-                    pass
+                    ps_resp = await client.get(f"{base_url}/api/ps")
+                    ps_data = ps_resp.json()
+                    loaded_models = ps_data.get("models", [])
+                    loaded_names = [m.get("name", "") for m in loaded_models]
 
-                # Single load at user’s desired context
-                try:
-                    warm_resp = await client.post(
-                        f"{base_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": "",
-                            "keep_alive": keep_alive,
-                            "stream": False,
-                            "options": {
-                                "num_ctx": desired_ctx,
-                                "num_gpu": 999,
+                    if effective_model in loaded_names or model in loaded_names:
+                        already_loaded = True
+                        logger.info(
+                            "[LLM] ✅ Model %s already loaded in VRAM — "
+                            "skipping unload/reload cycle",
+                            effective_model,
+                        )
+                        # Only unload OTHER models to free memory
+                        for lm in loaded_models:
+                            lm_name = lm.get("name", "")
+                            if lm_name and lm_name != effective_model and lm_name != model:
+                                try:
+                                    await client.post(
+                                        f"{base_url}/api/generate",
+                                        json={
+                                            "model": lm_name,
+                                            "prompt": "",
+                                            "keep_alive": "0",
+                                            "stream": False,
+                                        },
+                                        timeout=10.0,
+                                    )
+                                    logger.info(
+                                        "[LLM] Evicted unneeded model %s", lm_name,
+                                    )
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass  # Can't check — proceed with full flush
+
+                if not already_loaded:
+                    try:
+                        freed = await LLMService.unload_all_ollama_models(
+                            base_url,
+                        )
+                        if freed > 0:
+                            logger.info(
+                                "[LLM] Flushed %d model(s) before load",
+                                freed,
+                            )
+                            await asyncio.sleep(2)
+                    except Exception:
+                        pass
+
+                    # Load the model at user's desired context
+                    # Use effective_model (may be ephemeral templated model)
+                    try:
+                        warm_resp = await client.post(
+                            f"{base_url}/api/generate",
+                            json={
+                                "model": effective_model,
+                                "prompt": "",
+                                "keep_alive": keep_alive,
+                                "stream": False,
+                                "options": {
+                                    "num_ctx": desired_ctx,
+                                    "num_gpu": 999,
+                                },
                             },
-                        },
-                    )
-                    warm_resp.raise_for_status()
-                    logger.info(
-                        "[LLM] ✅ Model %s loaded at ctx=%d",
-                        model,
-                        desired_ctx,
-                    )
-                    return {
-                        "status": "model_verified",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": True,
-                        "model_max_ctx": model_max_ctx,
-                        "recommended_ctx": desired_ctx,
-                        "kv_rate_bytes_per_token": kv_per_tok,
-                    }
-                except httpx.HTTPStatusError:
-                    logger.warning(
-                        "[LLM] ⚠️ Failed to load %s at ctx=%d",
-                        model,
-                        desired_ctx,
-                    )
-                    return {
-                        "status": "oom_error",
-                        "model": model,
-                        "available_models": [m["name"] for m in tags_data],
-                        "model_found": True,
-                        "pre_warmed": False,
-                        "requested_ctx": desired_ctx,
-                        "message": (
-                            f"Model {model} failed to load at ctx={desired_ctx}. "
-                            "Try a lower context size."
-                        ),
-                    }
+                        )
+                        warm_resp.raise_for_status()
+                        logger.info(
+                            "[LLM] ✅ Model %s loaded at ctx=%d",
+                            effective_model,
+                            desired_ctx,
+                        )
+                    except httpx.HTTPStatusError:
+                        logger.warning(
+                            "[LLM] ⚠️ Failed to load %s at ctx=%d",
+                            effective_model,
+                            desired_ctx,
+                        )
+                        return {
+                            "status": "oom_error",
+                            "model": effective_model,
+                            "base_model": model,
+                            "template_injected": effective_model != model,
+                            "available_models": [m["name"] for m in tags_data],
+                            "model_found": True,
+                            "pre_warmed": False,
+                            "requested_ctx": desired_ctx,
+                            "message": (
+                                f"Model {effective_model} failed to load at "
+                                f"ctx={desired_ctx}. Try a lower context size."
+                            ),
+                        }
+
+                # Return success (covers both already-loaded and freshly loaded)
+                return {
+                    "status": "model_verified",
+                    "model": effective_model,
+                    "base_model": model,
+                    "template_injected": effective_model != model,
+                    "available_models": [m["name"] for m in tags_data],
+                    "model_found": True,
+                    "pre_warmed": True,
+                    "model_max_ctx": model_max_ctx,
+                    "recommended_ctx": desired_ctx,
+                    "kv_rate_bytes_per_token": kv_per_tok,
+                }
         except Exception as exc:
             logger.warning(
                 "[LLM] Ollama model verification failed: %s",

@@ -172,3 +172,67 @@ class TestParserGarbage:
                 "bot1", "NVDA",
             )
         assert action.action in ("BUY", "HOLD")
+
+
+class TestParserControlCharacters:
+    """Parser must handle LLM output with invalid control characters."""
+
+    @pytest.mark.asyncio
+    async def test_newlines_inside_json_strings(self):
+        """Exact bug from ALLE: literal newlines inside rationale string."""
+        broken = (
+            '{\n'
+            '  "action": "HOLD",\n'
+            '  "symbol": "ALLE",\n'
+            '  "confidence": 0.40,\n'
+            '  "rationale": "THESIS: RSI oversold at 27.\n'
+            'KEY_DATA: RSI 27, OCF/NI 1.2x\n'
+            'DIFFERENTIATOR: Mature industrial sector."\n'
+            '}'
+        )
+        action = await parse_trade_action(broken, "bot1", "ALLE")
+        assert action.action == "HOLD"
+        assert action.symbol == "ALLE"
+        assert action.confidence == 0.40
+        assert "RSI" in action.rationale
+
+    @pytest.mark.asyncio
+    async def test_tab_characters_inside_strings(self):
+        """Tabs inside JSON string values should be handled."""
+        broken = (
+            '{"action": "BUY", "symbol": "TSLA", '
+            '"confidence": 0.70, '
+            '"rationale": "Bull\tflag\tconfirmed"}'
+        )
+        action = await parse_trade_action(broken, "bot1", "TSLA")
+        assert action.action == "BUY"
+        assert "flag" in action.rationale
+
+
+class TestJsonRepairIntegration:
+    """Parser should use json_repair to fix minor JSON issues without LLM."""
+
+    @pytest.mark.asyncio
+    async def test_missing_closing_brace(self):
+        """json_repair should fix a missing closing brace."""
+        broken = (
+            '{"action": "HOLD", "symbol": "GEV", '
+            '"confidence": 0.55, "rationale": "Mixed signals"'
+            # Missing closing brace
+        )
+        action = await parse_trade_action(broken, "bot1", "GEV")
+        assert action.action == "HOLD"
+        assert action.symbol == "GEV"
+
+    @pytest.mark.asyncio
+    async def test_trailing_comma(self):
+        """json_repair should fix trailing commas."""
+        broken = (
+            '{"action": "BUY", "symbol": "NVDA", '
+            '"confidence": 0.80, "rationale": "Strong momentum",}'
+        )
+        action = await parse_trade_action(broken, "bot1", "NVDA")
+        assert action.action == "BUY"
+        assert action.symbol == "NVDA"
+
+

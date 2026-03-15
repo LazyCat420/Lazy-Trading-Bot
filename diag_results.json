@@ -1,0 +1,14 @@
+{
+  "test1_models": {
+    "error": "All connection attempts failed"
+  },
+  "test2_minimal": {
+    "error": "All connection attempts failed"
+  },
+  "test3_response_format": {
+    "error": "All connection attempts failed"
+  },
+  "test4_max_tokens": {
+    "error": "All connection attempts failed"
+  }
+}

@@ -1,41 +1,10 @@
-﻿.\venv\Scripts\python.exe 
-: Traceback (most recent 
-call last):
-At line:1 char:1
-+ 
-.\venv\Scripts\python.exe 
--c "import traceback; 
-exec(open('tests/test ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-~~~~~~~~~~~~~~~~~
-    + CategoryInfo         
-     : NotSpecified: (Tra  
-  ceback (most recent ca   
- ll last)::String) [],     
-RemoteException
-    + FullyQualifiedErrorI 
-   d : NativeCommandError
- 
-  File "<string>", line 1, 
-in <module>
-    import traceback; exec(
-open('tests/test_phase1_pip
-eline.py').read())
-                           
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-~~~~~~~~~~~~~~~^^
-  File "D:\Miniconda3\Lib\e
-ncodings\cp1252.py", line 
-23, in decode
-    return codecs.charmap_d
-ecode(input,self.errors,dec
-oding_table)[0]
-           ~~~~~~~~~~~~~~~~
-~~~~~^^^^^^^^^^^^^^^^^^^^^^
-^^^^^^^^^^^^
-UnicodeDecodeError: 
-'charmap' codec can't 
-decode byte 0x9d in 
-position 1787: character 
-maps to <undefined>
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
+rootdir: /home/braindead/github/Lazy-Trading-Bot
+configfile: pytest.ini (WARNING: ignoring pytest config in pyproject.toml!)
+testpaths: tests
+plugins: asyncio-1.3.0, respx-0.22.0, anyio-4.12.1, hypothesis-6.151.9
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 151 items / 12 errors
+
+======================== 2 warnings, 12 errors in 3.11s ========================

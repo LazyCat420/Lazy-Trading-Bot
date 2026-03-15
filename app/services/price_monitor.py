@@ -23,10 +23,12 @@ class PriceMonitor:
         Returns a list of triggered actions taken.
         """
         db = get_db()
+        bot_id = getattr(self._trader, "bot_id", "default")
         triggers = db.execute(
             "SELECT id, ticker, trigger_type, trigger_price, "
             "high_water_mark, trailing_pct, action, qty "
-            "FROM price_triggers WHERE status = 'active'"
+            "FROM price_triggers WHERE status = 'active' AND bot_id = ?",
+            [bot_id],
         ).fetchall()
 
         if not triggers:
@@ -138,7 +140,15 @@ class PriceMonitor:
             try:
                 import yfinance as yf
                 t = yf.Ticker(symbol)
-                price = getattr(t.fast_info, "last_price", None)
+                # handle both dict-like returning `fast_info` (newer yfinance) and getattr
+                price = None
+                if hasattr(t.fast_info, "get"):
+                    price = t.fast_info.get("lastPrice")
+                if price is None:
+                    price = getattr(t.fast_info, "lastPrice", None)
+                if price is None: # ultimate fallback
+                    price = getattr(t.fast_info, "last_price", None)
+                    
                 return (symbol, float(price) if price is not None else None)
             except Exception as e:
                 logger.warning("[PriceMonitor] Price fetch failed for %s: %s", symbol, e)

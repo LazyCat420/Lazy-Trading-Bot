@@ -828,7 +828,16 @@ class QuantSignalEngine:
     # -------------------------------------------------------------------
     @staticmethod
     def _store(db, sc: QuantScorecard) -> None:
-        """Persist a scorecard row in DuckDB."""
+        """Persist a scorecard row in DuckDB.
+
+        Dedup: delete any previous scorecards for this ticker before
+        inserting the new one — keeps only the latest per ticker.
+        """
+        # Purge stale scorecards for this ticker to prevent duplication
+        db.execute(
+            "DELETE FROM quant_scorecards WHERE ticker = ?",
+            [sc.ticker],
+        )
         sc_id = str(uuid.uuid4())
         db.execute(
             """

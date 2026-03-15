@@ -360,7 +360,37 @@ If none are relevant, output: []"""
         unique = {t["permalink"]: t for t in all_threads if "permalink" in t}
         threads = list(unique.values())[: self.MAX_THREADS_TO_SCRAPE]
 
-        logger.info("[Reddit] Step 4: Scraping %d unique threads...", len(threads))
+        # ── Already-seen filter: skip threads we've already scraped ──
+        # Check which Reddit URLs are already in discovered_tickers.
+        # If a thread was scraped before, its data is in the DB — skip it.
+        try:
+            seen_urls = set()
+            rows = db.execute(
+                "SELECT DISTINCT source_url FROM discovered_tickers "
+                "WHERE source = 'reddit' AND source_url IS NOT NULL"
+            ).fetchall()
+            seen_urls = {r[0] for r in rows if r[0]}
+
+            before_count = len(threads)
+            threads = [
+                t for t in threads
+                if f"https://www.reddit.com{t['permalink']}" not in seen_urls
+            ]
+            skipped = before_count - len(threads)
+            if skipped > 0:
+                logger.info(
+                    "[Reddit] Skipped %d already-scraped threads (%d new)",
+                    skipped,
+                    len(threads),
+                )
+        except Exception as exc:
+            logger.warning("[Reddit] Already-seen check failed: %s — scraping all", exc)
+
+        if not threads:
+            logger.info("[Reddit] All threads already scraped — nothing new to process")
+            return []
+
+        logger.info("[Reddit] Step 4: Scraping %d NEW threads...", len(threads))
 
         # Step 4 + 5: Scrape and score (blocking I/O → run in thread)
         ticker_counts, ticker_contexts = await asyncio.to_thread(

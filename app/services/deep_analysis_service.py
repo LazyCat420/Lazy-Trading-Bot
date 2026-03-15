@@ -273,17 +273,26 @@ class DeepAnalysisService:
         """Analyze multiple tickers with bounded concurrency."""
         sem = asyncio.Semaphore(concurrency)
         results: list[TickerDossier] = []
+        total = len(tickers)
 
-        async def _run(t: str) -> TickerDossier:
+        async def _run(idx: int, t: str) -> TickerDossier:
             async with sem:
+                logger.info(
+                    "[DeepAnalysis] ➤ Starting analysis %d/%d: $%s",
+                    idx + 1, total, t,
+                )
                 d = await self.analyze_ticker(
                     t, portfolio_context=portfolio_context, bot_id=bot_id,
+                )
+                logger.info(
+                    "[DeepAnalysis] ✅ Finished analysis %d/%d: $%s (conviction=%.2f)",
+                    idx + 1, total, t, d.conviction_score,
                 )
                 if progress_callback:
                     progress_callback(t)
                 return d
 
-        tasks = [_run(t) for t in tickers]
+        tasks = [_run(i, t) for i, t in enumerate(tickers)]
         dossiers = await asyncio.gather(*tasks, return_exceptions=True)
 
         for t, d in zip(tickers, dossiers):
@@ -390,8 +399,17 @@ class DeepAnalysisService:
 
     @staticmethod
     def _store_dossier(dossier: TickerDossier) -> None:
-        """Persist a TickerDossier to DuckDB."""
+        """Persist a TickerDossier to DuckDB.
+
+        Dedup: delete old dossiers for this ticker before inserting
+        the new one — keeps only the latest per ticker.
+        """
         db = get_db()
+        # Purge stale dossiers for this ticker to prevent duplication
+        db.execute(
+            "DELETE FROM ticker_dossiers WHERE ticker = ?",
+            [dossier.ticker],
+        )
         dossier_id = str(uuid.uuid4())
         db.execute(
             """

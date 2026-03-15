@@ -108,24 +108,38 @@ except: pass
     OLLAMA_URL="$CUSTOM_URL"
   fi
 fi
-echo "[…] Ensuring embedding model '$EMBED_MODEL' is available..."
+echo "[…] Ensuring embedding model '$EMBED_MODEL' is available on $OLLAMA_URL..."
 # Use the HTTP API (not CLI) — the ollama binary may not be on PATH in VS Code
-if curl -sf "$OLLAMA_URL/api/show" -d "{\"name\": \"$EMBED_MODEL\"}" >/dev/null 2>&1; then
+# NOTE: This entire block is non-fatal. If Ollama is unreachable (exit 7),
+# the bot will retry the model pull at startup. Don't crash the launcher.
+set +e  # Temporarily disable exit-on-error
+if curl -sf --connect-timeout 5 "$OLLAMA_URL/api/show" -d "{\"name\": \"$EMBED_MODEL\"}" >/dev/null 2>&1; then
   echo "[✓] Embedding model '$EMBED_MODEL' already pulled."
 else
   echo "[…] Pulling embedding model '$EMBED_MODEL' (first time only)..."
-  curl -sf "$OLLAMA_URL/api/pull" -d "{\"name\": \"$EMBED_MODEL\", \"stream\": false}" >/dev/null 2>&1
+  curl -sf --connect-timeout 10 "$OLLAMA_URL/api/pull" -d "{\"name\": \"$EMBED_MODEL\", \"stream\": false}" >/dev/null 2>&1
   if [ $? -eq 0 ]; then
     echo "[✓] Embedding model pulled."
   else
-    echo "[⚠] Could not pull embedding model — server will retry at startup."
+    echo "[⚠] Could not reach Ollama at $OLLAMA_URL — server will retry at startup."
   fi
 fi
+set -e  # Re-enable exit-on-error
 
 # ── 6. Ensure data directories exist ────────────────────────────
 mkdir -p data/cache data/reports logs
 
-# ── 7. Launch the server ─────────────────────────────────────────
+# ── 7. Build Frontend UI ─────────────────────────────────────────
+if [ -d "ui" ]; then
+  echo "[…] Checking Node-Based Pipeline UI build..."
+  if [ ! -d "ui/dist" ]; then
+    echo "[…] Building UI for the first time..."
+    (cd ui && npm install --silent && npm run build --silent)
+    echo "[✓] UI built."
+  fi
+fi
+
+# ── 8. Launch the server ─────────────────────────────────────────
 echo
 echo "========================================="
 echo "  Starting server on http://localhost:8000"

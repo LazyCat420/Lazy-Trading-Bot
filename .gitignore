@@ -94,3 +94,7 @@ ehthumbs.db
 
 # ── Node (for example_repos subprojects) ──────────
 node_modules/
+
+# ── Prism AI Gateway (embedded service) ───────────
+prism/secrets.js
+prism/node_modules/

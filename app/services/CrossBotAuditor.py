@@ -109,6 +109,27 @@ class CrossBotAuditor:
     auditor_model = auditor_bot["model_name"]
     auditor_name = auditor_bot.get("display_name", auditor_model)
 
+    # ── Resolve the auditor model name against Ollama ──────────
+    # The DB may store vendor-prefixed names (ibm/granite-3.2-8b)
+    # that don't match what Ollama has (granite3.2:8b).
+    from app.config import settings
+    try:
+      from app.main import _resolve_ollama_model_name
+      ollama_url = settings.OLLAMA_URL.rstrip("/")
+      resolved = await _resolve_ollama_model_name(ollama_url, auditor_model)
+      if resolved != auditor_model:
+        logger.info(
+          "[CrossAudit] Resolved auditor model: %s → %s",
+          auditor_model, resolved,
+        )
+      auditor_model_resolved = resolved
+    except Exception as exc:
+      logger.warning(
+        "[CrossAudit] Could not resolve auditor model %s: %s — using as-is",
+        auditor_model, exc,
+      )
+      auditor_model_resolved = auditor_model
+
     # ── Get the audited bot's info ─────────────────────────────
     audited_bot = BotRegistry.get_bot(audited_bot_id)
     if not audited_bot:
@@ -119,7 +140,7 @@ class CrossBotAuditor:
 
     logger.info(
       "[CrossAudit] 🔍 %s (%s) will audit %s (%s)",
-      auditor_name, auditor_model, audited_name, audited_model,
+      auditor_name, auditor_model_resolved, audited_name, audited_model,
     )
 
     # ── Build audit context from the run report ────────────────
@@ -142,15 +163,14 @@ class CrossBotAuditor:
       f"{trades_placed} trades placed"
     )
 
-    # ── Run the audit using the AUDITOR's model ────────────────
-    # Create an LLM service configured for the auditor's model
-    llm = LLMService(model_override=auditor_model)
+    # ── Run the audit using the RESOLVED auditor model ─────────
+    llm = LLMService(model_override=auditor_model_resolved)
 
     audit_user_msg = _AUDIT_CHECKLIST_PROMPT.format(
       audited_bot_name=audited_name,
       audited_model=audited_model,
       auditor_bot_name=auditor_name,
-      auditor_model=auditor_model,
+      auditor_model=auditor_model_resolved,
       tickers_discovered=tickers_discovered,
       tickers_analyzed=tickers_analyzed,
       extraction_summary=extraction_summary,

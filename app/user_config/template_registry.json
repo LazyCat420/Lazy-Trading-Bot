@@ -1,0 +1,82 @@
+{
+  "_comment": "Native chat templates per Ollama model family. Edit to add new families.",
+  "families": {
+    "llama": {
+      "signature_tokens": [
+        "<|start_header_id|>",
+        "<|eot_id|>"
+      ],
+      "template": "{{- if .System }}<|start_header_id|>system<|end_header_id|>\\n\\n{{ .System }}<|eot_id|>{{ end }}{{ if .Prompt }}<|start_header_id|>user<|end_header_id|>\\n\\n{{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>\\n\\n{{ .Response }}<|eot_id|>"
+    },
+    "gemma": {
+      "signature_tokens": [
+        "<start_of_turn>",
+        "<end_of_turn>"
+      ],
+      "template": "{{- if .System }}<start_of_turn>user\\n{{ .System }}{{ end }}{{ if .Prompt }}<start_of_turn>user\\n{{ .Prompt }}<end_of_turn>\\n{{ end }}<start_of_turn>model\\n{{ .Response }}<end_of_turn>"
+    },
+    "gemma2": {
+      "signature_tokens": [
+        "<start_of_turn>",
+        "<end_of_turn>"
+      ],
+      "template": "{{- if .System }}<start_of_turn>user\\n{{ .System }}{{ end }}{{ if .Prompt }}<start_of_turn>user\\n{{ .Prompt }}<end_of_turn>\\n{{ end }}<start_of_turn>model\\n{{ .Response }}<end_of_turn>"
+    },
+    "qwen2": {
+      "signature_tokens": [
+        "<|im_start|>",
+        "<|im_end|>"
+      ],
+      "template": "{{- if .System }}<|im_start|>system\\n{{ .System }}<|im_end|>\\n{{ end }}{{ if .Prompt }}<|im_start|>user\\n{{ .Prompt }}<|im_end|>\\n{{ end }}<|im_start|>assistant\\n{{ .Response }}<|im_end|>"
+    },
+    "qwen3": {
+      "signature_tokens": [
+        "<|im_start|>",
+        "<|im_end|>"
+      ],
+      "template": "{{- if .System }}<|im_start|>system\\n{{ .System }}<|im_end|>\\n{{ end }}{{ if .Prompt }}<|im_start|>user\\n{{ .Prompt }}<|im_end|>\\n{{ end }}<|im_start|>assistant\\n{{ .Response }}<|im_end|>"
+    },
+    "phi3": {
+      "signature_tokens": [
+        "<|system|>",
+        "<|end|>"
+      ],
+      "template": "{{ if .System }}<|system|>\\n{{ .System }}<|end|>\\n{{ end }}{{ if .Prompt }}<|user|>\\n{{ .Prompt }}<|end|>\\n{{ end }}<|assistant|>\\n{{ .Response }}<|end|>"
+    },
+    "mistral": {
+      "signature_tokens": [
+        "[INST]",
+        "[/INST]"
+      ],
+      "template": "{{ if .System }}[INST] {{ .System }} [/INST]{{ end }}{{ if .Prompt }}[INST] {{ .Prompt }} [/INST]{{ end }}{{ .Response }}"
+    },
+    "command-r": {
+      "signature_tokens": [
+        "<|START_OF_TURN_TOKEN|>",
+        "<|END_OF_TURN_TOKEN|>"
+      ],
+      "template": "{{- if .System }}<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{{ .System }}<|END_OF_TURN_TOKEN|>{{ end }}{{ if .Prompt }}<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{{ .Prompt }}<|END_OF_TURN_TOKEN|>{{ end }}<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{{ .Response }}<|END_OF_TURN_TOKEN|>"
+    },
+    "deepseek": {
+      "signature_tokens": [
+        "<|im_start|>",
+        "<|im_end|>"
+      ],
+      "template": "{{- if .System }}<|im_start|>system\\n{{ .System }}<|im_end|>\\n{{ end }}{{ if .Prompt }}<|im_start|>user\\n{{ .Prompt }}<|im_end|>\\n{{ end }}<|im_start|>assistant\\n{{ .Response }}<|im_end|>"
+    },
+    "nemotron": {
+      "signature_tokens": [
+        "<|im_start|>",
+        "<|im_end|>"
+      ],
+      "template": "{{- if .System }}<|im_start|>system\\n{{ .System }}<|im_end|>\\n{{ end }}{{ if .Prompt }}<|im_start|>user\\n{{ .Prompt }}<|im_end|>\\n{{ end }}<|im_start|>assistant\\n{{ .Response }}<|im_end|>"
+    },
+    "starcoder2": {
+      "signature_tokens": [
+        "<|im_start|>",
+        "<|im_end|>"
+      ],
+      "template": "{{- if .System }}<|im_start|>system\\n{{ .System }}<|im_end|>\\n{{ end }}{{ if .Prompt }}<|im_start|>user\\n{{ .Prompt }}<|im_end|>\\n{{ end }}<|im_start|>assistant\\n{{ .Response }}<|im_end|>"
+    }
+  }
+}

@@ -24,12 +24,21 @@ from app.utils.logger import logger
 
 SEED_PROMPTS: dict[str, str] = {
   "extraction_summarize": (
-    "Summarize this video transcript in 3-5 sentences. Focus on:\n"
-    "- What stocks, assets, or markets are discussed\n"
-    "- Key price levels, technical setups, or catalysts mentioned\n"
-    "- The creator's overall sentiment (bullish/bearish/neutral)\n"
-    "- Any analyst ratings, price targets, or earnings data\n"
-    "Keep it concise — this summary will be used for data extraction."
+    "You are a financial data extraction system. Extract the following from "
+    "the video transcript below. Output ONLY the extraction, nothing else.\n\n"
+    "Extract:\n"
+    "- All stocks, assets, ETFs, or markets discussed (use ticker symbols)\n"
+    "- Key price levels, support/resistance, moving averages mentioned\n"
+    "- Technical setups or chart patterns described\n"
+    "- Catalysts: earnings dates, FDA approvals, product launches, etc.\n"
+    "- The creator's sentiment for each stock (bullish/bearish/neutral)\n"
+    "- Any analyst ratings, price targets, or earnings data cited\n"
+    "- Risk factors or bearish arguments mentioned\n\n"
+    "RULES:\n"
+    "- Do NOT ask questions or offer to refine anything\n"
+    "- Do NOT add commentary, opinions, or conversational text\n"
+    "- Write ONLY the extracted data points, no filler\n"
+    "- If a data point is not in the transcript, do not make it up"
   ),
   "extraction_extract": (
     "From this summary, extract US stock tickers (NYSE/NASDAQ only).\n"
@@ -49,12 +58,21 @@ SEED_PROMPTS: dict[str, str] = {
     "If no trading data, set trading_data to null."
   ),
   "extraction_self_question": (
-    "Based on the tickers you extracted, generate exactly 3 follow-up\n"
-    "questions that would help make better trading decisions. Focus on:\n"
-    "- What peer/competitor tickers should we also watch?\n"
-    "- What upcoming catalysts could move these stocks?\n"
-    "- What risk factors were mentioned or implied?\n\n"
-    "Return JSON: {\"questions\": [...], \"answers\": [...]}"
+    "You are a trading analyst. Given the tickers extracted and the video summary,\n"
+    "generate exactly 3 follow-up questions AND answer them based ONLY on what\n"
+    "was discussed in the transcript. Each question must be actionable for a\n"
+    "buy/sell/hold decision.\n\n"
+    "Focus your questions on:\n"
+    "- Earnings, revenue growth, and profitability metrics mentioned\n"
+    "- Technical levels (support, resistance, moving averages, volume trends)\n"
+    "- Upcoming catalysts (earnings dates, FDA approvals, product launches)\n"
+    "- Risk factors (debt levels, competition, regulatory threats)\n"
+    "- Valuation (P/E, forward P/E, price-to-sales) vs sector peers\n\n"
+    "DO NOT ask vague or open-ended questions. Every question must lead to\n"
+    "a concrete data point that helps decide: should we BUY, SELL, or HOLD?\n\n"
+    "Return JSON:\n"
+    '{"questions": ["Q1", "Q2", "Q3"],\n'
+    ' "answers": ["A1 based on transcript data", "A2 based on transcript data", "A3 based on transcript data"]}'
   ),
   "trading_agent": (
     "You are a trading analyst. Given market data and analysis,\n"
@@ -141,12 +159,39 @@ class AgenticExtractor:
   # ── Seed All Prompts ──────────────────────────────────────────────
 
   def seed_all_prompts(self) -> None:
-    """Seed all default prompts for this bot. Called on bot registration."""
-    for step_name, prompt in SEED_PROMPTS.items():
-      existing = self.get_prompt_version(step_name)
-      if existing == 0:
-        self._store_prompt(step_name, prompt, version=1, reason="initial_seed")
-    logger.info("[AgenticExtractor] Seeded all prompts for bot %s", self.bot_id)
+    """Seed all default prompts for this bot. Called on bot registration.
+
+    Also detects stale prompts: if the stored prompt doesn't match the
+    current SEED_PROMPTS, it creates a new version with the updated text.
+    This ensures prompt improvements propagate without manual DB work.
+    """
+    conn = get_db()
+    for step_name, seed_prompt in SEED_PROMPTS.items():
+      # Check current active prompt
+      row = conn.execute(
+        "SELECT version, system_prompt FROM model_logic_loops "
+        "WHERE bot_id = ? AND step_name = ? AND is_active = TRUE "
+        "ORDER BY version DESC LIMIT 1",
+        [self.bot_id, step_name],
+      ).fetchone()
+
+      if not row:
+        # No prompt exists — seed it
+        self._store_prompt(step_name, seed_prompt, version=1, reason="initial_seed")
+      elif row[1] != seed_prompt:
+        # Prompt exists but is stale — upgrade it
+        old_version = row[0]
+        self._store_prompt(
+          step_name, seed_prompt,
+          version=old_version + 1,
+          parent_version=old_version,
+          reason="seed_prompt_upgrade",
+        )
+        logger.info(
+          "[AgenticExtractor] Upgraded stale prompt %s/%s v%d → v%d",
+          self.bot_id, step_name, old_version, old_version + 1,
+        )
+    logger.info("[AgenticExtractor] Seeded/verified all prompts for bot %s", self.bot_id)
 
   # ── Multi-Step Extraction ─────────────────────────────────────────
 
@@ -224,9 +269,17 @@ class AgenticExtractor:
     # ── Step 3: Self-question (only if tickers found) ──────────
     if result["tickers"]:
       self_q_prompt = self.get_prompt("extraction_self_question")
+      # Give the LLM enough context to ANSWER its own questions
+      trading_data_str = ""
+      if result.get("trading_data"):
+        trading_data_str = f"\nTrading Data: {json.dumps(result['trading_data'])}"
       user_msg_3 = (
         f"Tickers found: {', '.join(result['tickers'])}\n"
-        f"Summary: {summary.strip()[:300]}"
+        f"Summary: {summary.strip()[:2000]}"
+        f"{trading_data_str}\n\n"
+        f"Generate 3 questions about these tickers and ANSWER each one "
+        f"based on the information above. Focus on data that helps "
+        f"decide BUY, SELL, or HOLD."
       )
 
       raw_questions = await self.llm.chat(

@@ -156,8 +156,8 @@ _MAX_RESEARCH_TURNS = 4  # Max tool calls before forcing a decision
 
 
 _SYSTEM_PROMPT = """\
-You are an autonomous stock trading bot analyzing a single ticker.
-Your job: decide BUY, SELL, or HOLD based on the data provided.
+You are an elite portfolio manager and capital allocator. You are not just making isolated predictions; you are managing a real pool of capital.
+Your job: decide BUY, SELL, or HOLD based on the data provided, while strictly managing your remaining cash reserves.
 
 ## DECISION FLOW
 1. Review the context provided below.
@@ -177,8 +177,8 @@ When you're ready to decide, respond with ONLY this JSON (no other text):
 {{
   "action": "BUY",
   "symbol": "AAPL",
-  "confidence": 0.75,
-  "rationale": "explanation here",
+  "confidence": 0.82,
+  "rationale": "THESIS: reason | KEY_DATA: data points | DIFFERENTIATOR: unique angle | CONFIDENCE_CALC: exact reason for this score",
   "risk_notes": "risks here",
   "risk_level": "MED",
   "time_horizon": "SWING"
@@ -187,25 +187,51 @@ When you're ready to decide, respond with ONLY this JSON (no other text):
 ## STRICT FIELD RULES (you MUST follow these exactly):
 - "action" → MUST be exactly one of: "BUY", "SELL", "HOLD" (uppercase, no other words)
 - "symbol" → MUST be a valid US stock ticker in uppercase (e.g. "AAPL", "NVDA")
-- "confidence" → MUST be a decimal number between 0.0 and 1.0 (e.g. 0.75, NOT "high")
-- "rationale" → MUST be a string, 1-3 sentences referencing data from the context
-- "risk_notes" → MUST be a string describing key risks
+- "confidence" → MUST be a decimal between 0.0 and 1.0. You MUST use granular precision (e.g. 0.68, 0.73, 0.82). Do NOT simply bin to 0.75 or 0.85.
+- "rationale" → MUST be a structured string with FOUR parts separated by " | ":
+    1. THESIS: One sentence stating your core reasoning (cite a specific number)
+    2. KEY_DATA: The 2-3 most important data points driving this decision
+    3. DIFFERENTIATOR or EXIT_TRIGGER: If BUY/HOLD, what makes this ticker unique? If SELL, what exactly triggered the exit (e.g., stop-loss hit, capital reallocation, thesis broken)?
+    4. CONFIDENCE_CALC: Logical justification for the EXACT confidence score chosen (e.g., "0.82 because baseline 0.60 + 0.15 for Sharpe > 2 + 0.07 for momentum").
+    Example BUY: "THESIS: GEV's 85% conviction with +320% 12m return is exceptional | KEY_DATA: Sharpe 2.4, RSI 62 | DIFFERENTIATOR: Only position with >2.0 Sharpe | CONFIDENCE_CALC: 0.82 because base 0.60 + 0.22 for Sharpe > 2."
+    Example SELL: "THESIS: Core momentum thesis is broken | KEY_DATA: Price dropped 8%, MACD bearish cross | EXIT_TRIGGER: Stop-loss parameter breached | CONFIDENCE_CALC: 0.90 because technical damage is severe."
+- "risk_notes" → MUST be a string describing key risks with specific numbers
 - "risk_level" → MUST be exactly one of: "LOW", "MED", "HIGH" (uppercase)
 - "time_horizon" → MUST be exactly one of: "INTRADAY", "SWING", "POSITION" (uppercase)
 
+## RATIONALE QUALITY RULES (mandatory — rationales that violate these are REJECTED):
+- Do NOT start rationale with "Quant signals indicate" or "Quant conviction is".
+- Your THESIS must cite at least ONE specific number from technical analysis (RSI, MACD, Sharpe, Sortino, momentum %, etc.)
+- Your KEY_DATA must list 2-3 DIFFERENT data points — not just conviction %.
+- Your DIFFERENTIATOR must explain why THIS ticker stands out vs the others in the current portfolio.
+- Your CONFIDENCE_CALC must prove why you picked the exact granular decimal you did.
+- Confidence must reflect genuine signal strength: 0.70, 0.73, 0.82, etc. — NOT always 0.75 or 0.85.
+- Each ticker's rationale MUST be unique. Copying the same wording across tickers is prohibited.
+
 DECISION RULES:
-- Be DECISIVE. Your job is to FIND TRADES, not to avoid them.
-- Your rationale must reference at least one data point from the context.
+- Be DECISIVE, but be SMART. Your job is to find the best risk-adjusted trades, not to buy everything you see.
 - You may ONLY cite numbers and facts explicitly present in the context below.
 - Do NOT use outside knowledge or training data for price targets or fundamentals.
 
-WHEN TO BUY (prefer BUY when these conditions are met):
-- QUANT VERDICT conviction >= 65% → strong BUY signal, favor action.
+## CAPITAL PRESERVATION & RISK RULES:
+- Check your PORTFOLIO Cash, Total Value, and Sector Breakdown. 
+- You MUST preserve "dry powder" (cash). Do not spend all your remaining cash on mediocre setups.
+- If your cash balance is low relative to the max position size, your threshold for a BUY must be EXTREMELY HIGH.
+- Treat every BUY as an allocation of scarce capital. If the conviction isn't exceptional, use HOLD to save the cash for a better day.
+- SECTOR CONCENTRATION: Review your current sector breakdown before buying. If you are already heavily overweight in this stock's sector, you are taking on higher correlation risk. You are allowed to take this risk if the conviction is incredible, but you must factor the lack of diversification into your decision and confidence score.
+
+WHEN TO BUY (prefer BUY when these conditions are met AND you have the cash):
+- QUANT VERDICT conviction >= 65% → strong BUY signal, favor action (if cash permits).
 - Positive momentum (price up 1w/1m/3m) with rising volume → BUY.
 - Sharpe > 1.5 and no major risk flags → BUY.
 - Use HOLD only when signals are genuinely mixed or contradictory.
 
 WHEN TO SELL:
+- You must have a clear EXIT_TRIGGER. Do NOT sell just because you are bored or want to "secure profits" early.
+- Valid EXIT_TRIGGERS:
+  1. Thesis Broken: The original reason you bought it (e.g., strong momentum, high conviction) is gone.
+  2. Stop-Loss / Take-Profit Hit: The price has hit a predetermined risk management level.
+  3. Reallocation: You desperately need the capital for a significantly better opportunity (conviction > 85%).
 - QUANT VERDICT is SELL or conviction < 30%.
 - CRITICAL: Do NOT output SELL if EXISTING POSITION is "None".
   You can only SELL stocks you actually hold. If you don't hold it, output HOLD.
@@ -542,13 +568,14 @@ class TradingAgent:
     def _build_prompt(ctx: dict) -> str:
         """Build the user prompt from context data."""
         symbol = ctx.get("symbol", "?")
+        target_sector = ctx.get("target_sector", "Unknown")
         price = ctx.get("last_price", 0)
         change = ctx.get("today_change_pct", 0)
         volume = ctx.get("volume", 0)
         avg_vol = ctx.get("avg_volume", 0)
 
         parts = [
-            f"TICKER: {symbol}",
+            f"TICKER: {symbol} (Sector: {target_sector})",
             f"PRICE: ${price:.2f}  |  TODAY: {change:+.2f}%",
             f"VOLUME: {volume:,.0f}  |  AVG VOLUME: {avg_vol:,.0f}",
         ]
@@ -614,5 +641,32 @@ class TradingAgent:
             )
         else:
             parts.append("EXISTING POSITION: None")
+
+        # Current holdings summary — so the LLM knows what it already owns
+        # and can explain why THIS ticker adds unique value to the portfolio
+        all_positions = ctx.get("all_positions", [])
+        if all_positions:
+            held_summaries = []
+            for hp in all_positions[:10]:  # Cap at 10 to save context
+                hp_ticker = hp.get("ticker", "?")
+                hp_qty = hp.get("qty", 0)
+                hp_entry = hp.get("avg_entry_price", 0)
+                held_summaries.append(f"{hp_ticker}({hp_qty}@${hp_entry:.0f})")
+            parts.append(
+                f"\nCURRENT HOLDINGS: {', '.join(held_summaries)}"
+            )
+            
+            # Sector breakdown
+            sector_breakdown = ctx.get("sector_breakdown", {})
+            if sector_breakdown:
+                breakdown_parts = [f"{s}: ${v:,.0f}" for s, v in sorted(sector_breakdown.items(), key=lambda x: x[1], reverse=True)]
+                parts.append(f"SECTOR EXPOSURE: {', '.join(breakdown_parts)}")
+
+            parts.append(
+                "Your rationale MUST explain why this ticker adds UNIQUE value "
+                "beyond what is already held above."
+            )
+        else:
+            parts.append("\nCURRENT HOLDINGS: None (empty portfolio)")
 
         return "\n".join(parts)

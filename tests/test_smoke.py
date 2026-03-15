@@ -9,7 +9,7 @@ class TestImports:
 
     def test_config(self) -> None:
         from app.config import settings
-        assert settings.LLM_PROVIDER in ("ollama", "openai", "lmstudio")
+        assert hasattr(settings, "PRISM_URL")
         assert settings.DB_PATH is not None
         assert settings.PROMPTS_DIR.exists()
 
@@ -54,7 +54,7 @@ class TestImports:
     def test_llm_service(self) -> None:
         from app.services.llm_service import LLMService
         llm = LLMService()
-        assert llm.provider in ("ollama", "openai", "lmstudio")
+        assert llm.base_url is not None
 
         # Test JSON cleaning
         raw = '```json\n{"signal": "BUY"}\n```'

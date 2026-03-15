@@ -107,6 +107,13 @@ Use when: earnings coming soon, pending FDA decision, awaiting data.
 Params: ticker (str), delay_minutes (int), reason (str)
 Example: {"action": "schedule_wakeup", "params": {"ticker": "NVDA", "delay_minutes": 120, "reason": "Earnings report in 2 hours"}}
 
+### pass
+Signal that you investigated a ticker but decided NOT to buy it right now.
+You MUST provide a `trigger_price` where you WOULD be willing to buy it.
+If the stock is fundamentally broken and you would never buy it, set trigger_price to 0.
+Params: ticker (str), reason (str), trigger_price (float)
+Example: {"action": "pass", "params": {"ticker": "NVDA", "reason": "Too expensive right now", "trigger_price": 105.50}}
+
 ### finish
 Signal that you've made all your decisions for this cycle.
 Params: summary (str) — brief reasoning for your decisions
@@ -148,6 +155,7 @@ ACTION_SCHEMA = {
                 "get_market_status",
                 "remove_from_watchlist",
                 "schedule_wakeup",
+                "pass",
                 "finish",
                 # Research tools
                 *RESEARCH_TOOL_NAMES,
@@ -278,7 +286,10 @@ class PortfolioStrategist:
         finish_summary = ""
 
         for turn in range(_MAX_TURNS):
-            logger.info("[Strategist] Turn %d/%d", turn + 1, _MAX_TURNS)
+            logger.info(
+                "[Strategist] Turn %d/%d — requesting LLM action…",
+                turn + 1, _MAX_TURNS,
+            )
 
             try:
                 raw = await self._llm.chat(
@@ -288,7 +299,7 @@ class PortfolioStrategist:
                     max_tokens=2000,
                 )
             except Exception as exc:
-                logger.error("[Strategist] LLM call failed: %s", exc)
+                logger.error("[Strategist] LLM call failed on turn %d: %s", turn + 1, exc)
                 finish_summary = f"LLM call failed: {exc}"
                 break
 
@@ -485,6 +496,7 @@ class PortfolioStrategist:
             "get_market_status": self._tool_get_market_status,
             "remove_from_watchlist": self._tool_remove_from_watchlist,
             "schedule_wakeup": self._tool_schedule_wakeup,
+            "pass": self._tool_pass,
             # Research tools (from research_tools.py)
             **RESEARCH_TOOL_REGISTRY,
         }
@@ -1022,6 +1034,45 @@ class PortfolioStrategist:
             "[Strategist] Removed %s from watchlist: %s", ticker, reason,
         )
         return {**result, "reason": reason}
+
+    async def _tool_pass(self, params: dict) -> dict:
+        """Handle LLM deciding not to buy, optionally setting a buy trigger."""
+        ticker = params.get("ticker", "")
+        reason = params.get("reason", "")
+        trigger_price = float(params.get("trigger_price", 0.0))
+
+        if not ticker:
+            return {"error": "ticker is required"}
+
+        # Prevent LLM from retrying this ticker this cycle
+        self._failed_buy_tickers.add(ticker)
+
+        msg = f"Passed on {ticker}: {reason}"
+        if trigger_price > 0:
+            try:
+                from app.database import get_db
+                import uuid
+                from datetime import datetime
+                db = get_db()
+                trigger_id = str(uuid.uuid4())
+                db.execute(
+                    "INSERT INTO price_triggers (id, ticker, trigger_type, trigger_price, action, qty, status, created_at, bot_id) "
+                    "VALUES (?, ?, 'limit_buy', ?, 'buy', 0, 'active', ?, ?)",
+                    [trigger_id, ticker, trigger_price, datetime.now(), self._trader.bot_id]
+                )
+                msg += f" (Will watch for entry @ ${trigger_price:.2f})"
+            except Exception as e:
+                logger.error("[Strategist] Failed to save trigger for %s: %s", ticker, e)
+
+        from app.services.event_logger import log_event
+        log_event(
+            "trading",
+            "strategist_pass",
+            msg,
+            ticker=ticker,
+            metadata={"reason": reason, "trigger_price": trigger_price}
+        )
+        return {"status": "ok", "message": msg}
 
     async def _tool_schedule_wakeup(self, params: dict) -> dict:
         """Schedule a future re-analysis for a specific ticker."""

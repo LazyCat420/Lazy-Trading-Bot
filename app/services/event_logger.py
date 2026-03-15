@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from app.database import get_db
+from app.services.ws_broadcaster import broadcaster
 from app.utils.logger import logger
 
 # Module-level loop_id so every event in the same autonomous-loop run
@@ -112,3 +113,15 @@ def log_event(
     except Exception as exc:
         # Never let logging failures break the pipeline
         logger.warning("[EventLogger] Failed to log event: %s", exc)
+
+    # ── Emit to Websocket Broadcaster ──
+    broadcaster.broadcast_sync({
+        "type": "phase_update",
+        "node": phase,
+        "status": status,
+        "label": detail,
+        "ticker": ticker,
+        "data_out": metadata,
+        "timestamp": datetime.now().timestamp(),
+        "meta": metadata
+    })

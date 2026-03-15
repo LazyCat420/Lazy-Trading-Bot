@@ -96,7 +96,6 @@ class TradingPipelineService:
             return {"decisions": 0, "executions": 0, "tickers": [], "filtered": len(tickers)}
 
         # ── Step 3: Build context + decide + execute ───────────
-        portfolio = self._trader.get_portfolio()
         results = []
 
         # Priority sort: BUY-signal tickers first (most actionable),
@@ -118,17 +117,17 @@ class TradingPipelineService:
         except Exception:
             pass  # Sort is best-effort
 
-        _MAX_ORDERS_PER_CYCLE = 5
         orders_this_cycle = 0
+        total_valid = len(valid_tickers)
 
-        for ticker in valid_tickers:
-            # Early termination: stop if we've hit the daily trade limit
-            if orders_this_cycle >= _MAX_ORDERS_PER_CYCLE:
-                logger.info(
-                    "[TradingPipeline] Hit %d-order limit — skipping remaining tickers",
-                    _MAX_ORDERS_PER_CYCLE,
-                )
-                break
+        for tick_idx, ticker in enumerate(valid_tickers):
+            logger.info(
+                "[TradingPipeline] ➤ Ticker %d/%d: $%s — processing…",
+                tick_idx + 1, total_valid, ticker,
+            )
+            # Refresh portfolio state for EVERY ticker so the LLM accurately 
+            # sees its cash balance drain if it executes trades during this cycle.
+            portfolio = self._trader.get_portfolio()
 
             try:
                 result = await self._process_ticker(ticker, portfolio, cycle_dir, cycle_id)
@@ -138,6 +137,12 @@ class TradingPipelineService:
                 ) in ("BUY", "SELL")
                 if is_order:
                     orders_this_cycle += 1
+                logger.info(
+                    "[TradingPipeline] ✅ Ticker %d/%d: $%s — %s (%s)",
+                    tick_idx + 1, total_valid, ticker,
+                    result.get("action", "?"),
+                    result.get("exec_status", "?"),
+                )
             except Exception as exc:
                 logger.error("[TradingPipeline] Failed for %s: %s", ticker, exc)
                 results.append(
@@ -193,6 +198,7 @@ class TradingPipelineService:
     ) -> dict:
         """Process a single ticker: context → decide → execute."""
         # ── Build context ──────────────────────────────────────
+        logger.info("[TradingPipeline] $%s — building context…", ticker)
         context = await self._build_context(ticker, portfolio)
 
         # Save context artifact
@@ -201,6 +207,7 @@ class TradingPipelineService:
                 self._artifacts.save_context(cycle_dir, ticker, context)
 
         # ── Get LLM decision ──────────────────────────────────
+        logger.info("[TradingPipeline] $%s — requesting LLM decision…", ticker)
         action, raw_llm = await self._agent.decide(context, self._bot_id)
 
         # ── Post-LLM sanity check (BUY bias guardrail) ────────
@@ -557,6 +564,7 @@ class TradingPipelineService:
         context["portfolio_cash"] = portfolio.get("cash_balance", 0)
         context["portfolio_value"] = portfolio.get("total_portfolio_value", 0)
         context["max_position_pct"] = 15
+        context["all_positions"] = portfolio.get("positions", [])
 
         # ── Existing position ─────────────────────────────────
         positions = portfolio.get("positions", [])
@@ -571,5 +579,43 @@ class TradingPipelineService:
                     "unrealized_pnl": round((price - entry) * qty, 2) if price and entry else 0,
                 }
                 break
+
+        # ── Sector Breakdown for Risk Management ──────────────
+        try:
+            from app.database import get_db
+            db = get_db()
+            
+            # Target ticker sector
+            row = db.execute(
+                "SELECT sector FROM fundamentals WHERE ticker = ? ORDER BY snapshot_date DESC LIMIT 1",
+                [ticker]
+            ).fetchone()
+            context["target_sector"] = row[0] if row and row[0] else "Unknown"
+            
+            # Sector weighting for current positions
+            sector_counts = {}
+            if context["all_positions"]:
+                held_tickers = [p["ticker"] for p in context["all_positions"]]
+                placeholders = ",".join("?" for _ in held_tickers)
+                rows = db.execute(
+                    f"SELECT ticker, MAX(sector) FROM fundamentals WHERE ticker IN ({placeholders}) GROUP BY ticker",
+                    held_tickers
+                ).fetchall()
+                ticker_to_sector = {r[0]: (r[1] or "Unknown") for r in rows}
+                
+                for p in context["all_positions"]:
+                    pticker = p["ticker"]
+                    pqty = p.get("qty", 0)
+                    pentry = p.get("avg_entry_price", 0)
+                    pval = pqty * pentry
+                    s = ticker_to_sector.get(pticker, "Unknown")
+                    sector_counts[s] = sector_counts.get(s, 0) + pval
+            
+            context["sector_breakdown"] = sector_counts
+        except Exception as exc:
+            logger.warning("[TradingPipeline] Failed to build sector breakdown for %s: %s", ticker, exc)
+            if "target_sector" not in context:
+                context["target_sector"] = "Unknown"
+            context["sector_breakdown"] = {}
 
         return context

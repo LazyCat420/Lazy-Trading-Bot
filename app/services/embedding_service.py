@@ -48,10 +48,34 @@ class EmbeddingService:
         if not texts:
             return []
 
-        all_vectors: list[list[float]] = []
+        import asyncio
+        import time as _time
 
-        for i in range(0, len(texts), self.MAX_BATCH_SIZE):
+        all_vectors: list[list[float]] = []
+        total_batches = (len(texts) + self.MAX_BATCH_SIZE - 1) // self.MAX_BATCH_SIZE
+
+        for batch_idx, i in enumerate(range(0, len(texts), self.MAX_BATCH_SIZE)):
             batch = texts[i : i + self.MAX_BATCH_SIZE]
+            if total_batches > 1:
+                logger.info(
+                    "[Embedding] Batch %d/%d (%d texts) — sending to Ollama…",
+                    batch_idx + 1, total_batches, len(batch),
+                )
+
+            # Heartbeat for long embedding batches
+            async def _hb(batch_num: int) -> None:
+                elapsed = 0
+                while True:
+                    await asyncio.sleep(30)
+                    elapsed += 30
+                    logger.info(
+                        "[Embedding] ⏳ Still embedding batch %d/%d (%ds elapsed)…",
+                        batch_num, total_batches, elapsed,
+                    )
+
+            hb_task = asyncio.create_task(_hb(batch_idx + 1))
+            t0 = _time.perf_counter()
+
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     resp = await client.post(
@@ -62,6 +86,12 @@ class EmbeddingService:
                     data = resp.json()
                     embeddings = data.get("embeddings", [])
                     all_vectors.extend(embeddings)
+                    elapsed = _time.perf_counter() - t0
+                    if total_batches > 1:
+                        logger.info(
+                            "[Embedding] ✅ Batch %d/%d done (%.1fs, %d vectors)",
+                            batch_idx + 1, total_batches, elapsed, len(embeddings),
+                        )
             except httpx.HTTPStatusError as exc:
                 logger.error(
                     "[Embedding] Ollama /api/embed failed (HTTP %d): %s",
@@ -73,6 +103,8 @@ class EmbeddingService:
             except Exception as exc:
                 logger.error("[Embedding] Ollama embed request failed: %s", exc)
                 all_vectors.extend([] for _ in batch)
+            finally:
+                hb_task.cancel()
 
         return all_vectors
 
@@ -574,10 +606,40 @@ class EmbeddingService:
 
         t0 = _time.time()
 
+        logger.info("[Embedding] ▶ Phase 1/4: YouTube transcripts…")
         yt = await self.embed_youtube_transcripts()
+        yt_elapsed = round(_time.time() - t0, 1)
+        logger.info(
+            "[Embedding] ✅ YouTube done: %d embedded, %d chunks (%.1fs)",
+            yt.get("embedded", 0), yt.get("total_chunks", 0), yt_elapsed,
+        )
+
+        logger.info("[Embedding] ▶ Phase 2/4: Reddit posts…")
+        t_reddit = _time.time()
         reddit = await self.embed_reddit_posts()
+        reddit_elapsed = round(_time.time() - t_reddit, 1)
+        logger.info(
+            "[Embedding] ✅ Reddit done: %d embedded, %d chunks (%.1fs)",
+            reddit.get("embedded", 0), reddit.get("total_chunks", 0), reddit_elapsed,
+        )
+
+        logger.info("[Embedding] ▶ Phase 3/4: News articles…")
+        t_news = _time.time()
         news = await self.embed_news_articles()
+        news_elapsed = round(_time.time() - t_news, 1)
+        logger.info(
+            "[Embedding] ✅ News done: %d embedded, %d chunks (%.1fs)",
+            news.get("embedded", 0), news.get("total_chunks", 0), news_elapsed,
+        )
+
+        logger.info("[Embedding] ▶ Phase 4/4: Trade decisions…")
+        t_dec = _time.time()
         decisions = await self.embed_trade_decisions()
+        dec_elapsed = round(_time.time() - t_dec, 1)
+        logger.info(
+            "[Embedding] ✅ Decisions done: %d embedded, %d chunks (%.1fs)",
+            decisions.get("embedded", 0), decisions.get("total_chunks", 0), dec_elapsed,
+        )
 
         total_chunks = (
             yt.get("total_chunks", 0)
