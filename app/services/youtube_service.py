@@ -264,6 +264,7 @@ class YouTubeCollector:
                         vid.get("duration", 0),
                     ],
                 )
+                db.commit()
                 continue
 
             # Log preview for debugging
@@ -312,6 +313,7 @@ class YouTubeCollector:
                     yt.raw_transcript,
                 ],
             )
+            db.commit()
 
         logger.info(
             "Collected %d NEW transcripts for %s (from %d candidates)",
@@ -447,6 +449,7 @@ class YouTubeCollector:
                         vid.get("duration", 0),
                     ],
                 )
+                db.commit()
                 continue
 
             yt = YouTubeTranscript(
@@ -487,6 +490,7 @@ class YouTubeCollector:
                     yt.raw_transcript,
                 ],
             )
+            db.commit()
 
         logger.info(
             "Collected %d general market transcripts (>= %ds)",

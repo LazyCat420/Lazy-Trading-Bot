@@ -25,7 +25,6 @@ from app.services.execution_service import ExecutionService
 from app.services.paper_trader import PaperTrader
 from app.services.symbol_filter import get_filter_pipeline
 from app.services.trading_agent import TradingAgent
-from app.services.WorkflowService import WorkflowTracker
 from app.utils.logger import logger
 
 
@@ -209,7 +208,7 @@ class TradingPipelineService:
 
         # ── Get LLM decision ──────────────────────────────────
         logger.info("[TradingPipeline] $%s — requesting LLM decision…", ticker)
-        action, raw_llm, llm_meta = await self._agent.decide(context, self._bot_id)
+        action, raw_llm = await self._agent.decide(context, self._bot_id)
 
         # ── Post-LLM sanity check (BUY bias guardrail) ────────
         flags = set(context.get("quant_flags", []))
@@ -295,33 +294,6 @@ class TradingPipelineService:
             "risk_level": action.risk_level,
             "decision_id": decision_id,
         }
-
-        # ── Post per-ticker workflow to Prism/Retna ────────────
-        try:
-            tracker = WorkflowTracker(
-                title=f"${ticker} — Trade Decision",
-                source="lazy-trading-bot",
-            )
-            tracker.add_step(
-                model=llm_meta.get("model", "unknown"),
-                label=f"{ticker} — {action.action}",
-                system_prompt=llm_meta.get("system_prompt", ""),
-                user_input=llm_meta.get("user_prompt", ""),
-                output=llm_meta.get("raw_output", ""),
-                duration=llm_meta.get("duration_s", 0.0),
-            )
-            wf_id = await tracker.post_workflow()
-            if wf_id:
-                result["workflow_id"] = wf_id
-                logger.info(
-                    "[TradingPipeline] $%s workflow posted to Prism: %s",
-                    ticker, wf_id,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[TradingPipeline] Workflow posting failed for %s: %s",
-                ticker, exc,
-            )
 
         # Save decision artifact
         if cycle_dir:

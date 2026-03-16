@@ -97,7 +97,10 @@ class UserExclusionFilter:
 
 
 class AssetCheckFilter:
-    """yfinance fast_info — has price > 0?"""
+    """yFinance fast_info — has price > 0?
+
+    Auto-blacklists tickers that fail so they're never re-scraped.
+    """
 
     _cache: dict[str, bool] = {}
 
@@ -117,6 +120,9 @@ class AssetCheckFilter:
             price = getattr(fi, "last_price", None)
             if price is None or price <= 0:
                 self._cache[symbol] = False
+                BlacklistService.auto_blacklist(
+                    symbol, "no_market_data", ctx.get("source", "asset_check"),
+                )
                 return FilterResult(
                     False, "no_market_data", symbol,
                 )
@@ -124,9 +130,50 @@ class AssetCheckFilter:
             return FilterResult(True, "", symbol)
         except Exception:
             self._cache[symbol] = False
+            BlacklistService.auto_blacklist(
+                symbol, "yfinance_error", ctx.get("source", "asset_check"),
+            )
             return FilterResult(
                 False, "yfinance_error", symbol,
             )
+
+
+class BlacklistFilter:
+    """Check the persistent ticker_blacklist table — O(1) via in-memory cache.
+
+    Once a ticker fails yfinance validation, it's auto-blacklisted in DuckDB
+    and never re-scraped, even after restarts.
+    """
+
+    _cache: set[str] | None = None
+
+    def apply(self, symbol: str, ctx: dict[str, Any]) -> FilterResult:
+        if BlacklistFilter._cache is None:
+            BlacklistFilter._load_cache()
+        if symbol in BlacklistFilter._cache:
+            return FilterResult(False, "blacklisted", symbol)
+        return FilterResult(True, "", symbol)
+
+    @staticmethod
+    def _load_cache() -> None:
+        """Load blacklisted tickers from DuckDB into memory."""
+        try:
+            db = get_db()
+            rows = db.execute(
+                "SELECT symbol FROM ticker_blacklist"
+            ).fetchall()
+            BlacklistFilter._cache = {r[0] for r in rows}
+            logger.info(
+                "[Blacklist] Loaded %d blacklisted tickers",
+                len(BlacklistFilter._cache),
+            )
+        except Exception:
+            BlacklistFilter._cache = set()
+
+    @staticmethod
+    def invalidate_cache() -> None:
+        """Force re-read from DB on next apply()."""
+        BlacklistFilter._cache = None
 
 
 # ── Pipeline ─────────────────────────────────────────────────────
@@ -185,7 +232,8 @@ def get_filter_pipeline() -> FilterPipeline:
             ForeignExchangeFilter(),
             ExclusionListFilter(),
             UserExclusionFilter(),
-            AssetCheckFilter(),
+            BlacklistFilter(),      # Persistent DB blacklist (before yfinance)
+            AssetCheckFilter(),     # yfinance check (auto-blacklists failures)
         ])
     return _pipeline
 
@@ -305,3 +353,85 @@ class UserExclusionsService:
             [symbol, bot_id],
         ).fetchone()
         return row is not None
+
+
+# ── Blacklist Service ────────────────────────────────────────────
+
+class BlacklistService:
+    """Manages the persistent ticker_blacklist table."""
+
+    @staticmethod
+    def auto_blacklist(
+        symbol: str,
+        reason: str,
+        source: str = "auto",
+    ) -> None:
+        """Add a ticker to the blacklist (silently skips duplicates)."""
+        try:
+            db = get_db()
+            db.execute(
+                """
+                INSERT OR IGNORE INTO ticker_blacklist
+                    (symbol, reason, source, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [symbol, reason, source, datetime.now()],
+            )
+            db.commit()
+            # Update in-memory cache
+            if BlacklistFilter._cache is not None:
+                BlacklistFilter._cache.add(symbol)
+            logger.info(
+                "[Blacklist] Auto-blacklisted %s — %s (source=%s)",
+                symbol, reason, source,
+            )
+        except Exception as exc:
+            logger.debug("[Blacklist] Failed to blacklist %s: %s", symbol, exc)
+
+    @staticmethod
+    def remove(symbol: str) -> bool:
+        """Remove a ticker from the blacklist. Returns True if found."""
+        symbol = symbol.upper().strip()
+        try:
+            db = get_db()
+            deleted = db.execute(
+                "DELETE FROM ticker_blacklist WHERE symbol = ?",
+                [symbol],
+            ).rowcount
+            db.commit()
+            if deleted:
+                # Update in-memory cache
+                if BlacklistFilter._cache is not None:
+                    BlacklistFilter._cache.discard(symbol)
+                logger.info("[Blacklist] Removed %s from blacklist", symbol)
+            return bool(deleted)
+        except Exception:
+            return False
+
+    @staticmethod
+    def list_blacklisted() -> list[dict[str, Any]]:
+        """Return all blacklisted symbols."""
+        try:
+            db = get_db()
+            rows = db.execute(
+                "SELECT symbol, reason, source, created_at "
+                "FROM ticker_blacklist ORDER BY created_at DESC"
+            ).fetchall()
+            return [
+                {
+                    "symbol": r[0],
+                    "reason": r[1],
+                    "source": r[2],
+                    "created_at": str(r[3]),
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []
+
+    @staticmethod
+    def is_blacklisted(symbol: str) -> bool:
+        """Check if a symbol is blacklisted."""
+        if BlacklistFilter._cache is None:
+            BlacklistFilter._load_cache()
+        return symbol.upper().strip() in BlacklistFilter._cache

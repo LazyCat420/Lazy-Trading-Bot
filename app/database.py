@@ -730,6 +730,16 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Ticker Blacklist: permanently block delisted / non-stock tickers ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_blacklist (
+            symbol       VARCHAR PRIMARY KEY,
+            reason       VARCHAR NOT NULL,
+            source       VARCHAR DEFAULT 'auto',
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     # ── Phase 3+4: Trade Decision Audit Trail ───────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trade_decisions (

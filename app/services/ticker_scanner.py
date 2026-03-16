@@ -226,6 +226,7 @@ class TickerScanner:
                     "WHERE ticker = ? AND video_id = ?",
                     [t_col, vid],
                 )
+            db.commit()
             logger.info(
                 "[YouTube Scanner] Marked %d transcripts as scanned",
                 len(scanned_video_ids),

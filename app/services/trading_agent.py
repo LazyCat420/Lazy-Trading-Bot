@@ -11,6 +11,7 @@ If the LLM outputs a TradeAction on the first turn, no tools are called.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 
 from app.models.trade_action import TradeAction
@@ -262,7 +263,7 @@ class TradingAgent:
         self,
         context: dict,
         bot_id: str = "default",
-    ) -> tuple[TradeAction, str]:
+    ) -> tuple[TradeAction, str, dict]:
         """Analyze a single ticker and return a trading decision.
 
         The agent runs a multi-turn loop:
@@ -276,10 +277,12 @@ class TradingAgent:
             bot_id: Bot identifier
 
         Returns:
-            (TradeAction, raw_llm_text) tuple
+            (TradeAction, raw_llm_text, llm_meta) tuple.
+            llm_meta contains: system_prompt, user_prompt, turns, tools_used, duration_s
         """
         symbol = context.get("symbol", "UNKNOWN")
         user_prompt = self._build_prompt(context)
+        _decide_t0 = time.time()
 
         # Build system prompt with compact search_tools meta-tool
         # (~100 tokens vs ~800 for full tool descriptions)
@@ -562,7 +565,17 @@ class TradingAgent:
             tools_used or "none",
         )
 
-        return action, final_raw
+        llm_meta = {
+            "system_prompt": system_prompt[:2000],
+            "user_prompt": user_prompt[:2000],
+            "raw_output": final_raw[:2000],
+            "turns": turn + 1 if final_raw else 0,
+            "tools_used": tools_used,
+            "duration_s": round(time.time() - _decide_t0, 2),
+            "model": _llm.model,
+        }
+
+        return action, final_raw, llm_meta
 
     @staticmethod
     def _build_prompt(ctx: dict) -> str:

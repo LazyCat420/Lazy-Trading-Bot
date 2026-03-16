@@ -227,6 +227,16 @@ class TickerValidator:
         "CEO", "CFO", "COO", "SEC", "GDP", "USA", "IRS", "FBI", "CIA",
         "NASA", "NATO", "JOBS", "DEPT", "CORP", "GOVT", "EURO", "ASIA",
         "CNBC",  # Closed-end fund ticker — no usable data, always crashes
+        # ── Finance jargon / events that look like tickers ──
+        "ATM",   # At The Money — options term
+        "FOMC",  # Federal Open Market Committee — the Fed
+        "GTC",   # Good Till Cancelled / NVIDIA conference — not a stock
+        "CPI",   # Consumer Price Index
+        "PPI",   # Producer Price Index
+        "NFP",   # Non-Farm Payrolls
+        "FDIC",  # Federal Deposit Insurance Corp
+        "OPEC",  # Oil cartel
+        "NASDAQ",
     }
 
     def __init__(self) -> None:

@@ -15,8 +15,14 @@ def mock_db():
         mock_get_db.return_value = db
         yield db
 
+@pytest.fixture
+def mock_log_event():
+    with patch("app.services.trading_pipeline_service.log_event") as mock_log:
+        yield mock_log
+
+
 @pytest.mark.asyncio
-async def test_build_context_no_positions(mock_db, mock_trader):
+async def test_build_context_no_positions(mock_db, mock_trader, mock_log_event):
     pipeline = TradingPipelineService(mock_trader)
     
     with patch("app.services.trading_pipeline_service.DeepAnalysisService.get_latest_dossier") as mock_dossier:
@@ -37,6 +43,17 @@ async def test_build_context_no_positions(mock_db, mock_trader):
             assert ctx["symbol"] == "NVDA"
             assert ctx["target_sector"] == "Technology"
             assert ctx["sector_breakdown"] == {}
+            
+            # Verify log_event was called to broadcast these steps
+            assert mock_log_event.call_count >= 6
+            logged_events = [c.args[1] for c in mock_log_event.call_args_list]
+            assert "building_context" in logged_events
+            assert "fetching_technicals" in logged_events
+            assert "loading_dossier" in logged_events
+            assert "rag_retrieval" in logged_events
+            assert "youtube_intel" in logged_events
+            assert "portfolio_context" in logged_events
+            assert "context_complete" in logged_events
             
 @pytest.mark.asyncio
 async def test_build_context_with_positions_sector_aggregation(mock_db, mock_trader):

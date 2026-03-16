@@ -282,20 +282,25 @@ class AutonomousLoop:
         end_loop()
 
         # ── Post workflow to Prism/Retna ──
+        # Per-ticker LLM workflows are now posted inside
+        # TradingPipelineService._process_ticker() with real prompts.
+        # Here we only post a lightweight loop-summary workflow.
         if not self._cancelled:
             try:
                 tracker = WorkflowTracker(
                     title=f"Full Pipeline — {self.bot_id} ({self.model_name})",
                     source="lazy-trading-bot",
                 )
-                for phase_name, phase_data in report.get("phases", {}).items():
+                # Only include the trading phase (the sole LLM phase)
+                trading_data = report.get("phases", {}).get("trading", {})
+                if trading_data:
                     tracker.add_step(
                         model=self.model_name or settings.LLM_MODEL,
-                        label=phase_name.replace("_", " ").title(),
-                        system_prompt=f"Phase: {phase_name}",
-                        user_input=str(phase_data)[:500],
-                        output=str(phase_data)[:500],
-                        duration=phase_data.get("seconds", 0) if isinstance(phase_data, dict) else 0,
+                        label="Trading Decisions",
+                        system_prompt="Aggregated trading phase summary",
+                        user_input=f"{trading_data.get('orders', 0)} orders placed",
+                        output=str(trading_data.get('results', []))[:500],
+                        duration=trading_data.get("seconds", 0) if isinstance(trading_data, dict) else 0,
                     )
                 wf_id = await tracker.post_workflow()
                 if wf_id:
@@ -604,20 +609,25 @@ class AutonomousLoop:
         end_loop()
 
         # ── Post workflow to Prism/Retna ──
+        # Per-ticker LLM workflows are now posted inside
+        # TradingPipelineService._process_ticker() with real prompts.
+        # Here we only post a lightweight loop-summary workflow.
         if not self._cancelled:
             try:
                 tracker = WorkflowTracker(
                     title=f"LLM Pipeline — {self.bot_id} ({self.model_name})",
                     source="lazy-trading-bot",
                 )
-                for phase_name, phase_data in report.get("phases", {}).items():
+                # Only include the trading phase (the sole LLM phase)
+                trading_data = report.get("phases", {}).get("trading", {})
+                if trading_data:
                     tracker.add_step(
                         model=self.model_name or settings.LLM_MODEL,
-                        label=phase_name.replace("_", " ").title(),
-                        system_prompt=f"Phase: {phase_name}",
-                        user_input=str(phase_data)[:500],
-                        output=str(phase_data)[:500],
-                        duration=phase_data.get("seconds", 0) if isinstance(phase_data, dict) else 0,
+                        label="Trading Decisions",
+                        system_prompt="Aggregated trading phase summary",
+                        user_input=f"{trading_data.get('orders', 0)} orders placed",
+                        output=str(trading_data.get('results', []))[:500],
+                        duration=trading_data.get("seconds", 0) if isinstance(trading_data, dict) else 0,
                     )
                 wf_id = await tracker.post_workflow()
                 if wf_id:
