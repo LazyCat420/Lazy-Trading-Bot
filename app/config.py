@@ -24,7 +24,25 @@ class Settings:
     USER_CONFIG_DIR: Path = Path(__file__).resolve().parent / "user_config"
 
     # Database
-    DB_PATH: Path = DATA_DIR / "trading_bot.duckdb"
+    DB_PROFILE: str = os.getenv("DB_PROFILE", "main")
+    _db_path_override: Path | None = None  # Set by tests to redirect DB
+
+    @property
+    def DB_PATH(self) -> Path:
+        """Compute DB path from profile: main → trading_bot.duckdb, test → trading_bot_test.duckdb.
+
+        If _db_path_override is set (e.g. by conftest.py), that takes priority.
+        """
+        if self._db_path_override is not None:
+            return self._db_path_override
+        if self.DB_PROFILE == "test":
+            return self.DATA_DIR / "trading_bot_test.duckdb"
+        return self.DATA_DIR / "trading_bot.duckdb"
+
+    @DB_PATH.setter
+    def DB_PATH(self, value: Path) -> None:
+        """Allow direct override of DB_PATH (used by test conftest)."""
+        self._db_path_override = value
 
     # ── LLM Provider ───────────────────────────────────────────────
     # Prism AI Gateway (centralized LLM proxy)
@@ -207,6 +225,8 @@ class Settings:
             self.NEWS_FETCH_LIMIT = int(data["news_fetch_limit"])
         if "sec_13f_max_filers" in data:
             self.SEC_13F_MAX_FILERS = int(data["sec_13f_max_filers"])
+        if "db_profile" in data:
+            self.DB_PROFILE = str(data["db_profile"])
 
     def update_llm_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Write new LLM settings to disk and hot-patch the running singleton.
@@ -262,6 +282,8 @@ class Settings:
             "reddit_max_posts_per_sub": self.REDDIT_MAX_POSTS_PER_SUB,
             "news_fetch_limit": self.NEWS_FETCH_LIMIT,
             "sec_13f_max_filers": self.SEC_13F_MAX_FILERS,
+            # Database profile
+            "db_profile": self.DB_PROFILE,
         }
         return cfg
 

@@ -379,7 +379,7 @@ class LLMService:
         if max_tokens:
             options["maxTokens"] = max_tokens
         else:
-            default_predict = 2048 if response_format == "json" or schema else 4096
+            default_predict = 4096 if response_format == "json" or schema else 4096
             options["maxTokens"] = default_predict
 
         # Build the messages, injecting JSON instructions if needed

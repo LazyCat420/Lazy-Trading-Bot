@@ -5,6 +5,13 @@ Provides the foundation for RAG (Retrieval-Augmented Generation):
   • embed_text()      → embeds a single string via Ollama /api/embed
   • embed_batch()     → batch-embeds multiple strings
   • embed_and_store() → chunk → embed → store in DuckDB embeddings table
+
+Performance architecture (P0–P6 audit fixes):
+  • All four source types run in parallel via asyncio.gather
+  • Chunks from ALL documents are aggregated into cross-document batches
+  • A single reusable httpx.AsyncClient eliminates per-call TCP overhead
+  • DuckDB commits every COMMIT_EVERY documents for crash safety
+  • News articles are capped at MAX_NEWS_CONTENT_LEN to prevent runaways
 """
 
 from __future__ import annotations
@@ -26,11 +33,31 @@ class EmbeddingService:
     MAX_BATCH_SIZE = 32     # max texts per /api/embed call
     MIN_CHUNK_LEN = 30      # discard chunks shorter than this (matches SQL filters)
 
+    # Max content length for news articles (chars).  14 000 chars ≈ 8 chunks
+    # at CHUNK_SIZE=2048 / overlap=200.  Prevents runaway single-article times.
+    MAX_NEWS_CONTENT_LEN = 14_000
+
+    # Commit to DuckDB every N documents (crash-safety vs I/O trade-off)
+    COMMIT_EVERY = 50
+
     def __init__(self, model: str | None = None) -> None:
         self.base_url = settings.OLLAMA_URL.rstrip("/")
         self.model = model or getattr(
             settings, "RAG_EMBEDDING_MODEL", self.DEFAULT_MODEL,
         )
+        self._client: httpx.AsyncClient | None = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return a reusable httpx client (created once, not per-call)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=120.0)
+        return self._client
+
+    async def close(self) -> None:
+        """Close the reusable HTTP client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     # ── Core: embed text via Ollama ────────────────────────────
 
@@ -77,21 +104,21 @@ class EmbeddingService:
             t0 = _time.perf_counter()
 
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/api/embed",
-                        json={"model": self.model, "input": batch},
+                client = await self._get_client()
+                resp = await client.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": self.model, "input": batch},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                embeddings = data.get("embeddings", [])
+                all_vectors.extend(embeddings)
+                elapsed = _time.perf_counter() - t0
+                if total_batches > 1:
+                    logger.info(
+                        "[Embedding] ✅ Batch %d/%d done (%.1fs, %d vectors)",
+                        batch_idx + 1, total_batches, elapsed, len(embeddings),
                     )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    embeddings = data.get("embeddings", [])
-                    all_vectors.extend(embeddings)
-                    elapsed = _time.perf_counter() - t0
-                    if total_batches > 1:
-                        logger.info(
-                            "[Embedding] ✅ Batch %d/%d done (%.1fs, %d vectors)",
-                            batch_idx + 1, total_batches, elapsed, len(embeddings),
-                        )
             except httpx.HTTPStatusError as exc:
                 logger.error(
                     "[Embedding] Ollama /api/embed failed (HTTP %d): %s",
@@ -203,6 +230,9 @@ class EmbeddingService:
     ) -> int:
         """Chunk text, embed all chunks, and store in DuckDB.
 
+        Kept for single-document callers (e.g., tests).  The main pipeline
+        now uses ``_batch_embed_and_store`` instead.
+
         Returns:
             Number of chunks successfully stored.
         """
@@ -227,7 +257,8 @@ class EmbeddingService:
                     "INSERT INTO embeddings "
                     "(source_type, source_id, ticker, chunk_index, "
                     "chunk_text, embedding, metadata) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (source_type, source_id, chunk_index) DO NOTHING",
                     [source_type, source_id, ticker, i, chunk, vec, metadata],
                 )
                 stored += 1
@@ -242,24 +273,132 @@ class EmbeddingService:
 
         return stored
 
+    # ── Cross-document batch collector (P0) ─────────────────────
+
+    async def _batch_embed_and_store(
+        self,
+        source_type: str,
+        items: list[tuple[str, str | None, str, str]],
+    ) -> dict[str, int]:
+        """Embed multiple documents in globally-batched Ollama calls.
+
+        Instead of one HTTP call per document, all chunks from all
+        documents are flattened into one list and sent in MAX_BATCH_SIZE
+        sub-batches.
+
+        Args:
+            source_type: e.g. "youtube", "reddit", "news", "decision"
+            items: List of (source_id, ticker, metadata, text) tuples.
+
+        Returns:
+            {"embedded": int, "total_chunks": int}
+        """
+        import time as _time
+
+        from app.database import get_db
+
+        if not items:
+            return {"embedded": 0, "total_chunks": 0}
+
+        t0 = _time.perf_counter()
+
+        # ── Phase A: Collect & chunk all documents ──────────────
+        all_chunks: list[str] = []       # flat chunk texts
+        chunk_map: list[tuple[str, str | None, str, int]] = []
+        doc_chunk_counts: dict[str, int] = {}
+
+        for source_id, ticker, metadata, text in items:
+            chunks = self.chunk_text(text)
+            if not chunks:
+                continue
+            doc_chunk_counts[source_id] = len(chunks)
+            for i, chunk in enumerate(chunks):
+                all_chunks.append(chunk)
+                chunk_map.append((source_id, ticker, metadata, i))
+
+        if not all_chunks:
+            return {"embedded": 0, "total_chunks": 0}
+
+        total_batches = (len(all_chunks) + self.MAX_BATCH_SIZE - 1) // self.MAX_BATCH_SIZE
+        logger.info(
+            "[Embedding] %s: collected %d chunks from %d documents — "
+            "sending in %d batches…",
+            source_type, len(all_chunks), len(doc_chunk_counts), total_batches,
+        )
+
+        # ── Phase B: Batch embed all chunks at once ─────────────
+        all_vectors = await self.embed_batch(all_chunks)
+
+        if not all_vectors or len(all_vectors) != len(all_chunks):
+            logger.error(
+                "[Embedding] %s: vector count mismatch (%d vectors for %d chunks)",
+                source_type,
+                len(all_vectors) if all_vectors else 0,
+                len(all_chunks),
+            )
+            return {"embedded": 0, "total_chunks": 0}
+
+        # ── Phase C: Batch store with hybrid commits ────────────
+        db = get_db()
+        stored = 0
+        docs_since_commit = 0
+        prev_source_id = None
+
+        for chunk_text_val, vec, (source_id, ticker, metadata, chunk_idx) in zip(
+            all_chunks, all_vectors, chunk_map,
+        ):
+            if not vec:
+                continue
+            try:
+                db.execute(
+                    "INSERT INTO embeddings "
+                    "(source_type, source_id, ticker, chunk_index, "
+                    "chunk_text, embedding, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (source_type, source_id, chunk_index) DO NOTHING",
+                    [source_type, source_id, ticker, chunk_idx,
+                     chunk_text_val, vec, metadata],
+                )
+                stored += 1
+            except Exception as exc:
+                logger.warning(
+                    "[Embedding] Failed to store %s chunk %d of %s: %s",
+                    source_type, chunk_idx, source_id[:16], exc,
+                )
+
+            # Hybrid commit: every COMMIT_EVERY documents (not chunks)
+            if source_id != prev_source_id:
+                docs_since_commit += 1
+                prev_source_id = source_id
+                if docs_since_commit >= self.COMMIT_EVERY:
+                    db.commit()
+                    docs_since_commit = 0
+
+        # Final commit for remaining rows
+        if docs_since_commit > 0:
+            db.commit()
+
+        elapsed = _time.perf_counter() - t0
+        embedded_docs = len(doc_chunk_counts)
+
+        logger.info(
+            "[Embedding] %s complete: %d docs → %d chunks stored (%.1fs)",
+            source_type, embedded_docs, stored, elapsed,
+        )
+        return {"embedded": embedded_docs, "total_chunks": stored}
+
     # ── Source-specific embedding jobs ───────────────────────────
 
     async def embed_youtube_transcripts(self) -> dict[str, Any]:
         """Embed YouTube transcripts not yet in the embeddings table.
 
-        Queries youtube_transcripts for rows with raw_transcript content,
-        skips any already embedded (by video_id), chunks, embeds, and stores.
-
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
         """
-        import asyncio
-
         from app.database import get_db
 
         db = get_db()
 
-        # Find unembedded transcripts
         rows = db.execute("""
             SELECT DISTINCT yt.video_id, yt.title, yt.channel,
                             yt.raw_transcript, yt.ticker
@@ -281,7 +420,7 @@ class EmbeddingService:
 
         # Deduplicate by video_id (same video may appear under multiple tickers)
         seen_videos: dict[str, dict] = {}
-        ticker_map: dict[str, list[str]] = {}  # video_id → list of tickers
+        ticker_map: dict[str, list[str]] = {}
         for row in rows:
             vid_id = row[0]
             if vid_id not in seen_videos:
@@ -294,70 +433,33 @@ class EmbeddingService:
                 ticker_map[vid_id] = []
             ticker_map[vid_id].append(row[4])
 
-        total_embedded = 0
-        total_chunks = 0
-        total_vids = len(seen_videos)
-
-        for idx, (vid_id, info) in enumerate(seen_videos.items(), 1):
-            transcript = info["raw_transcript"]
-            meta = f"{info['channel']} | {info['title']}"
-
-            # Decide ticker: if only one ticker, use it; if multiple, NULL
+        # Build items for cross-document batch collector
+        items: list[tuple[str, str | None, str, str]] = []
+        for vid_id, info in seen_videos.items():
             tickers = ticker_map[vid_id]
             ticker = tickers[0] if len(tickers) == 1 else None
+            meta = f"{info['channel']} | {info['title']}"[:200]
+            items.append((vid_id, ticker, meta, info["raw_transcript"]))
 
-            try:
-                stored = await self.embed_and_store(
-                    source_type="youtube",
-                    source_id=vid_id,
-                    text=transcript,
-                    ticker=ticker,
-                    metadata=meta[:200],
-                )
-                total_chunks += stored
-                if stored > 0:
-                    total_embedded += 1
-                logger.info(
-                    "[Embedding] YouTube %d/%d: %s → %d chunks",
-                    idx, total_vids, vid_id[:12], stored,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[Embedding] Failed to embed YouTube %s: %s",
-                    vid_id, exc,
-                )
+        result = await self._batch_embed_and_store("youtube", items)
 
-            # Brief pause between videos to avoid overwhelming Ollama
-            await asyncio.sleep(0.1)
-
-        skipped = total_vids - total_embedded
-        logger.info(
-            "[Embedding] YouTube complete: %d embedded, %d skipped, %d chunks",
-            total_embedded, skipped, total_chunks,
-        )
+        skipped = len(seen_videos) - result.get("embedded", 0)
         return {
-            "embedded": total_embedded,
+            "embedded": result.get("embedded", 0),
             "skipped": skipped,
-            "total_chunks": total_chunks,
+            "total_chunks": result.get("total_chunks", 0),
         }
 
     async def embed_reddit_posts(self) -> dict[str, Any]:
         """Embed Reddit post snippets from discovered_tickers table.
 
-        Reddit posts are typically short (<500 chars), so most won't
-        need chunking. Each post is ticker-specific.
-
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
         """
-        import asyncio
-
         from app.database import get_db
 
         db = get_db()
 
-        # Use CAST(rowid AS VARCHAR) as a stable source_id
-        # since discovered_tickers has no single unique column
         rows = db.execute("""
             SELECT dt.ticker, dt.source_detail, dt.context_snippet,
                    CAST(dt.rowid AS VARCHAR) as row_id
@@ -376,68 +478,44 @@ class EmbeddingService:
             logger.info("[Embedding] No new Reddit posts to embed")
             return {"embedded": 0, "skipped": 0, "total_chunks": 0}
 
-        total_embedded = 0
-        total_chunks = 0
-
+        items: list[tuple[str, str | None, str, str]] = []
         for row in rows:
             ticker, subreddit, snippet, row_id = row[0], row[1], row[2], row[3]
-            meta = subreddit or "reddit"
+            meta = (subreddit or "reddit")[:200]
+            items.append((str(row_id), ticker, meta, snippet))
 
-            try:
-                stored = await self.embed_and_store(
-                    source_type="reddit",
-                    source_id=str(row_id),
-                    text=snippet,
-                    ticker=ticker,
-                    metadata=meta[:200],
-                )
-                total_chunks += stored
-                if stored > 0:
-                    total_embedded += 1
-            except Exception as exc:
-                logger.warning(
-                    "[Embedding] Failed to embed Reddit row %s: %s",
-                    row_id, exc,
-                )
-            await asyncio.sleep(0.05)
+        result = await self._batch_embed_and_store("reddit", items)
 
-        skipped = len(rows) - total_embedded
-        logger.info(
-            "[Embedding] Reddit complete: %d embedded, %d skipped, %d chunks",
-            total_embedded, skipped, total_chunks,
-        )
+        skipped = len(rows) - result.get("embedded", 0)
         return {
-            "embedded": total_embedded,
+            "embedded": result.get("embedded", 0),
             "skipped": skipped,
-            "total_chunks": total_chunks,
+            "total_chunks": result.get("total_chunks", 0),
         }
 
     async def embed_news_articles(self) -> dict[str, Any]:
         """Embed news articles from both news_full_articles and news_articles.
 
-        Reads from news_full_articles (RSS full content) first, then falls
-        back to news_articles (yfinance summaries) so news gets embedded
-        regardless of which collection service populated data.
+        Content is capped at MAX_NEWS_CONTENT_LEN chars to prevent
+        runaway single-article embedding times.
 
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
         """
-        import asyncio
-
         from app.database import get_db
 
         db = get_db()
 
-        # UNION both news tables: full articles (RSS) + summaries (yfinance)
+        # UNION both tables; P1: cap with LEFT(content, ?)
         rows = db.execute("""
             SELECT article_hash, title, publisher, content, tickers_found
             FROM (
                 SELECT nfa.article_hash, nfa.title, nfa.publisher,
-                       nfa.content, nfa.tickers_found
+                       LEFT(nfa.content, ?) AS content, nfa.tickers_found
                 FROM news_full_articles nfa
                 WHERE LENGTH(nfa.content) > 50
 
-                UNION ALL
+                UNION
 
                 SELECT na.article_hash, na.title, na.publisher,
                        na.summary AS content, na.ticker AS tickers_found
@@ -450,15 +528,13 @@ class EmbeddingService:
                 WHERE source_type = 'news'
             ) e ON combined.article_hash = e.source_id
             WHERE e.source_id IS NULL
-        """).fetchall()
+        """, [self.MAX_NEWS_CONTENT_LEN]).fetchall()
 
         if not rows:
             logger.info("[Embedding] No new news articles to embed")
             return {"embedded": 0, "skipped": 0, "total_chunks": 0}
 
-        total_embedded = 0
-        total_chunks = 0
-
+        items: list[tuple[str, str | None, str, str]] = []
         for row in rows:
             article_hash = row[0]
             title = row[1] or ""
@@ -467,48 +543,22 @@ class EmbeddingService:
             tickers_found = row[4] or ""
 
             meta = f"{publisher} | {title}"[:200]
-
-            # Multi-ticker articles → store as general market (ticker=NULL)
-            # Single-ticker → store with that ticker
-            tickers = [
-                t.strip() for t in tickers_found.split(",") if t.strip()
-            ]
+            tickers = [t.strip() for t in tickers_found.split(",") if t.strip()]
             ticker = tickers[0] if len(tickers) == 1 else None
 
-            try:
-                stored = await self.embed_and_store(
-                    source_type="news",
-                    source_id=article_hash,
-                    text=content,
-                    ticker=ticker,
-                    metadata=meta,
-                )
-                total_chunks += stored
-                if stored > 0:
-                    total_embedded += 1
-            except Exception as exc:
-                logger.warning(
-                    "[Embedding] Failed to embed news %s: %s",
-                    article_hash[:12], exc,
-                )
-            await asyncio.sleep(0.05)
+            items.append((article_hash, ticker, meta, content))
 
-        skipped = len(rows) - total_embedded
-        logger.info(
-            "[Embedding] News complete: %d embedded, %d skipped, %d chunks",
-            total_embedded, skipped, total_chunks,
-        )
+        result = await self._batch_embed_and_store("news", items)
+
+        skipped = len(rows) - result.get("embedded", 0)
         return {
-            "embedded": total_embedded,
+            "embedded": result.get("embedded", 0),
             "skipped": skipped,
-            "total_chunks": total_chunks,
+            "total_chunks": result.get("total_chunks", 0),
         }
 
     async def embed_trade_decisions(self, days: int = 30) -> dict[str, Any]:
         """Embed recent trade decisions for decision memory.
-
-        Builds descriptive text from action, confidence, rationale,
-        and risk notes. Only embeds decisions not already in embeddings.
 
         Args:
             days: How far back to look for decisions (default 30).
@@ -516,7 +566,6 @@ class EmbeddingService:
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
         """
-        import asyncio
         from datetime import datetime, timedelta
 
         from app.database import get_db
@@ -545,9 +594,7 @@ class EmbeddingService:
             logger.info("[Embedding] No new trade decisions to embed")
             return {"embedded": 0, "skipped": 0, "total_chunks": 0}
 
-        total_embedded = 0
-        total_chunks = 0
-
+        items: list[tuple[str, str | None, str, str]] = []
         for row in rows:
             decision_id = row[0]
             symbol = row[1]
@@ -560,7 +607,6 @@ class EmbeddingService:
             status = row[8] or "pending"
             ts = row[9]
 
-            # Build descriptive text for embedding
             text_parts = [
                 f"TRADE DECISION for {symbol}: {action}",
                 f"Confidence: {confidence:.0%}" if confidence else "",
@@ -576,94 +622,74 @@ class EmbeddingService:
             text = "\n".join(p for p in text_parts if p)
             meta = f"{action} | {status} | {str(ts)[:10]}"
 
-            try:
-                stored = await self.embed_and_store(
-                    source_type="decision",
-                    source_id=decision_id,
-                    text=text,
-                    ticker=symbol,
-                    metadata=meta[:200],
-                )
-                total_chunks += stored
-                if stored > 0:
-                    total_embedded += 1
-            except Exception as exc:
-                logger.warning(
-                    "[Embedding] Failed to embed decision %s: %s",
-                    decision_id[:12], exc,
-                )
-            await asyncio.sleep(0.05)
+            items.append((decision_id, symbol, meta[:200], text))
 
-        skipped = len(rows) - total_embedded
-        logger.info(
-            "[Embedding] Decisions complete: %d embedded, %d skipped, "
-            "%d chunks",
-            total_embedded, skipped, total_chunks,
-        )
+        result = await self._batch_embed_and_store("decision", items)
+
+        skipped = len(rows) - result.get("embedded", 0)
         return {
-            "embedded": total_embedded,
+            "embedded": result.get("embedded", 0),
             "skipped": skipped,
-            "total_chunks": total_chunks,
+            "total_chunks": result.get("total_chunks", 0),
         }
 
     async def embed_all_sources(self) -> dict[str, Any]:
         """Orchestrate embedding for all data sources.
 
-        Runs YouTube, Reddit, News, and Decisions in sequence.
+        P2: Runs all four sources in **parallel** via asyncio.gather
+        so DB-query time of one source overlaps with GPU-embed time
+        of another.
 
         Returns:
             Combined stats dict with per-source breakdowns.
         """
+        import asyncio
         import time as _time
+
+        from app.services.event_logger import log_event
 
         t0 = _time.time()
 
-        logger.info("[Embedding] ▶ Phase 1/4: YouTube transcripts…")
-        yt = await self.embed_youtube_transcripts()
-        yt_elapsed = round(_time.time() - t0, 1)
-        logger.info(
-            "[Embedding] ✅ YouTube done: %d embedded, %d chunks (%.1fs)",
-            yt.get("embedded", 0), yt.get("total_chunks", 0), yt_elapsed,
+        log_event(
+            "embedding", "embedding_start",
+            "Starting RAG embedding for all sources…",
         )
 
-        logger.info("[Embedding] ▶ Phase 2/4: Reddit posts…")
-        t_reddit = _time.time()
-        reddit = await self.embed_reddit_posts()
-        reddit_elapsed = round(_time.time() - t_reddit, 1)
-        logger.info(
-            "[Embedding] ✅ Reddit done: %d embedded, %d chunks (%.1fs)",
-            reddit.get("embedded", 0), reddit.get("total_chunks", 0), reddit_elapsed,
+        # P2: Run all four sources concurrently
+        logger.info("[Embedding] ▶ Starting all 4 sources in parallel…")
+        yt_task = asyncio.create_task(self.embed_youtube_transcripts())
+        reddit_task = asyncio.create_task(self.embed_reddit_posts())
+        news_task = asyncio.create_task(self.embed_news_articles())
+        decisions_task = asyncio.create_task(self.embed_trade_decisions())
+
+        results = await asyncio.gather(
+            yt_task, reddit_task, news_task, decisions_task,
+            return_exceptions=True,
         )
 
-        logger.info("[Embedding] ▶ Phase 3/4: News articles…")
-        t_news = _time.time()
-        news = await self.embed_news_articles()
-        news_elapsed = round(_time.time() - t_news, 1)
-        logger.info(
-            "[Embedding] ✅ News done: %d embedded, %d chunks (%.1fs)",
-            news.get("embedded", 0), news.get("total_chunks", 0), news_elapsed,
-        )
+        # Unpack results (replace exceptions with zero-dicts)
+        source_names = ["youtube", "reddit", "news", "decisions"]
+        source_results: dict[str, dict] = {}
+        for name, res in zip(source_names, results):
+            if isinstance(res, Exception):
+                logger.warning("[Embedding] %s failed: %s", name, res)
+                source_results[name] = {
+                    "embedded": 0, "skipped": 0, "total_chunks": 0,
+                }
+            else:
+                source_results[name] = res
+            logger.info(
+                "[Embedding] ✅ %s: %d embedded, %d chunks",
+                name,
+                source_results[name].get("embedded", 0),
+                source_results[name].get("total_chunks", 0),
+            )
 
-        logger.info("[Embedding] ▶ Phase 4/4: Trade decisions…")
-        t_dec = _time.time()
-        decisions = await self.embed_trade_decisions()
-        dec_elapsed = round(_time.time() - t_dec, 1)
-        logger.info(
-            "[Embedding] ✅ Decisions done: %d embedded, %d chunks (%.1fs)",
-            decisions.get("embedded", 0), decisions.get("total_chunks", 0), dec_elapsed,
+        total_chunks = sum(
+            r.get("total_chunks", 0) for r in source_results.values()
         )
-
-        total_chunks = (
-            yt.get("total_chunks", 0)
-            + reddit.get("total_chunks", 0)
-            + news.get("total_chunks", 0)
-            + decisions.get("total_chunks", 0)
-        )
-        total_embedded = (
-            yt.get("embedded", 0)
-            + reddit.get("embedded", 0)
-            + news.get("embedded", 0)
-            + decisions.get("embedded", 0)
+        total_embedded = sum(
+            r.get("embedded", 0) for r in source_results.values()
         )
         elapsed = round(_time.time() - t0, 1)
 
@@ -671,11 +697,26 @@ class EmbeddingService:
             "[Embedding] All sources complete: %d sources → %d chunks (%.1fs)",
             total_embedded, total_chunks, elapsed,
         )
+
+        log_event(
+            "embedding", "embedding_complete",
+            f"Embedded {total_embedded} sources → {total_chunks} chunks "
+            f"in {elapsed}s",
+            metadata={
+                "total_embedded": total_embedded,
+                "total_chunks": total_chunks,
+                "elapsed_s": elapsed,
+            },
+        )
+
+        # Clean up the reusable HTTP client
+        await self.close()
+
         return {
-            "youtube": yt,
-            "reddit": reddit,
-            "news": news,
-            "decisions": decisions,
+            "youtube": source_results["youtube"],
+            "reddit": source_results["reddit"],
+            "news": source_results["news"],
+            "decisions": source_results["decisions"],
             "total_chunks": total_chunks,
             "total_embedded": total_embedded,
             "elapsed_s": elapsed,
@@ -689,25 +730,24 @@ class EmbeddingService:
         Returns True if model is ready, False on failure.
         """
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # Check if model exists via /api/show
-                resp = await client.post(
-                    f"{self.base_url}/api/show",
-                    json={"name": self.model},
+            client = await self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/api/show",
+                json={"name": self.model},
+            )
+            if resp.status_code == 200:
+                logger.info(
+                    "[Embedding] Model %s already available", self.model,
                 )
-                if resp.status_code == 200:
-                    logger.info(
-                        "[Embedding] Model %s already available", self.model,
-                    )
-                    return True
+                return True
         except Exception:
             pass
 
-        # Model not found — pull it
+        # Model not found — pull it (use longer timeout)
         logger.info("[Embedding] Pulling model %s...", self.model)
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(
+            async with httpx.AsyncClient(timeout=300.0) as pull_client:
+                resp = await pull_client.post(
                     f"{self.base_url}/api/pull",
                     json={"name": self.model, "stream": False},
                 )

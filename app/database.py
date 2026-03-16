@@ -15,10 +15,69 @@ def get_db() -> duckdb.DuckDBPyConnection:
     global _connection
     if _connection is None:
         db_path = str(settings.DB_PATH)
-        logger.info("Opening DuckDB at %s", db_path)
+        logger.info("Opening DuckDB at %s (profile=%s)", db_path, settings.DB_PROFILE)
         _connection = duckdb.connect(db_path)
         _init_tables(_connection)
     return _connection
+
+
+def switch_db(profile: str) -> dict:
+    """Close current DB connection and switch to a different profile.
+
+    Args:
+        profile: "main" or "test"
+
+    Returns:
+        Dict with the new profile and db_path.
+    """
+    global _connection
+    valid = {"main", "test"}
+    if profile not in valid:
+        raise ValueError(f"Invalid DB profile '{profile}'. Must be one of: {valid}")
+
+    old_profile = settings.DB_PROFILE
+
+    # Close existing connection
+    if _connection is not None:
+        try:
+            _connection.close()
+        except Exception:
+            pass
+        _connection = None
+        logger.info("[DB] Closed connection for profile=%s", old_profile)
+
+    # Update settings
+    settings.DB_PROFILE = profile
+
+    # Persist to llm_config.json so it survives restarts
+    settings.update_llm_config({"db_profile": profile})
+
+    new_path = str(settings.DB_PATH)
+    logger.info("[DB] Switched profile: %s → %s (path=%s)", old_profile, profile, new_path)
+
+    # Eagerly open the new connection so tables are initialized
+    get_db()
+
+    return {"profile": profile, "db_path": new_path}
+
+
+def get_current_profile() -> dict:
+    """Return the active DB profile and path."""
+    return {
+        "profile": settings.DB_PROFILE,
+        "db_path": str(settings.DB_PATH),
+    }
+
+
+def reset_connection() -> None:
+    """Close the current DB connection (used for tests / hot-reload)."""
+    global _connection
+    if _connection is not None:
+        try:
+            _connection.close()
+        except Exception:
+            pass
+        _connection = None
 
 
 def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
@@ -365,6 +424,7 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             source          VARCHAR DEFAULT 'manual',
             added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_analyzed   TIMESTAMP,
+            last_collected  TIMESTAMP,
             analysis_count  INTEGER DEFAULT 0,
             signal          VARCHAR DEFAULT 'PENDING',
             confidence      DOUBLE DEFAULT 0.0,
@@ -918,6 +978,9 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
     # ---- discovered_tickers: source_url column ----
     _add_col("discovered_tickers", "source_url", "VARCHAR DEFAULT ''")
 
+    # ---- watchlist: last_collected column ----
+    _add_col("watchlist", "last_collected", "TIMESTAMP")
+
     # ---- technicals: Phase 8 expanded columns ----
     tech_cols = [
         # EMAs
@@ -971,6 +1034,15 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
         ("earnings_yield_gap", "DOUBLE DEFAULT 0"),
         ("altman_z_score", "DOUBLE DEFAULT 0"),
         ("piotroski_f_score", "INTEGER DEFAULT 0"),
+        # Minervini / O'Neil signals
+        ("trend_template_score", "DOUBLE DEFAULT 0"),
+        ("vcp_setup_score", "DOUBLE DEFAULT 0"),
+        ("rs_rating", "DOUBLE DEFAULT 0"),
+        # Company classifiers
+        ("sector", "VARCHAR DEFAULT ''"),
+        ("industry", "VARCHAR DEFAULT ''"),
+        ("market_cap", "DOUBLE DEFAULT 0"),
+        ("market_cap_tier", "VARCHAR DEFAULT ''"),
     ]
     for col, dtype in quant_cols:
         _add_col("quant_scorecards", col, dtype)

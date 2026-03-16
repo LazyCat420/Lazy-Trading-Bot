@@ -93,12 +93,31 @@ class AutonomousLoop:
         logger.info("=" * 60)
         log_event("system", "loop_start", "Full autonomous loop started")
 
-        # ── Pre-warm the LLM model before pipeline starts ──
-        # Ollama evicts models after 5 min idle. Data collection can take
-        # 30+ min, so we pre-load the model with a 2-hour keep_alive
-        # to ensure it stays in VRAM for the entire loop.
+        # ── Unload stale models, then pre-warm the target LLM ──
+        # Previous runs (or run-all) may have left other models loaded
+        # in Ollama VRAM.  Unload everything first so only our model
+        # occupies VRAM — prevents OOM and context thrashing.
         from app.config import settings
         from app.services.llm_service import LLMService
+
+        logger.info(
+            "[AutoLoop] Clearing VRAM before loading %s…",
+            settings.LLM_MODEL,
+        )
+        try:
+            freed = await LLMService.unload_all_ollama_models(
+                settings.OLLAMA_URL,
+            )
+            if freed:
+                logger.info(
+                    "[AutoLoop] 🧹 Unloaded %d stale model(s) from VRAM",
+                    freed,
+                )
+        except Exception as _unload_exc:
+            logger.warning(
+                "[AutoLoop] Failed to unload stale models: %s",
+                _unload_exc,
+            )
 
         logger.info(
             "[AutoLoop] Pre-warming Ollama model: %s @ %s",
@@ -478,9 +497,28 @@ class AutonomousLoop:
         logger.info("=" * 60)
         log_event("system", "llm_loop_start", f"LLM-only loop started for {self.model_name}")
 
-        # ── Pre-warm the LLM model ──
+        # ── Unload stale models, then pre-warm the target LLM ──
         from app.config import settings
         from app.services.llm_service import LLMService
+
+        logger.info(
+            "[AutoLoop] Clearing VRAM before loading %s…",
+            settings.LLM_MODEL,
+        )
+        try:
+            freed = await LLMService.unload_all_ollama_models(
+                settings.OLLAMA_URL,
+            )
+            if freed:
+                logger.info(
+                    "[AutoLoop] 🧹 Unloaded %d stale model(s) from VRAM",
+                    freed,
+                )
+        except Exception as _unload_exc:
+            logger.warning(
+                "[AutoLoop] Failed to unload stale models: %s",
+                _unload_exc,
+            )
 
         logger.info(
             "[AutoLoop] Pre-warming Ollama model: %s @ %s",
@@ -747,7 +785,8 @@ class AutonomousLoop:
         """Step 2.5: Collect financial data for active watchlist tickers.
 
         Skips tickers whose data was collected less than 24 hours ago
-        to avoid redundant API calls.
+        (uses `last_collected`, NOT `last_analyzed`) to avoid redundant
+        API calls across restarts.
         """
         all_entries = self.watchlist.get_active_tickers_with_staleness()
         if not all_entries:
@@ -760,26 +799,26 @@ class AutonomousLoop:
             )
             return {"collected": 0, "tickers": []}
 
-        # 24-hour cache: skip tickers analyzed within the last day
+        # 24-hour cache: skip tickers whose data was COLLECTED within the last day
         now = datetime.now()
         stale_cutoff = now - _ANALYSIS_CACHE_TTL
         tickers: list[str] = []
         cached: list[str] = []
         for entry in all_entries:
-            la = entry["last_analyzed"]
-            if la and isinstance(la, datetime) and la > stale_cutoff:
+            lc = entry["last_collected"]
+            if lc and isinstance(lc, datetime) and lc > stale_cutoff:
                 cached.append(entry["ticker"])
             else:
                 tickers.append(entry["ticker"])
 
         if cached:
             self._log(
-                f"Skipping {len(cached)} recently-analyzed tickers: "
+                f"Skipping {len(cached)} recently-collected tickers: "
                 f"{', '.join(cached)}"
             )
 
         if not tickers:
-            self._log("All tickers were recently analyzed — nothing to collect")
+            self._log("All tickers were recently collected — nothing to fetch")
             return {"collected": 0, "cached": len(cached), "tickers": []}
 
         self._log(f"Collecting data for {len(tickers)} tickers: {', '.join(tickers)}")
@@ -805,6 +844,8 @@ class AutonomousLoop:
                     )
                     pipeline = PipelineService()
                     await pipeline.run(ticker, mode="data")
+                    # Stamp last_collected so this ticker is skipped next run
+                    self.watchlist.mark_collected(ticker)
                     log_event(
                         "collection",
                         "collection_ticker_done",

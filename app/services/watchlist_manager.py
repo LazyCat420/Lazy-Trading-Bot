@@ -72,15 +72,15 @@ class WatchlistManager:
         return [str(r[0]) for r in rows]
 
     def get_active_tickers_with_staleness(self) -> list[dict]:
-        """Return active tickers with last_analyzed timestamp for cache checks."""
+        """Return active tickers with last_analyzed and last_collected timestamps."""
         db = get_db()
         rows = db.execute(
-            "SELECT ticker, last_analyzed FROM watchlist WHERE status = 'active' "
+            "SELECT ticker, last_analyzed, last_collected FROM watchlist WHERE status = 'active' "
             "AND bot_id = ? ORDER BY confidence DESC, added_at DESC",
             [self.bot_id],
         ).fetchall()
         return [
-            {"ticker": str(r[0]), "last_analyzed": r[1]}
+            {"ticker": str(r[0]), "last_analyzed": r[1], "last_collected": r[2]}
             for r in rows
         ]
 
@@ -255,6 +255,17 @@ class WatchlistManager:
         db.commit()
         logger.info("[Watchlist] Removed %s", ticker)
         return {"status": "removed", "ticker": ticker}
+
+    def mark_collected(self, ticker: str) -> None:
+        """Stamp last_collected = NOW() after successful data collection."""
+        db = get_db()
+        now = datetime.now()
+        db.execute(
+            "UPDATE watchlist SET last_collected = ?, updated_at = ? "
+            "WHERE ticker = ? AND bot_id = ?",
+            [now, now, ticker.upper().strip(), self.bot_id],
+        )
+        db.commit()
 
     def import_from_discovery(
         self,

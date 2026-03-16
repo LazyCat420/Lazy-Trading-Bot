@@ -518,6 +518,39 @@ async def update_risk_params(req: RiskParamsUpdateRequest) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# DATABASE PROFILE API — Switch between main and test databases
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/settings/db-profile")
+async def get_db_profile() -> dict:
+    """Return the current database profile and path."""
+    from app.database import get_current_profile
+
+    return get_current_profile()
+
+
+@app.post("/api/settings/db-profile")
+async def set_db_profile(req: dict) -> dict:
+    """Switch database profiles at runtime.
+
+    Body: {"profile": "main"|"test"}
+    """
+    profile = req.get("profile", "").strip().lower()
+    if profile not in ("main", "test"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid profile '{profile}'. Must be 'main' or 'test'.",
+        )
+
+    from app.database import switch_db
+
+    result = switch_db(profile)
+    logger.info("[API] DB profile switched to: %s", profile)
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
 # LLM CONFIGURATION API
 # ══════════════════════════════════════════════════════════════════════
 
@@ -4407,3 +4440,87 @@ async def data_explorer_clean(table: str) -> dict:
     except Exception as e:
         logger.error("Data explorer clean error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ── Pipeline Diagnostics (Node-Graph Trace) ──────────────────────────
+
+
+@app.get("/diagnostics", response_class=HTMLResponse)
+async def diagnostics_page(request: Request) -> HTMLResponse:
+    """Serve the pipeline diagnostics UI."""
+    return templates.TemplateResponse("diagnostics.html", {"request": request})
+
+
+@app.get("/api/diagnostics/trace")
+async def get_diagnostics_trace() -> dict:
+    """Get the latest pipeline trace (current or most recent completed)."""
+    from app.services.PipelineTracer import tracer
+
+    trace = tracer.get_latest()
+    if not trace:
+        # Try loading from DB
+        from app.database import get_db
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT trace_json FROM pipeline_traces "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+        except Exception:
+            pass
+        return {"status": "no_traces"}
+    return trace
+
+
+@app.get("/api/diagnostics/trace/history")
+async def get_diagnostics_trace_history(
+    limit: int = Query(default=10),
+) -> list:
+    """Get recent pipeline trace history."""
+    from app.services.PipelineTracer import tracer
+
+    history = tracer.get_history(limit)
+    if not history:
+        # Try loading from DB
+        from app.database import get_db
+        db = get_db()
+        try:
+            rows = db.execute(
+                "SELECT trace_json FROM pipeline_traces "
+                "ORDER BY created_at DESC LIMIT ?",
+                [limit],
+            ).fetchall()
+            return [json.loads(r[0]) for r in rows if r[0]]
+        except Exception:
+            pass
+    return history
+
+
+@app.get("/api/diagnostics/trace/{run_id}")
+async def get_diagnostics_trace_by_id(run_id: str) -> dict:
+    """Get a specific pipeline trace by run_id."""
+    from app.services.PipelineTracer import tracer
+
+    # Check in-memory first
+    for run in tracer._history:
+        if run.run_id == run_id:
+            return run.to_dict()
+    if tracer._current_run and tracer._current_run.run_id == run_id:
+        return tracer._current_run.to_dict()
+
+    # Fallback to DB
+    from app.database import get_db
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT trace_json FROM pipeline_traces WHERE run_id = ?",
+            [run_id],
+        ).fetchone()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail=f"Trace {run_id} not found")

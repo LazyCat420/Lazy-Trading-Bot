@@ -235,7 +235,41 @@ def get_filter_pipeline() -> FilterPipeline:
             BlacklistFilter(),      # Persistent DB blacklist (before yfinance)
             AssetCheckFilter(),     # yfinance check (auto-blacklists failures)
         ])
+        # Pre-seed the AssetCheckFilter cache with tickers already validated
+        # (watchlist + any ticker with price data in DB). This avoids
+        # redundant yfinance calls for tickers we already know are real.
+        _preseed_validated_cache()
     return _pipeline
+
+
+def _preseed_validated_cache() -> None:
+    """Load known-valid tickers into AssetCheckFilter cache on startup."""
+    try:
+        db = get_db()
+        # Tickers with price history already passed yfinance validation
+        rows = db.execute(
+            "SELECT DISTINCT ticker FROM price_history"
+        ).fetchall()
+        known = {r[0] for r in rows}
+
+        # Also include watchlist tickers
+        try:
+            wl_rows = db.execute(
+                "SELECT DISTINCT ticker FROM watchlist"
+            ).fetchall()
+            known.update(r[0] for r in wl_rows)
+        except Exception:
+            pass  # watchlist table may not exist yet
+
+        if known:
+            for sym in known:
+                AssetCheckFilter._cache[sym] = True
+            logger.info(
+                "[Filter] Pre-seeded %d validated tickers into cache",
+                len(known),
+            )
+    except Exception as e:
+        logger.debug("[Filter] Pre-seed failed (non-critical): %s", e)
 
 
 # ── Rejection quarantine logger ──────────────────────────────────

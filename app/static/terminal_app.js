@@ -3944,7 +3944,7 @@ const useMonitorData = () => {
     };
 
     const deleteFromScoreboard = async (ticker) => {
-        if (!confirm(`Exclude ${ticker} from scoreboard? It won't appear again unless manually restored.`)) return;
+        if (!confirm(`Delete ${ticker} from scoreboard?`)) return;
         try {
             await fetch(`/api/scoreboard/${ticker}`, { method: "DELETE" });
             fetchScores();
@@ -4353,8 +4353,8 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "playlist_add")),
                     React.createElement("button", {
                         onClick: (e) => { e.stopPropagation(); deleteFromScoreboard(s.ticker); },
-                        className: "icon-btn text-red-400 hover:text-red-300", title: "Exclude from scoreboard",
-                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "block")),
+                        className: "icon-btn text-red-400 hover:text-red-300", title: "Delete from scoreboard",
+                    }, React.createElement("span", { className: "material-symbols-outlined text-[16px]" }, "delete")),
                     React.createElement("button", {
                         onClick: (e) => { e.stopPropagation(); navigate(`/analysis/${s.ticker}`); },
                         className: "icon-btn", title: "Analyze",

@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline Diagnostics — Lazy Trading Bot</title>
+  <meta name="description" content="Real-time pipeline diagnostics and node-graph visualization for the Lazy Trading Bot.">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-card: #12121a;
+      --bg-card-hover: #1a1a28;
+      --border: #1e1e2e;
+      --text: #e0e0e8;
+      --text-dim: #6e6e88;
+      --accent: #7c3aed;
+      --accent-glow: rgba(124, 58, 237, 0.3);
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, 0.15);
+      --yellow: #eab308;
+      --yellow-dim: rgba(234, 179, 8, 0.15);
+      --red: #ef4444;
+      --red-dim: rgba(239, 68, 68, 0.15);
+      --blue: #3b82f6;
+      --blue-dim: rgba(59, 130, 246, 0.15);
+      --grey: #44445a;
+      --mono: "JetBrains Mono", monospace;
+      --sans: "Inter", system-ui, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #12121a 0%, #1a0d2e 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #a78bfa, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+    .header-meta {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+    }
+    .header-meta .status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Layout ── */
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 0;
+      min-height: calc(100vh - 65px);
+    }
+
+    /* ── Pipeline Graph ── */
+    .pipeline-graph {
+      padding: 32px;
+      overflow-y: auto;
+    }
+    .pipeline-graph h2 {
+      font-size: 14px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 24px;
+    }
+    .graph-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ── Node ── */
+    .node {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .node:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent);
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+    .node.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 30px var(--accent-glow);
+    }
+    .node::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      border-radius: 4px 0 0 4px;
+    }
+    .node.status-ok::before { background: var(--green); }
+    .node.status-error::before { background: var(--red); }
+    .node.status-warning::before { background: var(--yellow); }
+    .node.status-running::before { background: var(--blue); animation: pulse 1s infinite; }
+    .node.status-pending::before { background: var(--grey); }
+    .node.status-skipped::before { background: var(--grey); opacity: 0.5; }
+
+    .node-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .node-title {
+      font-weight: 600;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .node-title .icon { font-size: 18px; }
+    .node-badge {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .badge-ok { background: var(--green-dim); color: var(--green); }
+    .badge-error { background: var(--red-dim); color: var(--red); }
+    .badge-warning { background: var(--yellow-dim); color: var(--yellow); }
+    .badge-running { background: var(--blue-dim); color: var(--blue); }
+    .badge-pending { background: rgba(100,100,120,0.2); color: var(--grey); }
+
+    .node-subtitle {
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+    }
+    .node-timing {
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--text-dim);
+      margin-top: 8px;
+    }
+
+    /* ── Connector line between nodes ── */
+    .connector {
+      display: flex;
+      justify-content: center;
+      height: 24px;
+    }
+    .connector-line {
+      width: 2px;
+      height: 100%;
+      background: linear-gradient(to bottom, var(--border), var(--accent), var(--border));
+      border-radius: 2px;
+    }
+
+    /* ── Timeline bar ── */
+    .timeline-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      margin-top: 10px;
+      overflow: hidden;
+    }
+    .timeline-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s ease;
+    }
+
+    /* ── Detail Panel (right side) ── */
+    .detail-panel {
+      background: var(--bg-card);
+      border-left: 1px solid var(--border);
+      padding: 24px;
+      overflow-y: auto;
+    }
+    .detail-panel h2 {
+      font-size: 14px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+    }
+    .detail-section {
+      margin-bottom: 20px;
+    }
+    .detail-section h3 {
+      font-size: 12px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .detail-kv {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 4px 12px;
+      font-size: 13px;
+    }
+    .detail-key {
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .detail-value {
+      word-break: break-word;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .detail-json {
+      background: #0d0d14;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--text-dim);
+    }
+
+    /* ── History sidebar ── */
+    .history-list {
+      margin-top: 20px;
+    }
+    .history-item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 12px;
+    }
+    .history-item:hover {
+      border-color: var(--accent);
+    }
+    .history-item .hi-type {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .history-item .hi-meta {
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-dim);
+    }
+    .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+    .empty-state p { font-size: 14px; margin-bottom: 8px; }
+    .empty-state code {
+      background: var(--bg-card);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .container { grid-template-columns: 1fr; }
+      .detail-panel { border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>⚡ Pipeline Diagnostics</h1>
+    <div class="header-meta">
+      <span id="header-status"><span class="status-dot" style="background: var(--grey)"></span>No trace</span>
+      <span id="header-model">—</span>
+      <span id="header-time">—</span>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="pipeline-graph">
+      <h2>Pipeline Flow</h2>
+      <div id="graph-content" class="graph-flow">
+        <div class="empty-state">
+          <div class="icon">🔍</div>
+          <p>No pipeline trace yet</p>
+          <p>Run the audit: <code>python scripts/run_pipeline_audit.py --phase all</code></p>
+          <p>Or start a loop: <code>curl -X POST http://localhost:8000/api/bot/run-loop</code></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-panel">
+      <h2>Step Detail</h2>
+      <div id="detail-content">
+        <div class="empty-state">
+          <div class="icon">👈</div>
+          <p>Click a node to see details</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 32px;">Run History</h2>
+      <div id="history-list" class="history-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const PHASE_META = {
+      init:       { icon: "🔧", label: "Initialization" },
+      unload:     { icon: "🧹", label: "Unload Models" },
+      warm:       { icon: "🔥", label: "Warm LLM" },
+      discovery:  { icon: "🌐", label: "Discovery" },
+      import:     { icon: "📥", label: "Auto-Import" },
+      collection: { icon: "📊", label: "Data Collection" },
+      embedding:  { icon: "📎", label: "RAG Embedding" },
+      analysis:   { icon: "🔬", label: "Deep Analysis" },
+      trading:    { icon: "🤖", label: "Trading Decisions" },
+      health:     { icon: "📋", label: "Health Report" },
+      evolution:  { icon: "🧬", label: "Prompt Evolution" },
+      audit:      { icon: "🔍", label: "Cross-Bot Audit" },
+    };
+
+    const STATUS_COLORS = {
+      ok: "var(--green)",
+      error: "var(--red)",
+      warning: "var(--yellow)",
+      running: "var(--blue)",
+      pending: "var(--grey)",
+      skipped: "var(--grey)",
+    };
+
+    let currentTrace = null;
+    let selectedStep = null;
+
+    function formatMs(ms) {
+      if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
+      if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+      return `${Math.round(ms)}ms`;
+    }
+
+    function renderGraph(trace) {
+      const container = document.getElementById("graph-content");
+      if (!trace || !trace.steps || trace.steps.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="icon">🔍</div>
+            <p>No pipeline trace yet</p>
+            <p>Run: <code>python scripts/run_pipeline_audit.py --phase all</code></p>
+          </div>`;
+        return;
+      }
+
+      const maxDuration = Math.max(...trace.steps.map(s => s.duration_ms || 1), 1);
+      let html = "";
+
+      trace.steps.forEach((step, idx) => {
+        const meta = PHASE_META[step.phase] || { icon: "📦", label: step.phase };
+        const status = step.status || "pending";
+        const badgeClass = `badge-${status}`;
+        const fillPct = Math.max(5, (step.duration_ms / maxDuration) * 100);
+        const fillColor = STATUS_COLORS[status] || "var(--grey)";
+
+        html += `
+          <div class="node status-${status}" data-step-id="${step.step_id}" onclick="selectStep('${step.step_id}')">
+            <div class="node-header">
+              <div class="node-title">
+                <span class="icon">${meta.icon}</span>
+                ${meta.label}
+              </div>
+              <span class="node-badge ${badgeClass}">${status.toUpperCase()}</span>
+            </div>
+            <div class="node-subtitle">${step.step_name}</div>
+            ${step.duration_ms > 0 ? `
+              <div class="node-timing">${formatMs(step.duration_ms)}</div>
+              <div class="timeline-bar">
+                <div class="timeline-fill" style="width: ${fillPct}%; background: ${fillColor};"></div>
+              </div>
+            ` : ""}
+            ${step.error ? `<div style="color: var(--red); font-size: 11px; margin-top: 6px;">${step.error}</div>` : ""}
+          </div>
+        `;
+
+        if (idx < trace.steps.length - 1) {
+          html += `<div class="connector"><div class="connector-line"></div></div>`;
+        }
+      });
+
+      container.innerHTML = html;
+    }
+
+    function selectStep(stepId) {
+      if (!currentTrace) return;
+      const step = findStep(currentTrace.steps, stepId);
+      if (!step) return;
+      selectedStep = step;
+
+      // Highlight active node
+      document.querySelectorAll(".node").forEach(n => n.classList.remove("active"));
+      const node = document.querySelector(`[data-step-id="${stepId}"]`);
+      if (node) node.classList.add("active");
+
+      const meta = PHASE_META[step.phase] || { icon: "📦", label: step.phase };
+      const detail = document.getElementById("detail-content");
+
+      let html = `
+        <div class="detail-section">
+          <h3>${meta.icon} ${meta.label}</h3>
+          <div class="detail-kv">
+            <span class="detail-key">Phase</span>
+            <span class="detail-value">${step.phase}</span>
+            <span class="detail-key">Step</span>
+            <span class="detail-value">${step.step_name}</span>
+            <span class="detail-key">Status</span>
+            <span class="detail-value" style="color: ${STATUS_COLORS[step.status] || "inherit"}">${step.status.toUpperCase()}</span>
+            <span class="detail-key">Duration</span>
+            <span class="detail-value">${step.duration_ms > 0 ? formatMs(step.duration_ms) : "—"}</span>
+          </div>
+        </div>
+      `;
+
+      if (step.error) {
+        html += `
+          <div class="detail-section">
+            <h3>❌ Error</h3>
+            <div class="detail-json" style="color: var(--red);">${escapeHtml(step.error)}</div>
+          </div>
+        `;
+      }
+
+      if (step.inputs && Object.keys(step.inputs).length > 0) {
+        html += `
+          <div class="detail-section">
+            <h3>📥 Inputs</h3>
+            <div class="detail-json">${escapeHtml(JSON.stringify(step.inputs, null, 2))}</div>
+          </div>
+        `;
+      }
+
+      if (step.outputs && Object.keys(step.outputs).length > 0) {
+        html += `
+          <div class="detail-section">
+            <h3>📤 Outputs</h3>
+            <div class="detail-json">${escapeHtml(JSON.stringify(step.outputs, null, 2))}</div>
+          </div>
+        `;
+      }
+
+      if (step.children && step.children.length > 0) {
+        html += `<div class="detail-section"><h3>🔗 Sub-steps</h3>`;
+        step.children.forEach(child => {
+          const childMeta = PHASE_META[child.phase] || { icon: "•", label: child.step_name };
+          html += `
+            <div style="
+              background: var(--bg);
+              border: 1px solid var(--border);
+              border-radius: 8px;
+              padding: 10px 12px;
+              margin-bottom: 6px;
+              font-size: 12px;
+              cursor: pointer;
+            " onclick="selectStep('${child.step_id}')">
+              <div style="font-weight: 600;">${childMeta.icon} ${child.step_name}</div>
+              <div style="color: var(--text-dim); font-family: var(--mono); font-size: 10px; margin-top: 4px;">
+                ${child.status} · ${child.duration_ms > 0 ? formatMs(child.duration_ms) : "—"}
+              </div>
+            </div>
+          `;
+        });
+        html += "</div>";
+      }
+
+      detail.innerHTML = html;
+    }
+
+    function findStep(steps, id) {
+      for (const s of steps) {
+        if (s.step_id === id) return s;
+        if (s.children && s.children.length > 0) {
+          const found = findStep(s.children, id);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    function renderHistory(history) {
+      const container = document.getElementById("history-list");
+      if (!history || history.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-dim); font-size: 12px;">No runs yet</div>';
+        return;
+      }
+
+      let html = "";
+      history.forEach(run => {
+        const statusColor = STATUS_COLORS[run.status] || "var(--grey)";
+        html += `
+          <div class="history-item" onclick="loadTrace('${run.run_id}')">
+            <div class="hi-type" style="color: ${statusColor}">${run.run_type || "?"}</div>
+            <div class="hi-meta">
+              ${run.model || "?"} · ${run.ticker || "all"} · ${run.total_ms > 0 ? formatMs(run.total_ms) : "—"}
+              <br>${run.started_at ? run.started_at.substring(0, 19) : "?"}
+            </div>
+          </div>
+        `;
+      });
+      container.innerHTML = html;
+    }
+
+    function updateHeader(trace) {
+      const statusEl = document.getElementById("header-status");
+      const modelEl = document.getElementById("header-model");
+      const timeEl = document.getElementById("header-time");
+
+      if (!trace) {
+        statusEl.innerHTML = '<span class="status-dot" style="background: var(--grey)"></span>No trace';
+        modelEl.textContent = "—";
+        timeEl.textContent = "—";
+        return;
+      }
+
+      const color = STATUS_COLORS[trace.status] || "var(--grey)";
+      const anim = trace.status === "running" ? "animation: pulse 1s infinite;" : "";
+      statusEl.innerHTML = `<span class="status-dot" style="background: ${color}; ${anim}"></span>${trace.status.toUpperCase()}`;
+      modelEl.textContent = trace.model || "—";
+      timeEl.textContent = trace.total_ms > 0 ? formatMs(trace.total_ms) : (trace.started_at || "—");
+    }
+
+    async function loadTrace(runId) {
+      try {
+        const resp = await fetch(`/api/diagnostics/trace/${runId}`);
+        if (resp.ok) {
+          currentTrace = await resp.json();
+          renderGraph(currentTrace);
+          updateHeader(currentTrace);
+        }
+      } catch (e) {
+        console.error("Failed to load trace:", e);
+      }
+    }
+
+    async function refresh() {
+      try {
+        // Load latest trace
+        const traceResp = await fetch("/api/diagnostics/trace");
+        if (traceResp.ok) {
+          const data = await traceResp.json();
+          if (data && !data.status) {
+            currentTrace = data;
+            renderGraph(currentTrace);
+            updateHeader(currentTrace);
+          }
+        }
+
+        // Load history
+        const histResp = await fetch("/api/diagnostics/trace/history?limit=10");
+        if (histResp.ok) {
+          const history = await histResp.json();
+          renderHistory(history);
+        }
+      } catch (e) {
+        console.error("Refresh failed:", e);
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // Initial load + auto-refresh
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
