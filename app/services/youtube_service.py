@@ -38,7 +38,10 @@ class YouTubeCollector:
 
     SEARCH_QUERIES = [
         "{ticker} stock analysis",
-        "{ticker} earnings",
+        "{ticker} earnings report",
+        "{ticker} earnings call conference",
+        "{ticker} stock CNBC Bloomberg",
+        "{ticker} stock price target analyst",
     ]
 
     # Broader market queries for discovering NEW tickers
@@ -51,7 +54,16 @@ class YouTubeCollector:
     ]
 
     # Minimum video duration (seconds) to filter out short clips
-    MIN_DURATION_SECS = 600  # 10 minutes
+    MIN_DURATION_SECS = 1200  # 20 minutes — ensures substantive content
+
+    # Tiered time buckets for recency filtering.
+    # Collects up to N videos from each window, starting from most recent.
+    # This ensures we always get context even when no fresh content exists.
+    TIME_BUCKETS = [
+        {"label": "24h",  "hours": 24,   "max_per_bucket": 2},
+        {"label": "7d",   "hours": 168,  "max_per_bucket": 2},
+        {"label": "30d",  "hours": 720,  "max_per_bucket": 2},
+    ]
 
     # Curated financial channels — prioritized in search results
     CURATED_CHANNELS = [
@@ -121,7 +133,6 @@ class YouTubeCollector:
         if max_videos <= 0:
             max_videos = settings.YOUTUBE_MAX_VIDEOS
         logger.info("Collecting YouTube transcripts for %s (%s, max=%d)", ticker, mode_label, max_videos)
-        cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
 
         # Step 1: Multi-query search (full metadata for duration filtering)
         all_videos: list[dict] = []
@@ -158,7 +169,7 @@ class YouTubeCollector:
                 )
             all_videos = long_videos
 
-        # Step 2: Apply recency filter (skipped in discovery mode)
+        # Step 2: Apply recency filter with tiered time buckets
         if discovery_mode:
             recent_videos = all_videos
             logger.info(
@@ -168,23 +179,34 @@ class YouTubeCollector:
             )
         else:
             recent_videos = []
-            for vid in all_videos:
-                pub = vid.get("published_at")
-                if pub is None:
-                    # No publish date → include it (can't verify age)
-                    recent_videos.append(vid)
-                elif pub >= cutoff:
-                    recent_videos.append(vid)
-                else:
-                    logger.debug(
-                        "Skipping old video %s (published %s, cutoff %s)",
-                        vid["id"],
-                        pub.isoformat(),
-                        cutoff.isoformat(),
-                    )
+            now = datetime.now(tz=UTC)
+            remaining = list(all_videos)
+
+            for bucket in self.TIME_BUCKETS:
+                bucket_cutoff = now - timedelta(hours=bucket["hours"])
+                bucket_max = bucket["max_per_bucket"]
+                bucket_hits = []
+
+                for vid in remaining:
+                    if len(bucket_hits) >= bucket_max:
+                        break
+                    pub = vid.get("published_at")
+                    if pub is None or pub >= bucket_cutoff:
+                        bucket_hits.append(vid)
+
+                for hit in bucket_hits:
+                    remaining.remove(hit)
+                recent_videos.extend(bucket_hits)
+
+                logger.info(
+                    "%s bucket: %d videos for %s",
+                    bucket["label"],
+                    len(bucket_hits),
+                    ticker,
+                )
 
             logger.info(
-                "%d of %d videos are within 24h window for %s",
+                "Tiered filter: %d of %d videos selected for %s",
                 len(recent_videos),
                 len(all_videos),
                 ticker,

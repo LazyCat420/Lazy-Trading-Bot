@@ -95,5 +95,16 @@ class TickerDossier(BaseModel):
     key_catalysts: list[str] = Field(default_factory=list)
     conviction_score: float = 0.5  # 0.0 = strong sell → 1.0 = strong buy
 
+    # Progressive Summarization — Layer 2 distilled analysis per data source
+    news_analysis: str = ""
+    youtube_analysis: str = ""
+    smart_money_analysis: str = ""
+    reddit_analysis: str = ""
+    peer_analysis: str = ""
+    analyst_consensus_analysis: str = ""
+    insider_activity_analysis: str = ""
+    earnings_catalyst_analysis: str = ""
+    cross_signal_summary: str = ""  # Layer 2 cross-signal synthesis
+
     # Metadata
     total_tokens: int = 0

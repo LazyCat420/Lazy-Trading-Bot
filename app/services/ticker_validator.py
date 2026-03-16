@@ -232,9 +232,29 @@ class TickerValidator:
     def __init__(self) -> None:
         self._cache: dict[str, bool] = {}
 
+    @staticmethod
+    def sanitize_ticker(ticker: str) -> str:
+        """Clean a raw ticker string for use with APIs.
+
+        Strips common prefixes ($, #), whitespace, and non-alpha chars.
+        Examples:
+            "$AAPL"  -> "AAPL"
+            " $SNE " -> "SNE"
+            "#NVDA"  -> "NVDA"
+            "AAPL."  -> "AAPL"
+        """
+        import re as _re
+        ticker = ticker.strip()
+        # Strip leading $ or # (Reddit/Twitter format)
+        ticker = ticker.lstrip("$#")
+        # Remove any non-alphanumeric chars except dots and hyphens
+        # (BRK.B, BF-B are valid tickers)
+        ticker = _re.sub(r"[^A-Za-z0-9.\-]", "", ticker)
+        return ticker.upper().strip()
+
     def validate(self, ticker: str) -> bool:
         """Validate a single ticker. Returns True if it's a real stock."""
-        ticker = ticker.upper().strip()
+        ticker = self.sanitize_ticker(ticker)
 
         # Layer 1: Exclusion list (instant)
         if ticker in self.EXCLUSION_LIST:
@@ -279,7 +299,7 @@ class TickerValidator:
         valid = []
         for t in tickers:
             if self.validate(t):
-                valid.append(t.upper().strip())
+                valid.append(self.sanitize_ticker(t))
         logger.info(
             "[Validator] Batch: %d/%d valid",
             len(valid), len(tickers),

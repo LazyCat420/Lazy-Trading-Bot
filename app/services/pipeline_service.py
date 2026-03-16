@@ -100,10 +100,10 @@ class PipelineService:
         technicals: list = []
         balance_sheet: list = []
         cashflow: list = []
-        analyst_data = None
-        insider_activity = None
-        earnings_calendar = None  # noqa: F841
-        risk_metrics = None  # noqa: F841
+        analyst_data = None  # collected & stored to DB; used by analyze_ticker()
+        insider_activity = None  # collected & stored to DB; used by analyze_ticker()
+        earnings_calendar = None  # collected & stored to DB; used by analyze_ticker()
+        risk_metrics = None
         news: list = []
         yt_transcripts: list = []
         industry_peers: list[str] = []
@@ -167,13 +167,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data
+                        analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data
+                        insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data
+                        earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":
@@ -221,9 +221,9 @@ class PipelineService:
                     elif name == "cashflow":
                         cashflow = data or []
                     elif name == "analyst_data":
-                        analyst_data = data  # noqa: F841
+                        analyst_data = data
                     elif name == "insider_activity":
-                        insider_activity = data  # noqa: F841
+                        insider_activity = data
                     result.status[f"cached_{name}"] = {"status": "ok"}
 
             # Load historical news and transcripts from DB (no scraping)
@@ -286,13 +286,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data
+                        analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data
+                        insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data
+                        earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         # --- news mode skips yfinance entirely ---
@@ -525,9 +525,9 @@ class PipelineService:
         technicals: list = []
         balance_sheet: list = []
         cashflow: list = []
-        analyst_data = None  # noqa: F841
-        insider_activity = None  # noqa: F841
-        earnings_calendar = None  # noqa: F841
+        analyst_data = None  # collected & stored to DB; used by analyze_ticker()
+        insider_activity = None  # collected & stored to DB; used by analyze_ticker()
+        earnings_calendar = None  # collected & stored to DB; used by analyze_ticker()
         risk_metrics = None
         news: list = []
         yt_transcripts: list = []
@@ -592,13 +592,13 @@ class PipelineService:
                         cashflow = data or []
                         result.status[name] = {"status": "ok", "years": len(cashflow)}
                     elif name == "analyst_data":
-                        _analyst_data = data
+                        analyst_data = data
                         result.status[name] = {"status": "ok"}
                     elif name == "insider_activity":
-                        _insider_activity = data
+                        insider_activity = data
                         result.status[name] = {"status": "ok"}
                     elif name == "earnings_calendar":
-                        _earnings_calendar = data
+                        earnings_calendar = data
                         result.status[name] = {"status": "ok"}
 
         elif mode == "quick":

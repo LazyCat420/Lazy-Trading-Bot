@@ -620,6 +620,21 @@ class PortfolioStrategist:
             data_gaps.append("missing trend score")
         if not scorecard.get("vcp_setup_score"):
             data_gaps.append("missing VCP score")
+        # Progressive summarization gaps
+        if not dossier.get("news_analysis"):
+            data_gaps.append("no news analysis")
+        if not dossier.get("youtube_analysis"):
+            data_gaps.append("no YouTube analysis")
+        if not dossier.get("smart_money_analysis"):
+            data_gaps.append("no smart-money analysis")
+        if not dossier.get("reddit_analysis"):
+            data_gaps.append("no Reddit analysis")
+        if not dossier.get("analyst_consensus_analysis"):
+            data_gaps.append("no analyst consensus")
+        if not dossier.get("insider_activity_analysis"):
+            data_gaps.append("no insider activity")
+        if not dossier.get("earnings_catalyst_analysis"):
+            data_gaps.append("no earnings catalyst")
 
         # Get current price
         try:
@@ -628,6 +643,12 @@ class PortfolioStrategist:
             price = quote.get("price") if quote else None
         except Exception:
             price = None
+
+        # Compute target upside from analyst consensus + live price
+        target_upside_pct = None
+        if price and scorecard.get("analyst_target_mean"):
+            target_mean = scorecard["analyst_target_mean"]
+            target_upside_pct = round((target_mean / price - 1) * 100, 1)
 
         return {
             "ticker": ticker,
@@ -641,8 +662,19 @@ class PortfolioStrategist:
             "bull_case": dossier.get("bull_case", ""),
             "bear_case": dossier.get("bear_case", ""),
             "key_catalysts": dossier.get("key_catalysts", []),
+            # Progressive summarization outputs
+            "news_analysis": dossier.get("news_analysis", ""),
+            "youtube_analysis": dossier.get("youtube_analysis", ""),
+            "smart_money_analysis": dossier.get("smart_money_analysis", ""),
+            "reddit_analysis": dossier.get("reddit_analysis", ""),
+            "peer_analysis": dossier.get("peer_analysis", ""),
+            "analyst_consensus_analysis": dossier.get("analyst_consensus_analysis", ""),
+            "insider_activity_analysis": dossier.get("insider_activity_analysis", ""),
+            "earnings_catalyst_analysis": dossier.get("earnings_catalyst_analysis", ""),
+            "cross_signal_summary": dossier.get("cross_signal_summary", ""),
             # Market data
             "current_price": price,
+            "target_upside_pct": target_upside_pct,
             # Data quality
             "data_gaps": data_gaps if data_gaps else None,
         }

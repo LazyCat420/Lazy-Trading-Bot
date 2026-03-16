@@ -421,6 +421,26 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Progressive Summarization columns (additive migration) ──
+    _DOSSIER_NEW_COLS = [
+        ("news_analysis", "VARCHAR DEFAULT ''"),
+        ("youtube_analysis", "VARCHAR DEFAULT ''"),
+        ("smart_money_analysis", "VARCHAR DEFAULT ''"),
+        ("reddit_analysis", "VARCHAR DEFAULT ''"),
+        ("peer_analysis", "VARCHAR DEFAULT ''"),
+        ("analyst_consensus_analysis", "VARCHAR DEFAULT ''"),
+        ("insider_activity_analysis", "VARCHAR DEFAULT ''"),
+        ("earnings_catalyst_analysis", "VARCHAR DEFAULT ''"),
+        ("cross_signal_summary", "VARCHAR DEFAULT ''"),
+    ]
+    for _col_name, _col_type in _DOSSIER_NEW_COLS:
+        try:
+            conn.execute(
+                f"ALTER TABLE ticker_dossiers ADD COLUMN {_col_name} {_col_type}"
+            )
+        except Exception:
+            pass  # column already exists
+
     # ── Phase 3: Trading Engine tables ─────────────────────────
     # ── Positions: migrate old ticker-only PK → composite (ticker, bot_id) ──
     # NOTE: The old check ("bot_id" not in cols) was wrong — _migrate_columns()

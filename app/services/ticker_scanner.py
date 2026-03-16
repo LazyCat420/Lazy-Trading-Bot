@@ -308,12 +308,12 @@ class TickerScanner:
 
             # Clean and validate tickers
             if isinstance(tickers, list):
+                from app.services.ticker_validator import TickerValidator as _TV
                 tickers = [
-                    t.upper().strip()
+                    _TV.sanitize_ticker(t)
                     for t in tickers
                     if isinstance(t, str)
-                    and 1 <= len(t.strip()) <= 5
-                    and t.strip().isalpha()
+                    and 1 <= len(t.strip().lstrip("$#")) <= 5
                 ]
 
             steps = result.get("extraction_meta", {}).get("steps_completed", 0)

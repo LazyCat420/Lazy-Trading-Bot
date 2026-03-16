@@ -184,7 +184,165 @@ class DeepAnalysisService:
         except Exception as exc:
             logger.debug("[DeepAnalysis] cash_flows fetch failed for %s: %s", ticker, exc)
 
-        # Distill all data (pure Python — no LLM)
+        # ── Progressive Summarization: fetch additional data sources ──
+
+        # News articles (yfinance summaries)
+        news_articles = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM news_articles WHERE ticker = ? "
+                "ORDER BY published_at DESC LIMIT 20",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                news_articles = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] news_articles fetch failed for %s: %s", ticker, exc)
+
+        # News full articles (RSS/EDGAR — no ticker column, use LIKE)
+        news_full = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM news_full_articles "
+                "WHERE tickers_found LIKE ? "
+                "ORDER BY published_at DESC LIMIT 10",
+                [f"%{ticker}%"],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                news_full = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] news_full_articles fetch failed for %s: %s", ticker, exc)
+
+        # YouTube transcripts
+        yt_transcripts = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM youtube_transcripts WHERE ticker = ? "
+                "ORDER BY published_at DESC LIMIT 5",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                yt_transcripts = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] youtube_transcripts fetch failed for %s: %s", ticker, exc)
+
+        # YouTube structured trading data
+        yt_trading = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM youtube_trading_data WHERE ticker = ? "
+                "ORDER BY collected_at DESC LIMIT 5",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                yt_trading = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] youtube_trading_data fetch failed for %s: %s", ticker, exc)
+
+        # SEC 13F holdings
+        holdings_13f = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM sec_13f_holdings WHERE ticker = ? "
+                "ORDER BY filing_date DESC LIMIT 20",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                holdings_13f = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] sec_13f_holdings fetch failed for %s: %s", ticker, exc)
+
+        # Congressional trades (ticker nullable — guard for NULL)
+        congress_trades = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM congressional_trades "
+                "WHERE ticker = ? AND ticker IS NOT NULL "
+                "ORDER BY tx_date DESC LIMIT 20",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                congress_trades = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] congressional_trades fetch failed for %s: %s", ticker, exc)
+
+        # Reddit: discovered_tickers (snippets)
+        reddit_snippets = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM discovered_tickers "
+                "WHERE ticker = ? AND source LIKE '%reddit%' "
+                "ORDER BY discovered_at DESC LIMIT 10",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                reddit_snippets = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] discovered_tickers fetch failed for %s: %s", ticker, exc)
+
+        # Reddit: ticker_scores (aggregate)
+        reddit_scores = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM ticker_scores WHERE ticker = ?",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                reddit_scores = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] ticker_scores fetch failed for %s: %s", ticker, exc)
+
+        # Analyst data
+        analyst_rows = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM analyst_data WHERE ticker = ? "
+                "ORDER BY snapshot_date DESC LIMIT 5",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                analyst_rows = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] analyst_data fetch failed for %s: %s", ticker, exc)
+
+        # Insider activity
+        insider_rows = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM insider_activity WHERE ticker = ? "
+                "ORDER BY snapshot_date DESC LIMIT 5",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                insider_rows = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] insider_activity fetch failed for %s: %s", ticker, exc)
+
+        # Earnings calendar
+        earnings_rows = []
+        try:
+            rows = db.execute(
+                "SELECT * FROM earnings_calendar WHERE ticker = ? "
+                "ORDER BY snapshot_date DESC LIMIT 3",
+                [ticker],
+            ).fetchall()
+            if rows:
+                cols = [d[0] for d in db.description]
+                earnings_rows = [dict(zip(cols, r)) for r in rows]
+        except Exception as exc:
+            logger.debug("[DeepAnalysis] earnings_calendar fetch failed for %s: %s", ticker, exc)
+
+        # ── Distill all data (pure Python — no LLM) ──
         price_analysis = self._distiller.distill_price_action(
             prices, technicals, scorecard,
         )
@@ -193,8 +351,26 @@ class DeepAnalysisService:
         )
         risk_analysis = self._distiller.distill_risk(risk_metrics, scorecard)
 
-        # Build simplified TickerDossier
-        # conviction_score derived from quant signals (no LLM synthesis)
+        # Progressive summarization: distill each new data source
+        all_news = news_articles + news_full
+        news_analysis = self._distiller.distill_news(all_news)[:1500]
+        youtube_analysis = self._distiller.distill_youtube(yt_transcripts, yt_trading)[:1000]
+        smart_money_analysis = self._distiller.distill_smart_money(holdings_13f, congress_trades)[:800]
+        reddit_analysis = self._distiller.distill_reddit(reddit_scores, reddit_snippets)[:500]
+        peer_analysis = self._distiller.distill_peers([], fundamentals)[:1000]  # peers fetched separately
+        analyst_consensus_analysis = self._distiller.distill_analyst_consensus(analyst_rows)[:500]
+        insider_activity_analysis = self._distiller.distill_insider_activity(insider_rows)[:500]
+        earnings_catalyst_analysis = self._distiller.distill_earnings_catalyst(earnings_rows)[:500]
+
+        # Cross-signal synthesis (all 11 distill outputs)
+        cross_signal_summary = self._distiller.distill_cross_signals(
+            price_analysis, fund_analysis, risk_analysis,
+            news_analysis, youtube_analysis, smart_money_analysis,
+            reddit_analysis, peer_analysis, analyst_consensus_analysis,
+            insider_activity_analysis, earnings_catalyst_analysis,
+        )[:1000]
+
+        # Build TickerDossier with progressive summarization
         conviction = self._compute_conviction(scorecard)
 
         dossier = TickerDossier(
@@ -205,6 +381,16 @@ class DeepAnalysisService:
             bull_case=fund_analysis[:1000] if fund_analysis else "",
             bear_case=risk_analysis[:1000] if risk_analysis else "",
             conviction_score=conviction,
+            # Progressive summarization fields
+            news_analysis=news_analysis,
+            youtube_analysis=youtube_analysis,
+            smart_money_analysis=smart_money_analysis,
+            reddit_analysis=reddit_analysis,
+            peer_analysis=peer_analysis,
+            analyst_consensus_analysis=analyst_consensus_analysis,
+            insider_activity_analysis=insider_activity_analysis,
+            earnings_catalyst_analysis=earnings_catalyst_analysis,
+            cross_signal_summary=cross_signal_summary,
         )
 
         # Persist the dossier
@@ -319,7 +505,11 @@ class DeepAnalysisService:
             "SELECT id, ticker, generated_at, version, "
             "scorecard_json, qa_pairs_json, "
             "executive_summary, bull_case, bear_case, "
-            "key_catalysts, conviction_score, total_tokens "
+            "key_catalysts, conviction_score, total_tokens, "
+            "news_analysis, youtube_analysis, smart_money_analysis, "
+            "reddit_analysis, peer_analysis, analyst_consensus_analysis, "
+            "insider_activity_analysis, earnings_catalyst_analysis, "
+            "cross_signal_summary "
             "FROM ticker_dossiers "
             "WHERE ticker = ? ORDER BY generated_at DESC LIMIT 1",
             [ticker],
@@ -327,31 +517,38 @@ class DeepAnalysisService:
         if not row:
             return None
 
+        cols = [d[0] for d in db.description]
+        d = dict(zip(cols, row))
+
+        scorecard = json.loads(d.get("scorecard_json") or "{}") if d.get("scorecard_json") else {}
+
         return {
-            "id": row[0],
-            "ticker": row[1],
-            "generated_at": str(row[2]),
-            "version": row[3],
-            "scorecard": json.loads(row[4]) if row[4] else {},
-            "qa_pairs": json.loads(row[5]) if row[5] else [],
-            "executive_summary": row[6] or "",
-            "bull_case": row[7] or "",
-            "bear_case": row[8] or "",
-            "key_catalysts": json.loads(row[9]) if row[9] else [],
-            "conviction_score": row[10] or 0.5,
-            "total_tokens": row[11] or 0,
-            "sector": (
-                json.loads(row[4]).get("sector", "Unknown")
-                if row[4] else "Unknown"
-            ),
-            "industry": (
-                json.loads(row[4]).get("industry", "Unknown")
-                if row[4] else "Unknown"
-            ),
-            "market_cap_tier": (
-                json.loads(row[4]).get("market_cap_tier", "unknown")
-                if row[4] else "unknown"
-            ),
+            "id": d.get("id"),
+            "ticker": d.get("ticker"),
+            "generated_at": str(d.get("generated_at", "")),
+            "version": d.get("version"),
+            "scorecard": scorecard,
+            "qa_pairs": json.loads(d.get("qa_pairs_json") or "[]") if d.get("qa_pairs_json") else [],
+            "executive_summary": d.get("executive_summary") or "",
+            "bull_case": d.get("bull_case") or "",
+            "bear_case": d.get("bear_case") or "",
+            "key_catalysts": json.loads(d.get("key_catalysts") or "[]") if d.get("key_catalysts") else [],
+            "conviction_score": d.get("conviction_score") or 0.5,
+            "total_tokens": d.get("total_tokens") or 0,
+            # Progressive summarization fields
+            "news_analysis": d.get("news_analysis") or "",
+            "youtube_analysis": d.get("youtube_analysis") or "",
+            "smart_money_analysis": d.get("smart_money_analysis") or "",
+            "reddit_analysis": d.get("reddit_analysis") or "",
+            "peer_analysis": d.get("peer_analysis") or "",
+            "analyst_consensus_analysis": d.get("analyst_consensus_analysis") or "",
+            "insider_activity_analysis": d.get("insider_activity_analysis") or "",
+            "earnings_catalyst_analysis": d.get("earnings_catalyst_analysis") or "",
+            "cross_signal_summary": d.get("cross_signal_summary") or "",
+            # Derived from scorecard
+            "sector": scorecard.get("sector", "Unknown"),
+            "industry": scorecard.get("industry", "Unknown"),
+            "market_cap_tier": scorecard.get("market_cap_tier", "unknown"),
         }
 
     @staticmethod
@@ -417,8 +614,12 @@ class DeepAnalysisService:
                 (id, ticker, generated_at, version,
                  scorecard_json, qa_pairs_json,
                  executive_summary, bull_case, bear_case,
-                 key_catalysts, conviction_score, total_tokens)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 key_catalysts, conviction_score, total_tokens,
+                 news_analysis, youtube_analysis, smart_money_analysis,
+                 reddit_analysis, peer_analysis, analyst_consensus_analysis,
+                 insider_activity_analysis, earnings_catalyst_analysis,
+                 cross_signal_summary)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 dossier_id,
@@ -433,6 +634,15 @@ class DeepAnalysisService:
                 json.dumps(dossier.key_catalysts),
                 dossier.conviction_score,
                 dossier.total_tokens,
+                dossier.news_analysis,
+                dossier.youtube_analysis,
+                dossier.smart_money_analysis,
+                dossier.reddit_analysis,
+                dossier.peer_analysis,
+                dossier.analyst_consensus_analysis,
+                dossier.insider_activity_analysis,
+                dossier.earnings_catalyst_analysis,
+                dossier.cross_signal_summary,
             ],
         )
         db.commit()

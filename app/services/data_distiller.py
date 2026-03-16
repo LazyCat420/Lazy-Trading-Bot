@@ -438,6 +438,503 @@ class DataDistiller:
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
+    # News Distillation
+    # ------------------------------------------------------------------
+
+    def distill_news(self, articles: list[Any]) -> str:
+        """Distill news articles into a sentiment-weighted summary.
+
+        Merges rows from both news_articles (yfinance summaries) and
+        news_full_articles (RSS/EDGAR full text).  Deduplicates by title.
+        """
+        parts = ["=== PRE-COMPUTED NEWS ANALYSIS ===\n"]
+
+        if not articles:
+            parts.append("No recent news articles available.")
+            return "\n".join(parts)
+
+        # Deduplicate by title (case-insensitive)
+        seen_titles: set[str] = set()
+        unique: list[Any] = []
+        for a in articles:
+            title = str(_val(a, "title", "") or "").strip().lower()
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                unique.append(a)
+
+        parts.append(f"Total articles: {len(unique)}")
+
+        # Sort by recency (newest first)
+        def _pub_key(a: Any) -> str:
+            return str(_val(a, "published_at", "") or "")
+        unique.sort(key=_pub_key, reverse=True)
+
+        # Top headlines
+        parts.append("\n--- Recent Headlines ---")
+        for a in unique[:8]:
+            title = _val(a, "title", "Untitled")
+            publisher = _val(a, "publisher", "")
+            summary = _val(a, "summary", "") or _val(a, "content", "")
+            pub_str = f" ({publisher})" if publisher else ""
+            parts.append(f"• {title}{pub_str}")
+            if summary:
+                # Truncate long summaries
+                snippet = str(summary)[:200]
+                if len(str(summary)) > 200:
+                    snippet += "…"
+                parts.append(f"  → {snippet}")
+
+        # Source breakdown
+        sources = {}
+        for a in unique:
+            src = _val(a, "source", "") or _val(a, "source_feed", "") or "unknown"
+            sources[src] = sources.get(src, 0) + 1
+        if sources:
+            parts.append("\n--- Source Breakdown ---")
+            for src, count in sorted(sources.items(), key=lambda x: -x[1]):
+                parts.append(f"  {src}: {count} articles")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # YouTube Distillation
+    # ------------------------------------------------------------------
+
+    def distill_youtube(
+        self,
+        transcripts: list[Any],
+        trading_data: list[Any] | None = None,
+    ) -> str:
+        """Distill YouTube transcripts + structured trading data.
+
+        Uses TextRank-style extractive summarization: pick sentences
+        with the most keyword overlap as the most representative.
+        """
+        parts = ["=== PRE-COMPUTED YOUTUBE ANALYSIS ===\n"]
+
+        if not transcripts and not trading_data:
+            parts.append("No YouTube data available.")
+            return "\n".join(parts)
+
+        # Structured trading data first (higher signal)
+        if trading_data:
+            parts.append("--- Structured Trading Data ---")
+            for td in trading_data[:3]:
+                title = _val(td, "title", "")
+                channel = _val(td, "channel", "")
+                data = _val(td, "trading_data", "")
+                parts.append(f"• {title} ({channel})")
+                if data:
+                    snippet = str(data)[:300]
+                    if len(str(data)) > 300:
+                        snippet += "…"
+                    parts.append(f"  Data: {snippet}")
+
+        # Transcript analysis
+        if transcripts:
+            parts.append(f"\n--- Transcript Analysis ({len(transcripts)} videos) ---")
+            for t in transcripts[:3]:
+                title = _val(t, "title", "Unknown")
+                channel = _val(t, "channel", "")
+                duration = _val(t, "duration_seconds", 0) or 0
+                raw = str(_val(t, "raw_transcript", "") or "")
+
+                dur_str = f"{duration // 60}m" if duration else "?"
+                parts.append(f"• {title} ({channel}, {dur_str})")
+
+                if raw:
+                    # Simple extractive summary: first 3 sentences
+                    sentences = [s.strip() for s in raw.replace("\n", ". ").split(". ") if len(s.strip()) > 20]
+                    top = sentences[:3]
+                    if top:
+                        parts.append(f"  Key points: {'. '.join(top)[:300]}")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Smart Money Distillation (13F + Congressional Trades)
+    # ------------------------------------------------------------------
+
+    def distill_smart_money(
+        self,
+        holdings_13f: list[Any],
+        congress_trades: list[Any],
+    ) -> str:
+        """Distill institutional (13F) and congressional trading activity."""
+        parts = ["=== PRE-COMPUTED SMART MONEY ANALYSIS ===\n"]
+
+        if not holdings_13f and not congress_trades:
+            parts.append("No smart money data available.")
+            return "\n".join(parts)
+
+        # 13F Holdings
+        if holdings_13f:
+            parts.append("--- Institutional Holdings (SEC 13F) ---")
+            total_value = sum(float(_val(h, "value_usd", 0) or 0) for h in holdings_13f)
+            total_shares = sum(int(_val(h, "shares", 0) or 0) for h in holdings_13f)
+            parts.append(f"Total filings: {len(holdings_13f)}")
+            if total_value > 0:
+                parts.append(f"Total institutional value: ${total_value:,.0f}")
+                parts.append(f"Total shares held: {total_shares:,}")
+
+            # Top holders by value
+            sorted_h = sorted(holdings_13f, key=lambda h: float(_val(h, "value_usd", 0) or 0), reverse=True)
+            for h in sorted_h[:5]:
+                cik = _val(h, "cik", "?")
+                val = float(_val(h, "value_usd", 0) or 0)
+                shares = int(_val(h, "shares", 0) or 0)
+                quarter = _val(h, "filing_quarter", "?")
+                parts.append(f"  CIK {cik}: ${val:,.0f} ({shares:,} shares, Q{quarter})")
+
+        # Congressional Trades
+        if congress_trades:
+            parts.append("\n--- Congressional Trades ---")
+            buys = [t for t in congress_trades if str(_val(t, "tx_type", "")).lower() in ("purchase", "buy")]
+            sells = [t for t in congress_trades if str(_val(t, "tx_type", "")).lower() in ("sale", "sell", "sale_full", "sale_partial")]
+            parts.append(f"Total trades: {len(congress_trades)} (Buys: {len(buys)}, Sells: {len(sells)})")
+
+            for t in congress_trades[:5]:
+                member = _val(t, "member_name", "Unknown")
+                chamber = _val(t, "chamber", "?")
+                tx_type = _val(t, "tx_type", "?")
+                amount = _val(t, "amount_range", "?")
+                tx_date = _val(t, "tx_date", "?")
+                parts.append(f"  {member} ({chamber}): {tx_type} {amount} on {tx_date}")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Reddit Distillation
+    # ------------------------------------------------------------------
+
+    def distill_reddit(
+        self,
+        scores: list[Any],
+        snippets: list[Any] | None = None,
+    ) -> str:
+        """Distill Reddit/social sentiment data from ticker_scores + discovered_tickers."""
+        parts = ["=== PRE-COMPUTED REDDIT ANALYSIS ===\n"]
+
+        if not scores and not snippets:
+            parts.append("No Reddit/social data available.")
+            return "\n".join(parts)
+
+        # Aggregate scores
+        if scores:
+            for s in scores[:3]:
+                total = _val(s, "total_score", 0) or 0
+                reddit = _val(s, "reddit_score", 0) or 0
+                mentions = _val(s, "mention_count", 0) or 0
+                sentiment = _val(s, "sentiment_hint", "neutral")
+                parts.append(f"Social Score: {total:.1f} (Reddit: {reddit:.1f})")
+                parts.append(f"Mentions: {mentions}, Sentiment: {sentiment}")
+
+        # Discovery snippets
+        if snippets:
+            parts.append("\n--- Community Context ---")
+            for sn in snippets[:5]:
+                context = _val(sn, "context_snippet", "")
+                source_detail = _val(sn, "source_detail", "")
+                sentiment = _val(sn, "sentiment_hint", "neutral")
+                if context:
+                    parts.append(f"• [{sentiment}] {str(context)[:150]}")
+                    if source_detail:
+                        parts.append(f"  Source: {source_detail}")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Peer Comparison Distillation
+    # ------------------------------------------------------------------
+
+    def distill_peers(
+        self,
+        peer_fundamentals: list[Any],
+        primary_fundamentals: Any | None = None,
+    ) -> str:
+        """Distill peer comparison data — sector/industry benchmarking."""
+        parts = ["=== PRE-COMPUTED PEER ANALYSIS ===\n"]
+
+        if not peer_fundamentals:
+            parts.append("No peer comparison data available.")
+            return "\n".join(parts)
+
+        parts.append(f"Peers analyzed: {len(peer_fundamentals)}")
+
+        # Key valuation metrics comparison
+        metrics = ["pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
+                    "profit_margin", "roe", "revenue_growth"]
+
+        for metric in metrics:
+            values = []
+            for pf in peer_fundamentals:
+                val = _val(pf, metric)
+                ticker = _val(pf, "ticker", "?")
+                if val is not None:
+                    values.append((ticker, float(val)))
+            if values:
+                avg = sum(v for _, v in values) / len(values)
+                parts.append(f"\n{metric}:")
+                for ticker, val in values:
+                    diff = ((val / avg) - 1) * 100 if avg else 0
+                    parts.append(f"  {ticker}: {val:.2f} ({diff:+.0f}% vs avg)")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Analyst Consensus Distillation
+    # ------------------------------------------------------------------
+
+    def distill_analyst_consensus(self, analyst_rows: list[Any]) -> str:
+        """Distill analyst ratings and price targets.
+
+        NO current_price param — upside % is computed at the strategist layer
+        where live price is available.
+        """
+        parts = ["=== PRE-COMPUTED ANALYST CONSENSUS ===\n"]
+
+        if not analyst_rows:
+            parts.append("No analyst data available.")
+            return "\n".join(parts)
+
+        # Use most recent snapshot
+        latest = analyst_rows[-1]
+
+        target_mean = _val(latest, "target_mean")
+        target_median = _val(latest, "target_median")
+        target_high = _val(latest, "target_high")
+        target_low = _val(latest, "target_low")
+        num_analysts = _val(latest, "num_analysts", 0) or 0
+
+        parts.append(f"Coverage: {num_analysts} analysts")
+
+        if target_mean:
+            parts.append(f"Target Mean: ${target_mean:.2f}")
+        if target_median:
+            parts.append(f"Target Median: ${target_median:.2f}")
+        if target_high and target_low:
+            spread = target_high - target_low
+            parts.append(f"Target Range: ${target_low:.2f} – ${target_high:.2f} (spread: ${spread:.2f})")
+
+        # Rating distribution
+        sb = int(_val(latest, "strong_buy", 0) or 0)
+        b = int(_val(latest, "buy", 0) or 0)
+        h = int(_val(latest, "hold", 0) or 0)
+        s = int(_val(latest, "sell", 0) or 0)
+        ss = int(_val(latest, "strong_sell", 0) or 0)
+        total_ratings = sb + b + h + s + ss
+
+        if total_ratings > 0:
+            parts.append(f"\n--- Rating Distribution ({total_ratings} ratings) ---")
+            parts.append(f"  Strong Buy: {sb} | Buy: {b} | Hold: {h} | Sell: {s} | Strong Sell: {ss}")
+            bullish_pct = (sb + b) / total_ratings * 100
+            bearish_pct = (s + ss) / total_ratings * 100
+            parts.append(f"  Bullish: {bullish_pct:.0f}% | Bearish: {bearish_pct:.0f}%")
+
+            if bullish_pct > 70:
+                parts.append("  → STRONG BUY CONSENSUS")
+            elif bullish_pct > 50:
+                parts.append("  → MODERATE BUY CONSENSUS")
+            elif bearish_pct > 50:
+                parts.append("  → SELL CONSENSUS")
+            else:
+                parts.append("  → MIXED/HOLD CONSENSUS")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Insider Activity Distillation
+    # ------------------------------------------------------------------
+
+    def distill_insider_activity(self, insider_rows: list[Any]) -> str:
+        """Distill insider buying/selling activity.
+
+        Parses raw_transactions (JSON VARCHAR) for individual trade details.
+        """
+        import json as _json
+
+        parts = ["=== PRE-COMPUTED INSIDER ACTIVITY ===\n"]
+
+        if not insider_rows:
+            parts.append("No insider activity data available.")
+            return "\n".join(parts)
+
+        # Use most recent snapshot
+        latest = insider_rows[-1]
+
+        net_buying = _val(latest, "net_insider_buying_90d", 0) or 0
+        inst_pct = _val(latest, "institutional_ownership_pct", 0) or 0
+
+        parts.append(f"Net Insider Buying (90d): ${net_buying:,.0f}")
+        parts.append(f"Institutional Ownership: {inst_pct:.1f}%")
+
+        if net_buying > 0:
+            parts.append("→ INSIDERS ARE NET BUYERS (bullish signal)")
+        elif net_buying < 0:
+            parts.append("→ INSIDERS ARE NET SELLERS (watch for dilution or pessimism)")
+        else:
+            parts.append("→ No significant insider trading activity")
+
+        # Parse raw transactions if available
+        raw_tx = _val(latest, "raw_transactions", "")
+        if raw_tx:
+            try:
+                transactions = _json.loads(raw_tx) if isinstance(raw_tx, str) else raw_tx
+                if isinstance(transactions, list):
+                    parts.append(f"\n--- Individual Transactions ({len(transactions)}) ---")
+                    for tx in transactions[:5]:
+                        if isinstance(tx, dict):
+                            name = tx.get("insider", tx.get("name", "Unknown"))
+                            action = tx.get("action", tx.get("type", "?"))
+                            shares = tx.get("shares", tx.get("qty", "?"))
+                            value = tx.get("value", "")
+                            parts.append(f"  {name}: {action} {shares} shares")
+                            if value:
+                                parts.append(f"    Value: ${value:,}" if isinstance(value, (int, float)) else f"    Value: {value}")
+            except (_json.JSONDecodeError, TypeError):
+                pass  # raw_transactions wasn't valid JSON
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Earnings Catalyst Distillation
+    # ------------------------------------------------------------------
+
+    def distill_earnings_catalyst(self, earnings_rows: list[Any]) -> str:
+        """Distill earnings calendar and surprise data."""
+        parts = ["=== PRE-COMPUTED EARNINGS CATALYST ===\n"]
+
+        if not earnings_rows:
+            parts.append("No earnings calendar data available.")
+            return "\n".join(parts)
+
+        # Use most recent snapshot
+        latest = earnings_rows[-1]
+
+        next_date = _val(latest, "next_earnings_date")
+        days_until = _val(latest, "days_until_earnings")
+        estimate = _val(latest, "earnings_estimate")
+        prev_actual = _val(latest, "previous_actual")
+        prev_estimate = _val(latest, "previous_estimate")
+        surprise = _val(latest, "surprise_pct")
+
+        if next_date:
+            parts.append(f"Next Earnings: {next_date}")
+        if days_until is not None:
+            parts.append(f"Days Until: {days_until}")
+            if days_until <= 14:
+                parts.append("⚠️ EARNINGS IMMINENT — elevated volatility expected")
+            elif days_until <= 30:
+                parts.append("Earnings approaching — options premiums may be elevated")
+
+        if estimate:
+            parts.append(f"Consensus Estimate: ${estimate:.2f}")
+        if prev_actual:
+            parts.append(f"Previous Actual: ${prev_actual:.2f}")
+
+        # Estimate revision detection
+        if prev_estimate and estimate:
+            revision_pct = (estimate / prev_estimate - 1) * 100 if prev_estimate else 0
+            if abs(revision_pct) > 1:
+                direction = "UPGRADED" if revision_pct > 0 else "DOWNGRADED"
+                parts.append(f"Estimate Revision: {direction} {abs(revision_pct):.1f}% from ${prev_estimate:.2f}")
+
+        # Last earnings surprise
+        if surprise is not None:
+            if surprise > 5:
+                parts.append(f"Last Surprise: +{surprise:.1f}% BEAT (strong)")
+            elif surprise > 0:
+                parts.append(f"Last Surprise: +{surprise:.1f}% beat")
+            elif surprise < -5:
+                parts.append(f"Last Surprise: {surprise:.1f}% MISS (significant)")
+            elif surprise < 0:
+                parts.append(f"Last Surprise: {surprise:.1f}% miss")
+            else:
+                parts.append("Last Surprise: In-line with estimates")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Cross-Signal Synthesis
+    # ------------------------------------------------------------------
+
+    def distill_cross_signals(
+        self,
+        price_analysis: str,
+        fund_analysis: str,
+        risk_analysis: str,
+        news_analysis: str,
+        youtube_analysis: str,
+        smart_money_analysis: str,
+        reddit_analysis: str,
+        peer_analysis: str,
+        analyst_consensus_analysis: str,
+        insider_activity_analysis: str,
+        earnings_catalyst_analysis: str,
+    ) -> str:
+        """Cross-reference all distilled signals to find convergences/divergences.
+
+        All 11 params are str — distilled text from other methods.
+        """
+        parts = ["=== CROSS-SIGNAL SYNTHESIS ===\n"]
+
+        # Count available signals
+        signals = {
+            "price": price_analysis,
+            "fundamentals": fund_analysis,
+            "risk": risk_analysis,
+            "news": news_analysis,
+            "youtube": youtube_analysis,
+            "smart_money": smart_money_analysis,
+            "reddit": reddit_analysis,
+            "peers": peer_analysis,
+            "analyst": analyst_consensus_analysis,
+            "insider": insider_activity_analysis,
+            "earnings": earnings_catalyst_analysis,
+        }
+
+        available = {k: v for k, v in signals.items() if v and "No " not in v[:20] and "no " not in v[:20]}
+        parts.append(f"Signals available: {len(available)}/{len(signals)}")
+        if len(available) < len(signals):
+            missing = set(signals.keys()) - set(available.keys())
+            parts.append(f"Missing: {', '.join(sorted(missing))}")
+
+        # Detect bullish/bearish keywords across all signals
+        bullish_kw = ["BUY", "UPTREND", "STRONG", "BULLISH", "BEAT", "UPGRADED", "NET BUYERS", "GOLDEN CROSS"]
+        bearish_kw = ["SELL", "DOWNTREND", "BEARISH", "MISS", "DOWNGRADED", "NET SELLERS", "DEATH CROSS", "DANGER"]
+
+        bullish_count = 0
+        bearish_count = 0
+        bull_sources: list[str] = []
+        bear_sources: list[str] = []
+
+        for name, text in available.items():
+            upper = text.upper()
+            b = sum(1 for kw in bullish_kw if kw in upper)
+            s = sum(1 for kw in bearish_kw if kw in upper)
+            if b > s:
+                bullish_count += 1
+                bull_sources.append(name)
+            elif s > b:
+                bearish_count += 1
+                bear_sources.append(name)
+
+        parts.append(f"\n--- Signal Direction ---")
+        parts.append(f"Bullish signals: {bullish_count} ({', '.join(bull_sources) if bull_sources else 'none'})")
+        parts.append(f"Bearish signals: {bearish_count} ({', '.join(bear_sources) if bear_sources else 'none'})")
+
+        if bullish_count > bearish_count * 2:
+            parts.append("→ STRONG CONVERGENCE: Multiple data sources align BULLISH")
+        elif bearish_count > bullish_count * 2:
+            parts.append("→ STRONG CONVERGENCE: Multiple data sources align BEARISH")
+        elif bullish_count > 0 and bearish_count > 0:
+            parts.append("→ DIVERGENCE: Mixed signals — warrants deeper investigation")
+        elif bullish_count == 0 and bearish_count == 0:
+            parts.append("→ NEUTRAL: No strong directional signals detected")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
