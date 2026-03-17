@@ -451,7 +451,11 @@ class EmbeddingService:
         }
 
     async def embed_reddit_posts(self) -> dict[str, Any]:
-        """Embed Reddit post snippets from discovered_tickers table.
+        """Embed Reddit thread data from the reddit_threads table.
+
+        Pulls full thread content (title + body + comments) for richer
+        semantic embeddings.  Falls back to discovered_tickers snippets
+        if no reddit_threads data is available.
 
         Returns:
             {"embedded": int, "skipped": int, "total_chunks": int}
@@ -460,6 +464,67 @@ class EmbeddingService:
 
         db = get_db()
 
+        # ── Primary: embed from reddit_threads table (rich content) ──
+        try:
+            rows = db.execute("""
+                SELECT rt.thread_id, rt.subreddit, rt.title,
+                       rt.selftext, rt.comments_json, rt.tickers_found
+                FROM reddit_threads rt
+                LEFT JOIN (
+                    SELECT DISTINCT source_id
+                    FROM embeddings
+                    WHERE source_type = 'reddit'
+                ) e ON rt.thread_id = e.source_id
+                WHERE e.source_id IS NULL
+                  AND LENGTH(rt.title) > 10
+            """).fetchall()
+        except Exception:
+            rows = []  # Table may not exist yet
+
+        if rows:
+            import json as _json
+
+            items: list[tuple[str, str | None, str, str]] = []
+            for row in rows:
+                thread_id = row[0]
+                subreddit = row[1] or "reddit"
+                title = row[2] or ""
+                selftext = row[3] or ""
+                comments_json = row[4] or "[]"
+                tickers_found = row[5] or ""
+
+                # Build a rich text blob from the full thread
+                text_parts = [f"Thread: {title}"]
+                if selftext:
+                    text_parts.append(f"Post: {selftext[:3000]}")
+
+                try:
+                    comments = _json.loads(comments_json)
+                    if isinstance(comments, list):
+                        for i, c in enumerate(comments[:10]):
+                            text_parts.append(f"Comment {i+1}: {str(c)[:500]}")
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+
+                text = "\n\n".join(text_parts)
+                meta = f"r/{subreddit} | {title[:100]}"[:200]
+
+                # Pick single ticker if only one found
+                tickers = [t.strip() for t in tickers_found.split(",") if t.strip()]
+                ticker = tickers[0] if len(tickers) == 1 else None
+
+                items.append((thread_id, ticker, meta, text))
+
+            result = await self._batch_embed_and_store("reddit", items)
+
+            skipped = len(rows) - result.get("embedded", 0)
+            return {
+                "embedded": result.get("embedded", 0),
+                "skipped": skipped,
+                "total_chunks": result.get("total_chunks", 0),
+            }
+
+        # ── Fallback: embed from discovered_tickers (legacy snippets) ──
         rows = db.execute("""
             SELECT dt.ticker, dt.source_detail, dt.context_snippet,
                    CAST(dt.rowid AS VARCHAR) as row_id
@@ -478,7 +543,7 @@ class EmbeddingService:
             logger.info("[Embedding] No new Reddit posts to embed")
             return {"embedded": 0, "skipped": 0, "total_chunks": 0}
 
-        items: list[tuple[str, str | None, str, str]] = []
+        items = []
         for row in rows:
             ticker, subreddit, snippet, row_id = row[0], row[1], row[2], row[3]
             meta = (subreddit or "reddit")[:200]

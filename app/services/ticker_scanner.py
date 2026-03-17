@@ -15,6 +15,7 @@ from datetime import datetime
 from app.config import settings
 from app.database import get_db
 from app.models.discovery import ScoredTicker
+from app.services.ContextDisambiguator import ContextDisambiguator
 from app.services.llm_service import LLMService
 from app.services.ticker_validator import TickerValidator
 from app.utils.logger import logger
@@ -396,6 +397,20 @@ class TickerScanner:
                 tickers[:10],
                 " (+ trading data)" if trading_data else "",
             )
+
+            # ── Disambiguate ambiguous tickers ─────────────────────
+            if tickers:
+                try:
+                    disambiguator = ContextDisambiguator()
+                    context_text = f"VIDEO: {title}\nCHANNEL: {channel}\n\n{truncated}"
+                    tickers = await disambiguator.disambiguate(
+                        tickers, context_text,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[YouTube Scanner] Legacy disambiguation failed: %s", exc,
+                    )
+
             return tickers, trading_data
 
         except Exception as e:

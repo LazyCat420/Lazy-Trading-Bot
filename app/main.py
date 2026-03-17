@@ -1132,6 +1132,7 @@ async def dashboard_db_stats() -> dict:
         "discovered_tickers",
         "ticker_scores",
         "watchlist",
+        "reddit_threads",
         "positions",
         "orders",
         "price_triggers",
@@ -1422,6 +1423,40 @@ async def clear_discovery_data() -> dict:
     return _discovery.clear_data()
 
 
+@app.get("/api/dashboard/reddit/{ticker}")
+async def dashboard_reddit(ticker: str) -> dict:
+    """Reddit data for a ticker — full threads + legacy mentions."""
+    ticker = ticker.upper().strip()
+    try:
+        # Rich thread data from reddit_threads table
+        from app.services.reddit_service import RedditCollector
+        threads = RedditCollector.get_threads_for_ticker(ticker, limit=20)
+
+        # Legacy mentions from discovered_tickers
+        mentions = _query_to_dicts(
+            """
+            SELECT ticker, source_detail, discovery_score,
+                   sentiment_hint, context_snippet, source_url,
+                   discovered_at
+            FROM discovered_tickers
+            WHERE ticker = ? AND source = 'reddit'
+            ORDER BY discovered_at DESC
+            LIMIT 50
+            """,
+            [ticker],
+        )
+
+        return {
+            "ticker": ticker,
+            "threads": threads,
+            "thread_count": len(threads),
+            "mentions": mentions,
+            "mention_count": len(mentions),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @app.get("/api/discovery/transcripts/{ticker}")
 async def get_discovery_transcripts(ticker: str) -> dict:
     """Lightweight transcript metadata for a specific ticker.
@@ -1530,6 +1565,12 @@ async def run_full_loop(max_tickers: int = 10) -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     bot_id = _get_active_bot_id()
+    # Ensure the bot exists in the bots table for leaderboard tracking
+    BotRegistry.ensure_bot_exists(
+        bot_id,
+        model_name=settings.LLM_MODEL,
+        provider_url=settings.OLLAMA_URL,
+    )
     # Re-create the loop scoped to the active bot
     _loop = AutonomousLoop(
         max_tickers=max_tickers,
@@ -3046,6 +3087,12 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                 )
                 _run_all_state["current_phase"] = "analysis"
 
+                # Ensure bot exists in bots table for leaderboard
+                BotRegistry.ensure_bot_exists(
+                    bot_id,
+                    model_name=model_name,
+                    display_name=display_name,
+                )
                 loop = AutonomousLoop(
                     max_tickers=max_tickers,
                     bot_id=bot_id,

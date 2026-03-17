@@ -17,6 +17,53 @@ from app.utils.logger import logger
 class BotRegistry:
     """CRUD and analytics for the bots table."""
 
+    # ── Ensure ─────────────────────────────────────────────────
+
+    @staticmethod
+    def ensure_bot_exists(
+        bot_id: str,
+        model_name: str = "",
+        display_name: str = "",
+        *,
+        provider: str = "ollama",
+        provider_url: str = "http://localhost:11434",
+    ) -> dict[str, Any]:
+        """Guarantee a bot row exists in the `bots` table.
+
+        If the bot_id already exists, return its row unchanged.
+        If it does NOT exist, insert a new row so that `update_stats`,
+        `record_run`, and the leaderboard query can all find it.
+        """
+        existing = BotRegistry.get_bot(bot_id)
+        if existing:
+            return existing
+
+        # Auto-register with sensible defaults
+        if not model_name:
+            model_name = bot_id
+        if not display_name:
+            display_name = model_name.split("/")[-1]
+
+        conn = get_db()
+        conn.execute(
+            """
+            INSERT INTO bots (
+                bot_id, model_name, display_name, provider, provider_url,
+                context_length, temperature, top_p, max_tokens,
+                eval_batch_size, flash_attention, num_experts, gpu_offload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                bot_id, model_name, display_name, provider, provider_url,
+                8192, 0.3, 1.0, 0, 512, True, 0, True,
+            ],
+        )
+        logger.info(
+            "[BotRegistry] Auto-registered bot %s (%s) for leaderboard",
+            bot_id, display_name,
+        )
+        return BotRegistry.get_bot(bot_id)  # type: ignore[return-value]
+
     # ── Create ─────────────────────────────────────────────────
 
     @staticmethod
@@ -322,7 +369,7 @@ class BotRegistry:
                 provider, queue_order
             FROM bots
             WHERE status = 'active'
-            ORDER BY queue_order ASC, created_at ASC
+            ORDER BY total_pnl DESC, total_trades DESC, created_at ASC
         """).fetchall()
 
         if not rows:

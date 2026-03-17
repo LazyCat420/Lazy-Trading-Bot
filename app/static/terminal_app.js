@@ -718,6 +718,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
     const [videos, setVideos] = useState([]);
     const [riskData, setRiskData] = useState({});
     const [analystData, setAnalystData] = useState({});
+    const [redditMentions, setRedditMentions] = useState([]);
 
     // Track loading states individually
     const [loadingOv, setLoadingOv] = useState(true);
@@ -727,6 +728,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
     const [loadingYt, setLoadingYt] = useState(true);
     const [loadingRisk, setLoadingRisk] = useState(true);
     const [loadingAnalyst, setLoadingAnalyst] = useState(true);
+    const [loadingReddit, setLoadingReddit] = useState(true);
 
     // Serialize streamSignals to a stable string to avoid re-render loops
     // (object reference changes every render even if contents are the same)
@@ -758,6 +760,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         fetchYouTube();
         fetchRisk();
         fetchAnalyst();
+        fetchReddit();
     };
 
     const fetchOverview = async () => {
@@ -828,6 +831,16 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
         } catch (e) { console.error(e); } finally { setLoadingAnalyst(false); }
     };
 
+    const fetchReddit = async () => {
+        try {
+            const res = await fetch(`/api/dashboard/reddit/${ticker}`);
+            if (res.ok) {
+                const data = await res.json();
+                setRedditMentions(data.mentions || []);
+            }
+        } catch (e) { console.error(e); } finally { setLoadingReddit(false); }
+    };
+
     const TabBtn = ({ id, label, icon }) => (
         <button onClick={() => setTab(id)}
             className={`tab-btn flex items-center gap-1.5 ${tab === id ? "active" : ""}`}>
@@ -841,10 +854,11 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     return (
         <div className="bg-onyx-panel border-t border-border-dark animate-fadeIn h-full flex flex-col">
-            <div className="flex border-b border-border-dark px-6 bg-onyx-surface shrink-0">
+            <div className="flex border-b border-border-dark px-6 bg-onyx-surface shrink-0 flex-wrap">
                 <TabBtn id="OV" label="Overview" icon="dashboard" />
                 <TabBtn id="NEWS" label="News" icon="newspaper" />
                 <TabBtn id="YT" label="YouTube" icon="play_circle" />
+                <TabBtn id="REDDIT" label="Reddit" icon="forum" />
                 <TabBtn id="FUND" label="Fundamentals" icon="account_balance" />
                 <TabBtn id="TECH" label="Technicals" icon="show_chart" />
                 <TabBtn id="RISK" label="Risk" icon="shield" />
@@ -962,6 +976,70 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
                         )}
                         {videos.length > 0 ? <YouTubeTab videos={videos} /> : !loadingYt && (
                             <div className="text-center py-12 text-text-muted">No YouTube videos in database</div>
+                        )}
+                    </div>
+                )}
+
+                {tab === "REDDIT" && (
+                    <div>
+                        {loadingReddit && redditMentions.length === 0 && (
+                            <div className="text-center py-8 text-text-muted">
+                                <span className="material-symbols-outlined animate-spin text-2xl mb-2">progress_activity</span>
+                                <p>Fetching Reddit mentions...</p>
+                            </div>
+                        )}
+                        {redditMentions.length > 0 ? (
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-orange-400 text-[10px] font-bold uppercase tracking-wider">Reddit Sources</span>
+                                    <span className="text-[10px] text-text-muted font-mono">{redditMentions.length} mentions</span>
+                                </div>
+                                {redditMentions.map((m, i) => {
+                                    const subs = (m.source_detail || "").split(",").map(s => s.trim()).filter(Boolean);
+                                    const linkUrl = m.source_url || (subs.length > 0 ? `https://www.reddit.com/r/${subs[0]}` : "");
+                                    const sentColor = m.sentiment_hint === "bullish" ? "text-green-400 bg-green-500/10 border-green-500/20"
+                                        : m.sentiment_hint === "bearish" ? "text-red-400 bg-red-500/10 border-red-500/20"
+                                        : "text-yellow-400 bg-yellow-500/10 border-yellow-500/20";
+                                    return (
+                                        <div key={i} className="glass-card p-4 border-l-2 border-orange-400/30 hover:bg-white/[0.02] transition">
+                                            <div className="flex items-start gap-3">
+                                                <span className="text-primary font-mono text-xs font-bold shrink-0 w-10 text-right pt-0.5">
+                                                    +{(m.discovery_score ?? 0).toFixed(1)}
+                                                </span>
+                                                <div className="flex-1 min-w-0">
+                                                    {linkUrl ? (
+                                                        <a href={linkUrl} target="_blank" rel="noopener"
+                                                            className="text-sm text-text-secondary leading-relaxed hover:text-orange-400 transition block">
+                                                            {m.context_snippet || "No context available"}
+                                                        </a>
+                                                    ) : (
+                                                        <p className="text-sm text-text-secondary leading-relaxed">
+                                                            {m.context_snippet || "No context available"}
+                                                        </p>
+                                                    )}
+                                                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                                                        {subs.map((sub, si) => (
+                                                            <a key={si} href={`https://www.reddit.com/r/${sub}`}
+                                                                target="_blank" rel="noopener"
+                                                                className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 transition">
+                                                                r/{sub}
+                                                            </a>
+                                                        ))}
+                                                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${sentColor}`}>
+                                                            {m.sentiment_hint || "neutral"}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <span className="text-[10px] text-text-muted font-mono shrink-0">
+                                                    {m.discovered_at ? fmt.ago(m.discovered_at) : ""}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : !loadingReddit && (
+                            <div className="text-center py-12 text-text-muted">No Reddit mentions in database</div>
                         )}
                     </div>
                 )}
@@ -3947,7 +4025,7 @@ const useMonitorData = () => {
         if (!confirm(`Delete ${ticker} from scoreboard?`)) return;
         try {
             await fetch(`/api/scoreboard/${ticker}`, { method: "DELETE" });
-            fetchScores();
+            fetchScorePage(scorePage);
             fetchWatchlist();
             RetroSFX.click();
         } catch (e) {
@@ -4137,7 +4215,7 @@ const useMonitorData = () => {
         schedulerStatus, schedulerHistory, schedulerLoading,
         // Actions
         fetchAll, runScan, clearData,
-        addToWatchlist, removeFromWatchlist,
+        addToWatchlist, removeFromWatchlist, deleteFromScoreboard,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
         fetchPortfolio, closePosition, resetPortfolio,
@@ -4177,7 +4255,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
         runAllRunning, runAllStatus, runAllBots,
         schedulerStatus, schedulerHistory, schedulerLoading,
         fetchAll, runScan, clearData,
-        addToWatchlist, removeFromWatchlist,
+        addToWatchlist, removeFromWatchlist, deleteFromScoreboard,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
         fetchPortfolio, closePosition, resetPortfolio,
@@ -4277,26 +4355,6 @@ const AutobotMonitorPage = ({ monitorData }) => {
     // ── Ticker Discovery Card Component
     const TickerCard = ({ s, rank }) => {
         const isExpanded = expandedTicker === s.ticker;
-        const tickerHistory = historyByTicker[s.ticker] || [];
-        const redditEntries = tickerHistory.filter(h => h.source === "reddit");
-        const youtubeEntries = tickerHistory.filter(h => h.source === "youtube");
-        const [transcripts, setTranscripts] = useState(null);
-
-        // Fetch transcript data when card is expanded
-        useEffect(() => {
-            if (!isExpanded) { setTranscripts(null); return; }
-            fetch(`/api/discovery/transcripts/${s.ticker}`)
-                .then(r => r.json())
-                .then(data => setTranscripts(data.transcripts || []))
-                .catch(() => setTranscripts([]));
-        }, [isExpanded, s.ticker]);
-
-        const fmtDuration = (secs) => {
-            if (!secs) return "";
-            const m = Math.floor(secs / 60);
-            const s2 = secs % 60;
-            return `${m}:${String(s2).padStart(2, "0")}`;
-        };
 
         return React.createElement("div", {
             className: `glass-card overflow-hidden transition-all duration-200 ${isExpanded ? "ring-1 ring-primary/40" : ""}`,
@@ -4365,137 +4423,9 @@ const AutobotMonitorPage = ({ monitorData }) => {
                 )
             ),
 
-            // ── Expanded detail panel
-            isExpanded && React.createElement("div", { className: "border-t border-border-dark bg-onyx-black/30" },
-                // Reddit context snippets
-                redditEntries.length > 0 && React.createElement("div", { className: "p-4 pb-2" },
-                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
-                        React.createElement("span", { className: "text-orange-400 text-[10px] font-bold uppercase tracking-wider" }, "Reddit Sources"),
-                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${redditEntries.length} mentions`)
-                    ),
-                    React.createElement("div", { className: "space-y-2" },
-                        ...redditEntries.map((h, i) => {
-                            // Parse subreddits from source_detail
-                            const subs = (h.source_detail || "").split(",").map(s => s.trim()).filter(Boolean);
-                            // Use real source_url if available, else link to first subreddit
-                            const linkUrl = h.source_url || (subs.length > 0 ? `https://www.reddit.com/r/${subs[0]}` : "");
-                            const rawSnippet = h.context_snippet || "No context available";
-                            return React.createElement("div", {
-                                key: `r-${i}`,
-                                className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-orange-400/30",
-                            },
-                                React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
-                                    `+${(h.discovery_score ?? 0).toFixed(1)}`
-                                ),
-                                React.createElement("div", { className: "flex-1 min-w-0" },
-                                    linkUrl
-                                        ? React.createElement("a", {
-                                            href: linkUrl,
-                                            target: "_blank",
-                                            rel: "noopener",
-                                            className: "text-xs text-text-secondary leading-relaxed hover:text-orange-400 transition cursor-pointer block",
-                                            title: "View on Reddit"
-                                        }, rawSnippet)
-                                        : React.createElement("p", {
-                                            className: "text-xs text-text-secondary leading-relaxed"
-                                        }, rawSnippet),
-                                    subs.length > 0 && React.createElement("div", { className: "flex flex-wrap gap-1.5 mt-1" },
-                                        ...subs.map((sub, si) => React.createElement("a", {
-                                            key: si,
-                                            href: `https://www.reddit.com/r/${sub}`,
-                                            target: "_blank",
-                                            rel: "noopener",
-                                            className: "text-[10px] text-text-muted hover:text-orange-400 transition cursor-pointer",
-                                            title: `Visit r/${sub}`
-                                        }, `r/${sub}`))
-                                    )
-                                ),
-                                React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
-                                    h.discovered_at ? fmt.ago(h.discovered_at) : ""
-                                )
-                            );
-                        })
-                    )
-                ),
-
-                // YouTube context snippets
-                youtubeEntries.length > 0 && React.createElement("div", { className: "p-4 pt-2" },
-                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
-                        React.createElement("span", { className: "text-red-400 text-[10px] font-bold uppercase tracking-wider" }, "YouTube Sources"),
-                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${youtubeEntries.length} mentions`)
-                    ),
-                    React.createElement("div", { className: "space-y-2" },
-                        ...youtubeEntries.map((h, i) => React.createElement("div", {
-                            key: `y-${i}`,
-                            className: "flex gap-3 p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-red-400/30",
-                        },
-                            React.createElement("span", { className: "text-primary font-mono text-xs font-bold shrink-0 w-10 text-right" },
-                                `+${(h.discovery_score ?? 0).toFixed(1)}`
-                            ),
-                            React.createElement("div", { className: "flex-1 min-w-0" },
-                                React.createElement("p", { className: "text-xs text-text-secondary leading-relaxed" },
-                                    h.context_snippet || "No context available"
-                                ),
-                                h.source_detail && React.createElement("span", { className: "text-[10px] text-text-muted mt-1 block" },
-                                    h.source_detail
-                                )
-                            ),
-                            React.createElement("span", { className: "text-[10px] text-text-muted font-mono shrink-0" },
-                                h.discovered_at ? fmt.ago(h.discovered_at) : ""
-                            )
-                        ))
-                    )
-                ),
-
-                // ── YouTube Transcripts (fetched from youtube_transcripts table)
-                transcripts && transcripts.length > 0 && React.createElement("div", { className: "p-4 pt-2" },
-                    React.createElement("div", { className: "flex items-center gap-2 mb-3" },
-                        React.createElement("span", { className: "text-red-400 text-[10px] font-bold uppercase tracking-wider" }, "YouTube Transcripts"),
-                        React.createElement("span", { className: "text-[10px] text-text-muted font-mono" }, `${transcripts.length} video${transcripts.length !== 1 ? "s" : ""}`)
-                    ),
-                    React.createElement("div", { className: "space-y-2" },
-                        ...transcripts.map((t, i) => React.createElement("div", {
-                            key: `t-${i}`,
-                            className: "p-3 rounded-lg bg-onyx-surface/50 border-l-2 border-red-500/40",
-                        },
-                            React.createElement("div", { className: "flex items-center gap-2 mb-1.5" },
-                                React.createElement("span", { className: "material-symbols-outlined text-red-400 text-[14px]" }, "play_circle"),
-                                React.createElement("a", {
-                                    href: `https://youtube.com/watch?v=${t.video_id}`,
-                                    target: "_blank",
-                                    rel: "noopener",
-                                    className: "text-xs text-white font-bold truncate flex-1 hover:text-primary transition cursor-pointer",
-                                    title: "Watch on YouTube"
-                                }, t.title || "Untitled Video"),
-                                t.duration_seconds && React.createElement("span", {
-                                    className: "text-[10px] text-text-muted font-mono shrink-0"
-                                }, fmtDuration(t.duration_seconds)),
-                                t.transcript_length && React.createElement("span", {
-                                    className: "text-[10px] text-text-muted font-mono shrink-0"
-                                }, `${Math.round(t.transcript_length / 1000)}k chars`)
-                            ),
-                            React.createElement("div", { className: "flex items-center gap-2 mb-1" },
-                                React.createElement("span", { className: "text-[10px] text-text-muted" }, t.channel || "Unknown channel")
-                            ),
-                            t.preview && React.createElement("p", {
-                                className: "text-[11px] text-text-secondary/80 leading-relaxed mt-1 italic"
-                            }, `"${t.preview}${t.transcript_length > 200 ? "..." : ""}"`)
-                        ))
-                    )
-                ),
-
-                // Loading transcripts indicator
-                isExpanded && transcripts === null && React.createElement("div", {
-                    className: "p-4 flex items-center gap-2 text-text-muted text-xs"
-                },
-                    React.createElement("span", { className: "material-symbols-outlined animate-spin text-sm" }, "progress_activity"),
-                    "Loading transcripts..."
-                ),
-
-                // Empty state
-                tickerHistory.length === 0 && (!transcripts || transcripts.length === 0) && React.createElement("div", {
-                    className: "p-6 text-center text-text-muted text-xs"
-                }, "No detailed context available for this ticker")
+            // ── Expanded detail panel — consolidated into TickerDetailPanel tabs
+            isExpanded && React.createElement("div", { className: "border-t border-border-dark" },
+                React.createElement(TickerDetailPanel, { ticker: s.ticker })
             )
         );
     };
@@ -5249,6 +5179,11 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                                             d.total_tokens > 0 && React.createElement("span", null, `${d.total_tokens.toLocaleString()} tokens used`),
                                                             d.generated_at && React.createElement("span", null, `Generated: ${fmt.ago(d.generated_at)}`)
                                                         )
+                                                    ),
+
+                                                    // ── Market Data Tabs (Overview/News/YouTube/Fundamentals/Technicals/Risk/Analyst)
+                                                    React.createElement("div", { className: "border-t border-border-dark" },
+                                                        React.createElement(TickerDetailPanel, { ticker: entry.ticker })
                                                     )
                                                 )
                                             ));

@@ -366,6 +366,9 @@ class RSSNewsCollector:
         Looks for $TICKER notation and standalone uppercase 2-5 char words
         that could be tickers. Filters out common false positives.
         """
+        # Import ambiguous tickers list for additional filtering
+        from app.services.ContextDisambiguator import AMBIGUOUS_TICKERS
+
         # Common false positives to exclude
         exclusions = {
             # English words (2-3 letter)
@@ -656,8 +659,14 @@ class RSSNewsCollector:
             "TECH",
         }
 
+        # Merge ambiguous tickers (words that are both stocks and common words)
+        # Since RSS uses regex only (no LLM context), safer to reject these
+        exclusions.update(AMBIGUOUS_TICKERS)
+
         # Find $TICKER patterns (most reliable)
         dollar_tickers = set(re.findall(r"\$([A-Z]{2,5})\b", text))
+        # Remove ambiguous even from $-prefixed (news articles often use $ loosely)
+        dollar_tickers -= AMBIGUOUS_TICKERS
 
         # Find standalone uppercase words that look like tickers
         # Only take words that appear near financial context

@@ -800,6 +800,23 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Reddit Threads: full thread data for rich embeddings ────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reddit_threads (
+            thread_id       VARCHAR PRIMARY KEY,
+            subreddit       VARCHAR NOT NULL,
+            title           VARCHAR NOT NULL,
+            selftext        TEXT DEFAULT '',
+            permalink       VARCHAR NOT NULL,
+            score           INTEGER DEFAULT 0,
+            num_comments    INTEGER DEFAULT 0,
+            comments_json   TEXT DEFAULT '[]',
+            tickers_found   VARCHAR DEFAULT '',
+            search_ticker   VARCHAR DEFAULT '',
+            collected_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     # ── Phase 3+4: Trade Decision Audit Trail ───────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trade_decisions (

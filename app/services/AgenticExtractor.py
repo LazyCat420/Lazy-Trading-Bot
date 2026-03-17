@@ -266,6 +266,24 @@ class AgenticExtractor:
     except (json.JSONDecodeError, Exception) as exc:
       logger.warning("[AgenticExtractor] Step 2 JSON parse failed: %s", exc)
 
+    # ── Step 2.5: Disambiguate ambiguous tickers ──────────────
+    if result["tickers"]:
+      try:
+        from app.services.ContextDisambiguator import ContextDisambiguator
+
+        disambiguator = ContextDisambiguator()
+        # Use the summary + title as context for disambiguation
+        context_text = f"VIDEO: {title}\nCHANNEL: {channel}\n\n{summary.strip()}"
+        result["tickers"] = await disambiguator.disambiguate(
+          result["tickers"], context_text,
+        )
+        logger.info(
+          "[AgenticExtractor] Step 2.5 — %d tickers after disambiguation",
+          len(result["tickers"]),
+        )
+      except Exception as e:
+        logger.warning("[AgenticExtractor] Disambiguation failed: %s", e)
+
     # ── Step 3: Self-question (only if tickers found) ──────────
     if result["tickers"]:
       self_q_prompt = self.get_prompt("extraction_self_question")

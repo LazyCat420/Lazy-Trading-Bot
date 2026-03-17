@@ -611,8 +611,13 @@ class DataDistiller:
         self,
         scores: list[Any],
         snippets: list[Any] | None = None,
+        ticker: str | None = None,
     ) -> str:
-        """Distill Reddit/social sentiment data from ticker_scores + discovered_tickers."""
+        """Distill Reddit/social sentiment data from ticker_scores + discovered_tickers.
+
+        When a ticker is provided, also pulls full thread data from the
+        reddit_threads table for richer context.
+        """
         parts = ["=== PRE-COMPUTED REDDIT ANALYSIS ===\n"]
 
         if not scores and not snippets:
@@ -629,7 +634,36 @@ class DataDistiller:
                 parts.append(f"Social Score: {total:.1f} (Reddit: {reddit:.1f})")
                 parts.append(f"Mentions: {mentions}, Sentiment: {sentiment}")
 
-        # Discovery snippets
+        # ── Rich thread data from reddit_threads table ──
+        if ticker:
+            try:
+                from app.services.reddit_service import RedditCollector
+                threads = RedditCollector.get_threads_for_ticker(ticker, limit=5)
+                if threads:
+                    parts.append(f"\n--- Reddit Threads ({len(threads)}) ---")
+                    for t in threads:
+                        subreddit = t.get("subreddit", "?")
+                        title = t.get("title", "Untitled")
+                        score = t.get("score", 0)
+                        num_comments = t.get("num_comments", 0)
+                        parts.append(
+                            f"• r/{subreddit} [{score}↑ {num_comments}💬]: {title[:120]}"
+                        )
+
+                        # Include body excerpt if available
+                        selftext = t.get("selftext", "")
+                        if selftext:
+                            parts.append(f"  Post: {selftext[:200]}{'…' if len(selftext) > 200 else ''}")
+
+                        # Top comments
+                        comments = t.get("comments", [])
+                        if comments:
+                            for c in comments[:2]:
+                                parts.append(f"  → {str(c)[:150]}")
+            except Exception:
+                pass  # Graceful fallback
+
+        # Discovery snippets (legacy / fallback)
         if snippets:
             parts.append("\n--- Community Context ---")
             for sn in snippets[:5]:

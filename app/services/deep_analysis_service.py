@@ -356,7 +356,7 @@ class DeepAnalysisService:
         news_analysis = self._distiller.distill_news(all_news)[:1500]
         youtube_analysis = self._distiller.distill_youtube(yt_transcripts, yt_trading)[:1000]
         smart_money_analysis = self._distiller.distill_smart_money(holdings_13f, congress_trades)[:800]
-        reddit_analysis = self._distiller.distill_reddit(reddit_scores, reddit_snippets)[:500]
+        reddit_analysis = self._distiller.distill_reddit(reddit_scores, reddit_snippets, ticker=ticker)[:1500]
         peer_analysis = self._distiller.distill_peers([], fundamentals)[:1000]  # peers fetched separately
         analyst_consensus_analysis = self._distiller.distill_analyst_consensus(analyst_rows)[:500]
         insider_activity_analysis = self._distiller.distill_insider_activity(insider_rows)[:500]
