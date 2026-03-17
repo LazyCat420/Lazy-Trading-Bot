@@ -286,9 +286,18 @@ class TradingScheduler:
                 bot_id=getattr(self._loop, 'bot_id', 'default'),
                 model_name=getattr(self._loop, 'model_name', ''),
             )
+            # Inherit phase toggles from the main loop (set via dev-tools)
+            loop.set_phase_toggles(self._loop.get_phase_toggles())
+
             # Run analysis on existing watchlist (skip discovery + import)
-            await loop._do_deep_analysis()
-            await loop._do_trading()
+            if loop._is_phase_enabled("analysis"):
+                await loop._do_deep_analysis()
+            else:
+                logger.info("[Scheduler] Analysis phase skipped (toggled off)")
+            if loop._is_phase_enabled("trading"):
+                await loop._do_trading()
+            else:
+                logger.info("[Scheduler] Trading phase skipped (toggled off)")
 
             summary = "Midday re-analysis + trading complete."
             self._log_end(run_id, "success", summary)
@@ -337,9 +346,21 @@ class TradingScheduler:
                 bot_id=getattr(self._loop, 'bot_id', 'default'),
                 model_name=getattr(self._loop, 'model_name', ''),
             )
-            await loop._do_collection()
-            await loop._do_deep_analysis()
-            await loop._do_trading()
+            # Inherit phase toggles from the main loop (set via dev-tools)
+            loop.set_phase_toggles(self._loop.get_phase_toggles())
+
+            if loop._is_phase_enabled("collection"):
+                await loop._do_collection()
+            else:
+                logger.info("[Scheduler] Collection phase skipped (toggled off)")
+            if loop._is_phase_enabled("analysis"):
+                await loop._do_deep_analysis()
+            else:
+                logger.info("[Scheduler] Analysis phase skipped (toggled off)")
+            if loop._is_phase_enabled("trading"):
+                await loop._do_trading()
+            else:
+                logger.info("[Scheduler] Trading phase skipped (toggled off)")
 
             summary = (
                 f"Scoreboard sweep: promoted {imported} tickers "

@@ -45,6 +45,9 @@ class Settings:
         self._db_path_override = value
 
     # ── LLM Provider ───────────────────────────────────────────────
+    # Provider selection: "prism" (Ollama via Prism gateway) or "vllm"
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "prism")
+
     # Prism AI Gateway (centralized LLM proxy)
     PRISM_URL: str = os.getenv("PRISM_URL", "http://localhost:3020")
     PRISM_SECRET: str = os.getenv("PRISM_SECRET", "banana")
@@ -52,6 +55,9 @@ class Settings:
 
     # Ollama direct URL (used only for model warm-up and VRAM estimation)
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+    # vLLM (OpenAI-compatible API on remote GPU, e.g. Jetson Orin)
+    VLLM_URL: str = os.getenv("VLLM_URL", "http://10.0.0.30:8000")
 
     # Model name (e.g. "gemma3:27b" for Ollama)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
@@ -66,6 +72,11 @@ class Settings:
     )
     LLM_CALL_TIMEOUT_SECONDS: int = int(
         os.getenv("LLM_CALL_TIMEOUT_SECONDS", "180")
+    )
+    # Idle timeout for streaming: abort if no tokens arrive for this many seconds.
+    # Only applies during active streaming — tokens flowing = never timeout.
+    LLM_IDLE_TIMEOUT_SECONDS: int = int(
+        os.getenv("LLM_IDLE_TIMEOUT_SECONDS", "120")
     )
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
     LLM_DISCOVERY_TEMPERATURE: float = float(
@@ -165,6 +176,8 @@ class Settings:
 
     def _apply_llm_config(self, data: dict[str, Any]) -> None:
         """Apply a config dict to the running settings instance."""
+        if "llm_provider" in data:
+            self.LLM_PROVIDER = str(data["llm_provider"])
         if "prism_url" in data:
             self.PRISM_URL = str(data["prism_url"])
         if "prism_secret" in data:
@@ -173,6 +186,8 @@ class Settings:
             self.PRISM_PROJECT = str(data["prism_project"])
         if "ollama_url" in data:
             self.OLLAMA_URL = str(data["ollama_url"])
+        if "vllm_url" in data:
+            self.VLLM_URL = str(data["vllm_url"])
         if "model" in data:
             self.LLM_MODEL = str(data["model"])
         if "context_size" in data:
@@ -254,10 +269,12 @@ class Settings:
     def get_llm_config(self) -> dict[str, Any]:
         """Return the current LLM configuration as a dict."""
         cfg: dict[str, Any] = {
+            "llm_provider": self.LLM_PROVIDER,
             "prism_url": self.PRISM_URL,
             "prism_secret": self.PRISM_SECRET,
             "prism_project": self.PRISM_PROJECT,
             "ollama_url": self.OLLAMA_URL,
+            "vllm_url": self.VLLM_URL,
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
             "temperature": self.LLM_TEMPERATURE,

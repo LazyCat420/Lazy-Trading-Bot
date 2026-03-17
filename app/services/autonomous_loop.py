@@ -53,6 +53,16 @@ class AutonomousLoop:
             "log": [],
         }
 
+        # Phase toggles — all enabled by default
+        self._phase_toggles: dict[str, bool] = {
+            "discovery": True,
+            "import": True,
+            "collection": True,
+            "embedding": True,
+            "analysis": True,
+            "trading": True,
+        }
+
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
@@ -70,6 +80,21 @@ class AutonomousLoop:
         self._state["phase"] = "cancelled"
         self._log("⛔ Emergency stop requested — cancelling after current phase")
         logger.info("[AutoLoop] Cancel requested for bot=%s", self.bot_id)
+
+    def get_phase_toggles(self) -> dict:
+        """Return current phase enable/disable state."""
+        return dict(self._phase_toggles)
+
+    def set_phase_toggles(self, toggles: dict) -> None:
+        """Update phase toggles from frontend."""
+        for key in self._phase_toggles:
+            if key in toggles:
+                self._phase_toggles[key] = bool(toggles[key])
+        logger.info("[AutoLoop] Phase toggles updated: %s", self._phase_toggles)
+
+    def _is_phase_enabled(self, phase_name: str) -> bool:
+        """Check if a phase is enabled."""
+        return self._phase_toggles.get(phase_name, True)
 
     async def run_full_loop(self) -> dict:
         """Execute the complete autonomous pipeline.
@@ -201,87 +226,127 @@ class AutonomousLoop:
         }
 
         # ── Step 1: Discovery ─────────────────────────────────────
-        discovery_result = await self._run_phase(
-            "discovery",
-            "Scanning Reddit + YouTube for tickers…",
-            self._do_discovery,
-        )
-        report["phases"]["discovery"] = discovery_result
+        if self._is_phase_enabled("discovery"):
+            discovery_result = await self._run_phase(
+                "discovery",
+                "Scanning Reddit + YouTube for tickers…",
+                self._do_discovery,
+            )
+            report["phases"]["discovery"] = discovery_result
 
-        # Health check: discovery found tickers?
-        disc_count = discovery_result.get("tickers_found", 0)
-        self._health.record_check(
-            "Discovery found tickers",
-            passed=disc_count > 0,
-            detail=f"{disc_count} tickers" if disc_count else "0 tickers",
-        )
+            # Health check: discovery found tickers?
+            disc_count = discovery_result.get("tickers_found", 0)
+            self._health.record_check(
+                "Discovery found tickers",
+                passed=disc_count > 0,
+                detail=f"{disc_count} tickers" if disc_count else "0 tickers",
+            )
+        else:
+            self._log("⏭️ Discovery phase SKIPPED (toggled off)")
+            report["phases"]["discovery"] = {"status": "skipped"}
 
-        # ── Step 2: Auto-Import ───────────────────────────────────
-        import_result = await self._run_phase(
-            "import",
-            "Importing top tickers to watchlist…",
-            self._do_import,
-        )
-        report["phases"]["import"] = import_result
+        # ── Step 1.5: Discovery Collection ────────────────────────
+        # Collect basic data for discovered tickers BEFORE import
+        # so the LLM has financial data to evaluate.
+        if self._is_phase_enabled("collection"):
+            disc_coll_result = await self._run_phase(
+                "collection",
+                "Collecting basic data for discovered tickers (pre-import)…",
+                self._do_discovery_collection,
+            )
+            report["phases"]["discovery_collection"] = disc_coll_result
+        else:
+            self._log("⏭️ Discovery collection SKIPPED (collection toggled off)")
+            report["phases"]["discovery_collection"] = {"status": "skipped"}
 
-        # ── Step 2.5: Data Collection (all active tickers) ─────────
-        collection_result = await self._run_phase(
-            "collection",
-            "Collecting financial data for all active tickers…",
-            self._do_collection,
-        )
-        report["phases"]["collection"] = collection_result
+        # ── Step 2: LLM-Powered Import ────────────────────────────
+        if self._is_phase_enabled("import"):
+            import_result = await self._run_phase(
+                "import",
+                "LLM evaluating discovered tickers for watchlist promotion…",
+                self._do_import,
+            )
+            report["phases"]["import"] = import_result
+        else:
+            self._log("⏭️ Import phase SKIPPED (toggled off)")
+            report["phases"]["import"] = {"status": "skipped"}
+
+        # ── Step 3: Data Collection (watchlist tickers) ───────────
+        if self._is_phase_enabled("collection"):
+            collection_result = await self._run_phase(
+                "collection",
+                "Refreshing financial data for watchlist tickers…",
+                self._do_collection,
+            )
+            report["phases"]["collection"] = collection_result
+        else:
+            self._log("⏭️ Collection phase SKIPPED (toggled off)")
+            collection_result = {"status": "skipped"}
+            report["phases"]["collection"] = collection_result
 
         # ── Step 2.7: RAG Embedding (embed new data for retrieval) ──
-        embedding_result = await self._run_phase(
-            "embedding",
-            "Embedding collected data for RAG retrieval…",
-            self._do_embedding,
-        )
-        report["phases"]["embedding"] = embedding_result
+        if self._is_phase_enabled("embedding"):
+            embedding_result = await self._run_phase(
+                "embedding",
+                "Embedding collected data for RAG retrieval…",
+                self._do_embedding,
+            )
+            report["phases"]["embedding"] = embedding_result
 
-        # Health check: embeddings generated?
-        embed_chunks = embedding_result.get("total_chunks", 0)
-        self._health.record_check(
-            "RAG embeddings generated",
-            passed=True,  # Not critical — zero is fine if nothing new
-            detail=f"{embed_chunks} new chunks"
-            if embed_chunks else "no new data to embed",
-        )
+            # Health check: embeddings generated?
+            embed_chunks = embedding_result.get("total_chunks", 0)
+            self._health.record_check(
+                "RAG embeddings generated",
+                passed=True,  # Not critical — zero is fine if nothing new
+                detail=f"{embed_chunks} new chunks"
+                if embed_chunks else "no new data to embed",
+            )
+        else:
+            self._log("⏭️ Embedding phase SKIPPED (toggled off)")
+            report["phases"]["embedding"] = {"status": "skipped"}
 
         # ── Step 3: Deep Analysis (all active tickers) ────────────
-        analysis_result = await self._run_phase(
-            "analysis",
-            "Running 4-layer deep analysis on all active tickers…",
-            self._do_deep_analysis,
-        )
-        report["phases"]["analysis"] = analysis_result
+        if self._is_phase_enabled("analysis"):
+            analysis_result = await self._run_phase(
+                "analysis",
+                "Running 4-layer deep analysis on all active tickers…",
+                self._do_deep_analysis,
+            )
+            report["phases"]["analysis"] = analysis_result
 
-        # Health check: dossiers generated?
-        analyzed = analysis_result.get("analyzed", 0)
-        total_tickers = analysis_result.get("total", 0)
-        self._health.record_check(
-            "Dossiers generated",
-            passed=analyzed > 0,
-            detail=f"{analyzed}/{total_tickers} tickers"
-            if total_tickers else "no tickers to analyze",
-        )
+            # Health check: dossiers generated?
+            analyzed = analysis_result.get("analyzed", 0)
+            total_tickers = analysis_result.get("total", 0)
+            self._health.record_check(
+                "Dossiers generated",
+                passed=analyzed > 0,
+                detail=f"{analyzed}/{total_tickers} tickers"
+                if total_tickers else "no tickers to analyze",
+            )
+        else:
+            self._log("⏭️ Analysis phase SKIPPED (toggled off)")
+            report["phases"]["analysis"] = {"status": "skipped"}
 
         # ── Step 4: Trading (Signal Router + Paper Trader) ─────────
-        trading_result = await self._run_phase(
-            "trading",
-            "Processing signals through paper trader…",
-            self._do_trading,
-        )
-        report["phases"]["trading"] = trading_result
+        if self._is_phase_enabled("trading"):
+            trading_result = await self._run_phase(
+                "trading",
+                "Processing signals through paper trader…",
+                self._do_trading,
+            )
+            report["phases"]["trading"] = trading_result
 
-        # Health check: strategist placed trades?
-        orders_count = trading_result.get("orders", 0)
-        self._health.record_check(
-            "Strategist placed trades",
-            passed=orders_count > 0,
-            detail=f"{orders_count} orders" if orders_count else "0 orders",
-        )
+            # Health check: strategist placed trades?
+            orders_count = trading_result.get("orders", 0)
+            self._health.record_check(
+                "Strategist placed trades",
+                passed=orders_count > 0,
+                detail=f"{orders_count} orders" if orders_count else "0 orders",
+            )
+        else:
+            self._log("⏭️ Trading phase SKIPPED (toggled off)")
+            trading_result = {"status": "skipped"}
+            report["phases"]["trading"] = trading_result
 
         # ── Done ──────────────────────────────────────────────────
         elapsed = round(time.time() - t0, 1)
@@ -300,33 +365,33 @@ class AutonomousLoop:
         )
         end_loop()
 
-        # ── Post workflow to Prism/Retna ──
-        # Per-ticker LLM workflows are now posted inside
-        # TradingPipelineService._process_ticker() with real prompts.
-        # Here we only post a lightweight loop-summary workflow.
+        # ── Save workflow locally (node-graph from audit logs) ──
         if not self._cancelled:
             try:
-                tracker = WorkflowTracker(
-                    title=f"Full Pipeline — {self.bot_id} ({self.model_name})",
-                    source="lazy-trading-bot",
-                )
-                # Only include the trading phase (the sole LLM phase)
+                from app.services.llm_audit_logger import LLMAuditLogger
+                from app.services.workflow_assembler import save_workflow
+
+                # The cycle_id is embedded in the trading phase results
                 trading_data = report.get("phases", {}).get("trading", {})
-                if trading_data:
-                    tracker.add_step(
-                        model=self.model_name or settings.LLM_MODEL,
-                        label="Trading Decisions",
-                        system_prompt="Aggregated trading phase summary",
-                        user_input=f"{trading_data.get('orders', 0)} orders placed",
-                        output=str(trading_data.get('results', []))[:500],
-                        duration=trading_data.get("seconds", 0) if isinstance(trading_data, dict) else 0,
-                    )
-                wf_id = await tracker.post_workflow()
-                if wf_id:
-                    report["workflow_id"] = wf_id
-                    self._log(f"📋 Workflow posted to Retna: {wf_id}")
+                cycle_ids = set()
+                for r in trading_data.get("tickers", []) if isinstance(trading_data, dict) else []:
+                    if isinstance(r, dict) and r.get("decision_id"):
+                        cycle_ids.add(r["decision_id"][:8])  # cycle_id prefix
+
+                # Fetch all audit logs from this loop and save as workflow
+                all_logs = []
+                for cid in cycle_ids:
+                    all_logs.extend(LLMAuditLogger.get_logs_for_cycle(cid))
+
+                if all_logs:
+                    wf_id = save_workflow(loop_id, all_logs)
+                    if wf_id:
+                        report["workflow_id"] = wf_id
+                        self._log(f"📋 Workflow saved locally: {wf_id} ({len(all_logs)} steps)")
+                else:
+                    self._log("📋 No LLM calls to build workflow from")
             except Exception as exc:
-                logger.warning("[AutoLoop] Workflow posting failed: %s", exc)
+                logger.warning("[AutoLoop] Local workflow save failed: %s", exc)
 
         # ── Generate health report ──
         try:
@@ -421,36 +486,69 @@ class AutonomousLoop:
         }
 
         # ── Step 1: Discovery ─────────────────────────────────────
-        discovery_result = await self._run_phase(
-            "discovery",
-            "Scanning Reddit + YouTube + SEC 13F + Congress for tickers…",
-            self._do_discovery,
-        )
-        report["phases"]["discovery"] = discovery_result
+        if self._is_phase_enabled("discovery"):
+            discovery_result = await self._run_phase(
+                "discovery",
+                "Scanning Reddit + YouTube + SEC 13F + Congress for tickers…",
+                self._do_discovery,
+            )
+            report["phases"]["discovery"] = discovery_result
+        else:
+            self._log("⏭️ Discovery phase SKIPPED (toggled off)")
+            report["phases"]["discovery"] = {"status": "skipped"}
 
-        # ── Step 2: Auto-Import ───────────────────────────────────
-        import_result = await self._run_phase(
-            "import",
-            "Importing top tickers to watchlist…",
-            self._do_import,
-        )
-        report["phases"]["import"] = import_result
+        # ── Step 1.5: Discovery Collection ────────────────────────
+        # Collect basic financial data for discovered tickers BEFORE
+        # import so the LLM has data to evaluate.
+        if self._is_phase_enabled("collection"):
+            disc_coll_result = await self._run_phase(
+                "collection",
+                "Collecting basic data for discovered tickers (pre-import)…",
+                self._do_discovery_collection,
+            )
+            report["phases"]["discovery_collection"] = disc_coll_result
+        else:
+            self._log("⏭️ Discovery collection SKIPPED (collection toggled off)")
+            report["phases"]["discovery_collection"] = {"status": "skipped"}
 
-        # ── Step 3: Data Collection ───────────────────────────────
-        collection_result = await self._run_phase(
-            "collection",
-            "Collecting financial data for all active tickers…",
-            self._do_collection,
-        )
-        report["phases"]["collection"] = collection_result
+        # ── Step 2: LLM-Powered Import ────────────────────────────
+        # LLM evaluates collected data and decides which tickers to
+        # add to the watchlist.
+        if self._is_phase_enabled("import"):
+            import_result = await self._run_phase(
+                "import",
+                "LLM evaluating discovered tickers for watchlist promotion…",
+                self._do_import,
+            )
+            report["phases"]["import"] = import_result
+        else:
+            self._log("⏭️ Import phase SKIPPED (toggled off)")
+            report["phases"]["import"] = {"status": "skipped"}
+
+        # ── Step 3: Data Collection (watchlist tickers) ───────────
+        # Full data refresh for already-watchlisted tickers.
+        if self._is_phase_enabled("collection"):
+            collection_result = await self._run_phase(
+                "collection",
+                "Refreshing financial data for watchlist tickers…",
+                self._do_collection,
+            )
+            report["phases"]["collection"] = collection_result
+        else:
+            self._log("⏭️ Collection phase SKIPPED (toggled off)")
+            report["phases"]["collection"] = {"status": "skipped"}
 
         # ── Step 4: RAG Embedding ─────────────────────────────────
-        embedding_result = await self._run_phase(
-            "embedding",
-            "Embedding collected data for RAG retrieval…",
-            self._do_embedding,
-        )
-        report["phases"]["embedding"] = embedding_result
+        if self._is_phase_enabled("embedding"):
+            embedding_result = await self._run_phase(
+                "embedding",
+                "Embedding collected data for RAG retrieval…",
+                self._do_embedding,
+            )
+            report["phases"]["embedding"] = embedding_result
+        else:
+            self._log("⏭️ Embedding phase SKIPPED (toggled off)")
+            report["phases"]["embedding"] = {"status": "skipped"}
 
         elapsed = round(time.time() - t0, 1)
         report["total_seconds"] = elapsed
@@ -580,55 +678,68 @@ class AutonomousLoop:
             "mode": "llm_only",
         }
 
-        # ── Step 0: Import tickers to THIS bot's watchlist ─────────
-        # The shared phase saved discovered tickers to the global
-        # ticker_scores table. Each bot needs its OWN watchlist entries
-        # (scoped by bot_id) to see those tickers for analysis/trading.
-        import_result = await self._run_phase(
-            "import",
-            "Importing discovered tickers to this bot's watchlist…",
-            self._do_import,
-        )
-        report["phases"]["import"] = import_result
+        # ── Step 0: LLM Import tickers to THIS bot's watchlist ──────
+        # The shared phase collected data for discovered tickers.
+        # Each bot now runs its own LLM import evaluation to decide
+        # which tickers to add to ITS watchlist (scoped by bot_id).
+        if self._is_phase_enabled("import"):
+            import_result = await self._run_phase(
+                "import",
+                "LLM evaluating discovered tickers for this bot's watchlist…",
+                self._do_import,
+            )
+            report["phases"]["import"] = import_result
 
-        imported = import_result.get("total_imported", 0)
-        self._health.record_check(
-            "Watchlist import",
-            passed=True,  # Not critical — zero is fine if all already imported
-            detail=f"{imported} tickers imported",
-        )
+            imported = import_result.get("total_imported", 0)
+            self._health.record_check(
+                "Watchlist import",
+                passed=True,  # Not critical — zero is fine if all already imported
+                detail=f"{imported} tickers imported",
+            )
+        else:
+            self._log("⏭️ Import phase SKIPPED (toggled off)")
+            report["phases"]["import"] = {"status": "skipped"}
 
         # ── Step 1: Deep Analysis (LLM-dependent) ─────────────────
-        analysis_result = await self._run_phase(
-            "analysis",
-            "Running 4-layer deep analysis on all active tickers…",
-            self._do_deep_analysis,
-        )
-        report["phases"]["analysis"] = analysis_result
+        if self._is_phase_enabled("analysis"):
+            analysis_result = await self._run_phase(
+                "analysis",
+                "Running 4-layer deep analysis on all active tickers…",
+                self._do_deep_analysis,
+            )
+            report["phases"]["analysis"] = analysis_result
 
-        analyzed = analysis_result.get("analyzed", 0)
-        total_tickers = analysis_result.get("total", 0)
-        self._health.record_check(
-            "Dossiers generated",
-            passed=analyzed > 0,
-            detail=f"{analyzed}/{total_tickers} tickers"
-            if total_tickers else "no tickers to analyze",
-        )
+            analyzed = analysis_result.get("analyzed", 0)
+            total_tickers = analysis_result.get("total", 0)
+            self._health.record_check(
+                "Dossiers generated",
+                passed=analyzed > 0,
+                detail=f"{analyzed}/{total_tickers} tickers"
+                if total_tickers else "no tickers to analyze",
+            )
+        else:
+            self._log("⏭️ Analysis phase SKIPPED (toggled off)")
+            report["phases"]["analysis"] = {"status": "skipped"}
 
         # ── Step 2: Trading (LLM-dependent) ───────────────────────
-        trading_result = await self._run_phase(
-            "trading",
-            "Processing signals through paper trader…",
-            self._do_trading,
-        )
-        report["phases"]["trading"] = trading_result
+        if self._is_phase_enabled("trading"):
+            trading_result = await self._run_phase(
+                "trading",
+                "Processing signals through paper trader…",
+                self._do_trading,
+            )
+            report["phases"]["trading"] = trading_result
 
-        orders_count = trading_result.get("orders", 0)
-        self._health.record_check(
-            "Strategist placed trades",
-            passed=orders_count > 0,
-            detail=f"{orders_count} orders" if orders_count else "0 orders",
-        )
+            orders_count = trading_result.get("orders", 0)
+            self._health.record_check(
+                "Strategist placed trades",
+                passed=orders_count > 0,
+                detail=f"{orders_count} orders" if orders_count else "0 orders",
+            )
+        else:
+            self._log("⏭️ Trading phase SKIPPED (toggled off)")
+            trading_result = {"status": "skipped"}
+            report["phases"]["trading"] = trading_result
 
         # ── Done ──────────────────────────────────────────────────
         elapsed = round(time.time() - t0, 1)
@@ -646,33 +757,31 @@ class AutonomousLoop:
         )
         end_loop()
 
-        # ── Post workflow to Prism/Retna ──
-        # Per-ticker LLM workflows are now posted inside
-        # TradingPipelineService._process_ticker() with real prompts.
-        # Here we only post a lightweight loop-summary workflow.
+        # ── Save workflow locally (node-graph from audit logs) ──
         if not self._cancelled:
             try:
-                tracker = WorkflowTracker(
-                    title=f"LLM Pipeline — {self.bot_id} ({self.model_name})",
-                    source="lazy-trading-bot",
-                )
-                # Only include the trading phase (the sole LLM phase)
+                from app.services.llm_audit_logger import LLMAuditLogger
+                from app.services.workflow_assembler import save_workflow
+
                 trading_data = report.get("phases", {}).get("trading", {})
-                if trading_data:
-                    tracker.add_step(
-                        model=self.model_name or settings.LLM_MODEL,
-                        label="Trading Decisions",
-                        system_prompt="Aggregated trading phase summary",
-                        user_input=f"{trading_data.get('orders', 0)} orders placed",
-                        output=str(trading_data.get('results', []))[:500],
-                        duration=trading_data.get("seconds", 0) if isinstance(trading_data, dict) else 0,
-                    )
-                wf_id = await tracker.post_workflow()
-                if wf_id:
-                    report["workflow_id"] = wf_id
-                    self._log(f"📋 Workflow posted to Retna: {wf_id}")
+                cycle_ids = set()
+                for r in trading_data.get("tickers", []) if isinstance(trading_data, dict) else []:
+                    if isinstance(r, dict) and r.get("decision_id"):
+                        cycle_ids.add(r["decision_id"][:8])
+
+                all_logs = []
+                for cid in cycle_ids:
+                    all_logs.extend(LLMAuditLogger.get_logs_for_cycle(cid))
+
+                if all_logs:
+                    wf_id = save_workflow(loop_id, all_logs)
+                    if wf_id:
+                        report["workflow_id"] = wf_id
+                        self._log(f"📋 Workflow saved locally: {wf_id} ({len(all_logs)} steps)")
+                else:
+                    self._log("📋 No LLM calls to build workflow from")
             except Exception as exc:
-                logger.warning("[AutoLoop] Workflow posting failed: %s", exc)
+                logger.warning("[AutoLoop] Local workflow save failed: %s", exc)
 
         # ── Health report ──
         try:
@@ -758,28 +867,140 @@ class AutonomousLoop:
         }
 
     async def _do_import(self) -> dict:
-        """Step 2: Import top discovery tickers to watchlist."""
-        result = self.watchlist.import_from_discovery(min_score=3.0, max_tickers=10)
+        """Step 2: LLM-powered import — evaluate discovered tickers.
+
+        Uses collected financial data to let the LLM decide which
+        discovered tickers deserve to be added to the watchlist.
+        Falls back to threshold-based import if LLM fails.
+        """
+        result = await self.watchlist.llm_import_evaluation(
+            min_score=2.0, max_candidates=10,
+        )
         imported = result.get("total_imported", 0)
         skipped = len(result.get("skipped", []))
-        self._log(f"Imported {imported} tickers (skipped {skipped})")
+        rejected = len(result.get("rejected", []))
+        llm_used = result.get("llm_used", False)
+
+        method = "LLM" if llm_used else "threshold"
+        self._log(
+            f"Import ({method}): {imported} added, "
+            f"{skipped} skipped, {rejected} rejected"
+        )
+
         for t in result.get("imported", []):
-            # imported is a list of ticker strings, not dicts
             log_event(
                 "import",
                 "watchlist_import",
-                f"${t} auto-imported from discovery",
+                f"${t} imported via {method} evaluation",
                 ticker=t,
-                metadata={"source": "auto_discovery"},
+                metadata={"source": f"{method}_import"},
             )
+
+        # Log rejections
+        for rej in result.get("rejected", []):
+            t = rej.get("ticker", "")
+            reason = rej.get("reason", "")
+            log_event(
+                "import",
+                "watchlist_reject",
+                f"${t} rejected by LLM: {reason[:100]}",
+                ticker=t,
+                status="skipped",
+            )
+
         if imported == 0:
             log_event(
                 "import",
                 "watchlist_import",
-                f"No new tickers imported ({skipped} skipped)",
+                f"No new tickers imported ({method}): {rejected} rejected, {skipped} skipped",
                 status="skipped",
             )
         return result
+
+    async def _do_discovery_collection(self) -> dict:
+        """Step 1.5: Collect basic data for discovered tickers.
+
+        Runs PipelineService.run(ticker, mode='data') for each discovered
+        ticker that isn't already on the watchlist, so the LLM import
+        step has financial data to evaluate.
+        """
+        from app.database import get_db
+
+        db = get_db()
+
+        # Find discovered tickers NOT already on the watchlist
+        rows = db.execute(
+            """
+            SELECT ts.ticker, ts.total_score
+            FROM ticker_scores ts
+            WHERE ts.is_validated = TRUE
+              AND ts.total_score >= 2.0
+              AND ts.ticker NOT IN (
+                  SELECT ticker FROM watchlist
+                  WHERE status = 'active' AND bot_id = ?
+              )
+            ORDER BY ts.total_score DESC
+            LIMIT 10
+            """,
+            [self.bot_id],
+        ).fetchall()
+
+        if not rows:
+            self._log("No new discovered tickers need data collection")
+            return {"collected": 0, "tickers": []}
+
+        tickers = [r[0] for r in rows]
+        self._log(
+            f"Collecting basic data for {len(tickers)} discovered tickers: "
+            f"{', '.join(tickers)}"
+        )
+        log_event(
+            "collection",
+            "discovery_collection_start",
+            f"Pre-import data collection for {len(tickers)} tickers",
+            metadata={"tickers": tickers},
+        )
+
+        import asyncio as _aio
+
+        succeeded = []
+        failed = []
+
+        for ticker in tickers:
+            try:
+                log_event(
+                    "collection",
+                    "discovery_collect_ticker",
+                    f"Collecting data for discovered ${ticker}",
+                    ticker=ticker,
+                )
+                pipeline = PipelineService()
+                await pipeline.run(ticker, mode="data")
+                succeeded.append(ticker)
+                self._log(f"➤ Collected data for discovered ${ticker}")
+            except Exception as exc:
+                logger.warning(
+                    "[AutoLoop] Discovery collection failed for %s: %s",
+                    ticker, exc,
+                )
+                failed.append(ticker)
+                self._log(f"⚠ Failed to collect data for ${ticker}: {exc}")
+
+        self._log(
+            f"Discovery collection done: {len(succeeded)}/{len(tickers)} succeeded"
+        )
+        log_event(
+            "collection",
+            "discovery_collection_done",
+            f"Pre-import collection: {len(succeeded)} succeeded, {len(failed)} failed",
+            metadata={"succeeded": succeeded, "failed": failed},
+        )
+
+        return {
+            "collected": len(succeeded),
+            "failed": len(failed),
+            "tickers": succeeded,
+        }
 
     async def _do_collection(self) -> dict:
         """Step 2.5: Collect financial data for active watchlist tickers.

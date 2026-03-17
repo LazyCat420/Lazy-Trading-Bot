@@ -570,7 +570,16 @@ const useTerminalData = () => {
 // CHART WIDGET  Lightweight Charts candlestick
 // ***************************************************************
 
-const ChartWidget = ({ symbol, height = 400 }) => {
+const TIMEFRAMES = [
+    { label: "1D", days: 1 },
+    { label: "1W", days: 7 },
+    { label: "1M", days: 30 },
+    { label: "3M", days: 90 },
+    { label: "1Y", days: 365 },
+    { label: "ALL", days: 3650 },
+];
+
+const ChartWidget = ({ symbol, height = 400, days = 365 }) => {
     const containerRef = useRef(null);
     const chartRef = useRef(null);
 
@@ -579,7 +588,7 @@ const ChartWidget = ({ symbol, height = 400 }) => {
 
         const loadChart = async () => {
             try {
-                const res = await fetch(`/api/dashboard/prices/${symbol}?days=365`);
+                const res = await fetch(`/api/dashboard/prices/${symbol}?days=${days}`);
                 const json = await res.json();
                 const prices = json.prices || [];
                 if (prices.length === 0) return;
@@ -648,28 +657,32 @@ const ChartWidget = ({ symbol, height = 400 }) => {
                     color: p.close >= p.open ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)",
                 })));
 
-                // SMA 20
-                const sma20 = [];
-                for (let i = 19; i < prices.length; i++) {
-                    let sum = 0;
-                    for (let j = i - 19; j <= i; j++) sum += prices[j].close;
-                    sma20.push({ time: prices[i].date, value: sum / 20 });
-                }
-                if (sma20.length > 0) {
-                    const sma20Series = chart.addLineSeries({ color: "#3b82f6", lineWidth: 1 });
-                    sma20Series.setData(sma20);
+                // SMA 20 (only show if enough data points, i.e. > 7 days)
+                if (days > 7) {
+                    const sma20 = [];
+                    for (let i = 19; i < prices.length; i++) {
+                        let sum = 0;
+                        for (let j = i - 19; j <= i; j++) sum += prices[j].close;
+                        sma20.push({ time: prices[i].date, value: sum / 20 });
+                    }
+                    if (sma20.length > 0) {
+                        const sma20Series = chart.addLineSeries({ color: "#3b82f6", lineWidth: 1 });
+                        sma20Series.setData(sma20);
+                    }
                 }
 
-                // SMA 50
-                const sma50 = [];
-                for (let i = 49; i < prices.length; i++) {
-                    let sum = 0;
-                    for (let j = i - 49; j <= i; j++) sum += prices[j].close;
-                    sma50.push({ time: prices[i].date, value: sum / 50 });
-                }
-                if (sma50.length > 0) {
-                    const sma50Series = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1 });
-                    sma50Series.setData(sma50);
+                // SMA 50 (only show if enough data points, i.e. > 30 days)
+                if (days > 30) {
+                    const sma50 = [];
+                    for (let i = 49; i < prices.length; i++) {
+                        let sum = 0;
+                        for (let j = i - 49; j <= i; j++) sum += prices[j].close;
+                        sma50.push({ time: prices[i].date, value: sum / 50 });
+                    }
+                    if (sma50.length > 0) {
+                        const sma50Series = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1 });
+                        sma50Series.setData(sma50);
+                    }
                 }
 
                 chart.timeScale().fitContent();
@@ -696,7 +709,7 @@ const ChartWidget = ({ symbol, height = 400 }) => {
                 chartRef.current = null;
             }
         };
-    }, [symbol, height]);
+    }, [symbol, height, days]);
 
     return <div ref={containerRef} className="w-full rounded border border-border-dark bg-onyx-black" />;
 };
@@ -711,6 +724,7 @@ const ChartWidget = ({ symbol, height = 400 }) => {
 
 const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
     const [tab, setTab] = useState("OV");
+    const [chartDays, setChartDays] = useState(365);
     const [overview, setOverview] = useState(null);
     const [news, setNews] = useState([]);
     const [technicals, setTechnicals] = useState(null);
@@ -870,16 +884,29 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
                     <div className="grid grid-cols-12 gap-6">
                         <div className="col-span-8">
                             <div className="glass-card p-4 h-[320px] flex flex-col">
-                                <h4 className="text-xs text-text-muted uppercase mb-2 flex justify-between">
-                                    <span>Price History</span>
-                                    {loadingOv && <span className="animate-pulse text-primary">Live Updating...</span>}
+                                <h4 className="text-xs text-text-muted uppercase mb-2 flex justify-between items-center">
+                                    <span className="flex items-center gap-2">
+                                        Price History
+                                        {loadingOv && <span className="animate-pulse text-primary text-[10px]">Live Updating...</span>}
+                                    </span>
+                                    <div className="flex gap-1">
+                                        {TIMEFRAMES.map(tf => (
+                                            <button
+                                                key={tf.label}
+                                                onClick={() => setChartDays(tf.days)}
+                                                className={`timeframe-btn ${chartDays === tf.days ? "active" : ""}`}
+                                            >
+                                                {tf.label}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </h4>
                                 {loadingOv && !overview ? (
                                     <div className="flex-1 flex items-center justify-center">
                                         <span className="material-symbols-outlined text-3xl animate-spin text-text-muted">progress_activity</span>
                                     </div>
                                 ) : (
-                                    <ChartWidget symbol={ticker} height={280} />
+                                    <ChartWidget symbol={ticker} height={280} days={chartDays} />
                                 )}
                             </div>
                         </div>
@@ -1686,19 +1713,51 @@ const WatchlistPage = ({
 };
 
 // ***************************************************************
-// DEV DEBUG PANEL — Sidebar component for testing individual phases
+// DEV TOOLS – run individual phases, toggle phases on/off
 // ***************************************************************
 const DevDebugPanel = () => {
     const [open, setOpen] = useState(false);
     const [runningPhase, setRunningPhase] = useState(null);
     const [lastResult, setLastResult] = useState(null);
+    const [toggles, setToggles] = useState({
+        discovery: true, import: true, collection: true,
+        embedding: true, analysis: true, trading: true,
+    });
+    const [togglesLoaded, setTogglesLoaded] = useState(false);
 
     const phases = [
-        { key: "discovery", label: "1 · Discovery", icon: "search", endpoint: "/api/bot/run-discovery", color: "text-orange-400" },
-        { key: "import", label: "2 · Import", icon: "download", endpoint: "/api/bot/run-import", color: "text-blue-400" },
-        { key: "analysis", label: "3 · Analysis", icon: "query_stats", endpoint: "/api/bot/run-analysis", color: "text-purple-400" },
-        { key: "trading", label: "4 · Trading", icon: "account_balance_wallet", endpoint: "/api/bot/run-trading", color: "text-green-400" },
+        { key: "discovery",  label: "1 · Discovery",  icon: "search",                endpoint: "/api/bot/run-discovery",  color: "text-orange-400" },
+        { key: "import",     label: "2 · Import",     icon: "download",              endpoint: "/api/bot/run-import",     color: "text-blue-400" },
+        { key: "collection", label: "3 · Collection", icon: "database",              endpoint: "/api/bot/run-collection", color: "text-cyan-400" },
+        { key: "embedding",  label: "4 · Embedding",  icon: "data_array",            endpoint: "/api/bot/run-embedding",  color: "text-teal-400" },
+        { key: "analysis",   label: "5 · Analysis",   icon: "query_stats",           endpoint: "/api/bot/run-analysis",   color: "text-purple-400" },
+        { key: "trading",    label: "6 · Trading",    icon: "account_balance_wallet", endpoint: "/api/bot/run-trading",   color: "text-green-400" },
     ];
+
+    // Load toggles from backend on first open
+    useEffect(() => {
+        if (open && !togglesLoaded) {
+            fetch("/api/bot/phase-toggles")
+                .then(r => r.json())
+                .then(d => { if (d.phases) { setToggles(d.phases); setTogglesLoaded(true); } })
+                .catch(() => {});
+        }
+    }, [open, togglesLoaded]);
+
+    const togglePhase = async (key) => {
+        const updated = { ...toggles, [key]: !toggles[key] };
+        setToggles(updated);
+        RetroSFX.click();
+        try {
+            await fetch("/api/bot/phase-toggles", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ phases: updated }),
+            });
+        } catch (e) {
+            console.warn("Failed to save toggle:", e);
+        }
+    };
 
     const runPhase = async (phase) => {
         if (runningPhase) return;
@@ -1736,6 +1795,8 @@ const DevDebugPanel = () => {
         }
     };
 
+    const enabledCount = Object.values(toggles).filter(Boolean).length;
+
     return (
         <div className="border-t border-amber-500/20">
             <button
@@ -1744,29 +1805,122 @@ const DevDebugPanel = () => {
             >
                 <span className="material-symbols-outlined text-[16px]">bug_report</span>
                 <span className="font-bold tracking-wider">DEV TOOLS</span>
+                <span className="text-[9px] text-amber-500/50 ml-1">{enabledCount}/6</span>
                 <span className="material-symbols-outlined text-[14px] ml-auto">{open ? "expand_less" : "expand_more"}</span>
             </button>
             {open && (
-                <div className="px-2 pb-3 space-y-1">
-                    {phases.map(p => (
-                        <button
-                            key={p.key}
-                            onClick={() => runPhase(p)}
-                            disabled={!!runningPhase}
-                            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-[11px] font-mono transition-all ${runningPhase === p.key
-                                ? "bg-amber-500/20 text-amber-300 animate-pulse"
-                                : runningPhase
-                                    ? "text-text-muted/40 cursor-not-allowed"
-                                    : "text-text-muted hover:bg-amber-500/10 hover:text-amber-400"
-                                }`}
-                        >
-                            <span className={`material-symbols-outlined text-[14px] ${runningPhase === p.key ? "animate-spin text-amber-400" : p.color}`}>
-                                {runningPhase === p.key ? "progress_activity" : p.icon}
-                            </span>
-                            <span>{p.label}</span>
-                            {runningPhase === p.key && <span className="ml-auto text-[9px] text-amber-400">RUNNING</span>}
-                        </button>
-                    ))}
+                <div className="px-2 pb-3 space-y-0.5">
+                    {/* Toggle header */}
+                    <div className="flex items-center justify-between px-2.5 py-1 mb-1">
+                        <span className="text-[9px] text-text-muted uppercase tracking-wider">Phase</span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-[9px] text-text-muted uppercase tracking-wider">Toggle</span>
+                            <span className="text-[9px] text-text-muted uppercase tracking-wider w-8 text-center">Run</span>
+                        </div>
+                    </div>
+
+                    {phases.map(p => {
+                        const enabled = toggles[p.key] !== false;
+                        const isRunning = runningPhase === p.key;
+                        return (
+                            <div key={p.key} className={`flex items-center gap-2 px-2.5 py-1.5 rounded text-[11px] font-mono transition-all ${
+                                !enabled ? "opacity-40" : ""
+                            } ${isRunning ? "bg-amber-500/20 animate-pulse" : "bg-black/20 hover:bg-white/[0.03]"}`}>
+                                {/* Phase icon + label */}
+                                <span className={`material-symbols-outlined text-[14px] ${isRunning ? "animate-spin text-amber-400" : p.color}`}>
+                                    {isRunning ? "progress_activity" : p.icon}
+                                </span>
+                                <span className={`flex-1 ${enabled ? "text-text-muted" : "text-text-muted/50 line-through"}`}>
+                                    {p.label}
+                                </span>
+
+                                {/* Toggle switch */}
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); togglePhase(p.key); }}
+                                    className={`relative w-8 h-4 rounded-full transition-colors ${enabled ? "bg-green-500/40" : "bg-red-500/30"}`}
+                                    title={enabled ? `Disable ${p.key}` : `Enable ${p.key}`}
+                                >
+                                    <span className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
+                                        enabled ? "left-4 bg-green-400" : "left-0.5 bg-red-400"
+                                    }`} />
+                                </button>
+
+                                {/* Run button */}
+                                <button
+                                    onClick={() => runPhase(p)}
+                                    disabled={!!runningPhase || !enabled}
+                                    className={`w-8 flex items-center justify-center rounded transition ${
+                                        !enabled || runningPhase
+                                            ? "text-text-muted/30 cursor-not-allowed"
+                                            : "text-amber-400/60 hover:text-amber-400 hover:bg-amber-500/10"
+                                    }`}
+                                    title={`Run ${p.key} individually`}
+                                >
+                                    <span className="material-symbols-outlined text-[14px]">
+                                        {isRunning ? "hourglass_top" : "play_arrow"}
+                                    </span>
+                                </button>
+                            </div>
+                        );
+                    })}
+
+                    {/* ── Run Enabled Phases button ── */}
+                    <button
+                        onClick={async () => {
+                            if (runningPhase) return;
+                            RetroSFX.click();
+                            setRunningPhase("full_loop");
+                            setLastResult(null);
+                            try {
+                                const res = await fetch("/api/bot/run-loop?max_tickers=10", { method: "POST" });
+                                if (!res.ok) {
+                                    const body = await res.json();
+                                    setLastResult({ error: body.detail || "Failed" });
+                                    setRunningPhase(null);
+                                    return;
+                                }
+                                const poll = setInterval(async () => {
+                                    try {
+                                        const sr = await fetch("/api/bot/loop-status");
+                                        const st = await sr.json();
+                                        if (!st.running) {
+                                            clearInterval(poll);
+                                            setRunningPhase(null);
+                                            setLastResult({ ok: true, phase: "enabled phases" });
+                                            RetroSFX.successChime();
+                                        }
+                                    } catch (e) {
+                                        clearInterval(poll);
+                                        setRunningPhase(null);
+                                        setLastResult({ error: "Poll failed" });
+                                    }
+                                }, 2000);
+                            } catch (e) {
+                                setRunningPhase(null);
+                                setLastResult({ error: e.message });
+                            }
+                        }}
+                        disabled={!!runningPhase || enabledCount === 0}
+                        className={`w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                            runningPhase || enabledCount === 0
+                                ? "bg-white/5 text-text-muted/40 cursor-not-allowed"
+                                : "bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-400 hover:from-green-500/30 hover:to-emerald-500/30 border border-green-500/30 hover:border-green-400/50"
+                        }`}
+                        title={`Run ${enabledCount} enabled phase(s) in sequence`}
+                    >
+                        <span className={`material-symbols-outlined text-[16px] ${runningPhase === "full_loop" ? "animate-spin" : ""}`}>
+                            {runningPhase === "full_loop" ? "progress_activity" : "play_arrow"}
+                        </span>
+                        {runningPhase === "full_loop" ? "Running Pipeline…" : `▶ Run ${enabledCount} Enabled Phase${enabledCount !== 1 ? "s" : ""}`}
+                    </button>
+
+                    {/* Status line */}
+                    {runningPhase && runningPhase !== "full_loop" && (
+                        <div className="px-2.5 py-1 text-[9px] text-amber-400 flex items-center gap-1.5 mt-1">
+                            <span className="material-symbols-outlined text-[12px] animate-spin">progress_activity</span>
+                            Running {runningPhase}…
+                        </div>
+                    )}
                     {lastResult && (
                         <div className={`px-2.5 py-1.5 rounded text-[10px] font-mono mt-1 ${lastResult.error ? "bg-red-500/10 text-red-400" : "bg-green-500/10 text-green-400"
                             }`}>
@@ -2966,12 +3120,18 @@ const SettingsPage = () => {
         load();
     }, []);
 
-    const fetchModels = async (url) => {
+    const fetchModels = async (url, providerOverride) => {
         setModelsFetching(true);
         setLlmConnected(null);
         try {
             const params = new URLSearchParams();
-            if (url) params.set("url", url);
+            const prov = providerOverride || llmConfig.llm_provider || "prism";
+            if (prov === "vllm") {
+                params.set("provider", "vllm");
+                if (url) params.set("url", url);
+            } else {
+                if (url) params.set("url", url);
+            }
             const qs = params.toString() ? `?${params}` : "";
             const res = await fetch(`/api/llm-models${qs}`);
             const data = await res.json();
@@ -3208,48 +3368,109 @@ const SettingsPage = () => {
 
 
 
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                        {/* Prism Gateway URL */}
-                        <div>
-                            <label className="text-[10px] text-text-muted uppercase block mb-1.5">
-                                Prism Gateway URL
-                            </label>
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={llmConfig.prism_url || ""}
-                                    onChange={e => setLlmConfig(prev => ({ ...prev, prism_url: e.target.value }))}
-                                    placeholder="http://localhost:3020"
-                                    className="flex-1 bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
-                                />
-                                <button
-                                    onClick={() => fetchModels()}
-                                    disabled={modelsFetching}
-                                    className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-secondary text-xs font-bold rounded transition flex items-center gap-1"
-                                    title="Test connection & fetch models via Prism"
+                    {/* ── Provider Toggle ── */}
+                    <div className="mb-5">
+                        <label className="text-[10px] text-text-muted uppercase block mb-2">LLM Provider</label>
+                        <div className="flex rounded-lg overflow-hidden border border-border-dark w-fit">
+                            {[{id: "prism", label: "Prism / Ollama", icon: "dns"}, {id: "vllm", label: "vLLM (Jetson)", icon: "developer_board"}].map(p => (
+                                <button key={p.id}
+                                    onClick={() => {
+                                        setLlmConfig(prev => ({ ...prev, llm_provider: p.id }));
+                                        setModels([]);
+                                        setLlmConnected(null);
+                                        setTimeout(() => fetchModels(null, p.id), 100);
+                                    }}
+                                    className={`flex items-center gap-2 px-4 py-2 text-xs font-bold transition ${
+                                        (llmConfig.llm_provider || "prism") === p.id
+                                            ? "bg-primary/20 text-primary"
+                                            : "bg-onyx-surface text-text-muted hover:text-white hover:bg-onyx-panel"
+                                    }`}
                                 >
-                                    <span className={`material-symbols-outlined text-[14px] ${modelsFetching ? "animate-spin" : ""}`}>
-                                        {modelsFetching ? "progress_activity" : "sync"}
-                                    </span>
-                                    Test
+                                    <span className="material-symbols-outlined text-[16px]">{p.icon}</span>
+                                    {p.label}
                                 </button>
-                            </div>
-                        </div>
-
-                        {/* Prism Secret */}
-                        <div>
-                            <label className="text-[10px] text-text-muted uppercase block mb-1.5">
-                                Prism Secret
-                            </label>
-                            <input
-                                type="password"
-                                value={llmConfig.prism_secret || ""}
-                                onChange={e => setLlmConfig(prev => ({ ...prev, prism_secret: e.target.value }))}
-                                placeholder="banana"
-                                className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
-                            />
+                            ))}
                         </div>
                     </div>
+
+                    {/* ── Provider-specific fields ── */}
+                    {(llmConfig.llm_provider || "prism") !== "vllm" ? (
+                        /* Prism / Ollama fields */
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            {/* Prism Gateway URL */}
+                            <div>
+                                <label className="text-[10px] text-text-muted uppercase block mb-1.5">
+                                    Prism Gateway URL
+                                </label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={llmConfig.prism_url || ""}
+                                        onChange={e => setLlmConfig(prev => ({ ...prev, prism_url: e.target.value }))}
+                                        placeholder="http://localhost:3020"
+                                        className="flex-1 bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
+                                    />
+                                    <button
+                                        onClick={() => fetchModels()}
+                                        disabled={modelsFetching}
+                                        className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-secondary text-xs font-bold rounded transition flex items-center gap-1"
+                                        title="Test connection & fetch models via Prism"
+                                    >
+                                        <span className={`material-symbols-outlined text-[14px] ${modelsFetching ? "animate-spin" : ""}`}>
+                                            {modelsFetching ? "progress_activity" : "sync"}
+                                        </span>
+                                        Test
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Prism Secret */}
+                            <div>
+                                <label className="text-[10px] text-text-muted uppercase block mb-1.5">
+                                    Prism Secret
+                                </label>
+                                <input
+                                    type="password"
+                                    value={llmConfig.prism_secret || ""}
+                                    onChange={e => setLlmConfig(prev => ({ ...prev, prism_secret: e.target.value }))}
+                                    placeholder="banana"
+                                    className="w-full bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
+                                />
+                            </div>
+                        </div>
+                    ) : (
+                        /* vLLM fields */
+                        <div className="grid grid-cols-1 gap-4 mb-4">
+                            <div>
+                                <label className="text-[10px] text-text-muted uppercase block mb-1.5">
+                                    vLLM Server URL
+                                </label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={llmConfig.vllm_url || "http://10.0.0.30:8000"}
+                                        onChange={e => setLlmConfig(prev => ({ ...prev, vllm_url: e.target.value }))}
+                                        placeholder="http://10.0.0.30:8000"
+                                        className="flex-1 bg-onyx-black border border-border-dark rounded px-3 py-2 text-sm text-white font-mono focus:border-primary focus:outline-none transition"
+                                    />
+                                    <button
+                                        onClick={() => fetchModels(llmConfig.vllm_url, "vllm")}
+                                        disabled={modelsFetching}
+                                        className="px-3 py-1.5 bg-onyx-surface hover:bg-onyx-panel border border-border-dark text-text-secondary text-xs font-bold rounded transition flex items-center gap-1"
+                                        title="Test connection & fetch models from vLLM"
+                                    >
+                                        <span className={`material-symbols-outlined text-[14px] ${modelsFetching ? "animate-spin" : ""}`}>
+                                            {modelsFetching ? "progress_activity" : "sync"}
+                                        </span>
+                                        Test
+                                    </button>
+                                </div>
+                                <p className="text-[10px] text-text-muted mt-1.5 font-mono">
+                                    OpenAI-compatible API endpoint (e.g. Jetson Orin AGX at 10.0.0.30)
+                                </p>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="grid grid-cols-3 gap-4">
                         {/* Model Dropdown */}
@@ -4439,10 +4660,20 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     React.createElement("span", { className: "material-symbols-outlined text-primary text-2xl" }, "precision_manufacturing"),
                     React.createElement("h2", { className: "text-white font-bold text-lg" }, "Autobot Monitor"),
                     React.createElement("span", { className: `text-xs font-mono px-2 py-0.5 rounded ${loopRunning ? "bg-green-500/20 text-green-400 animate-pulse" : isRunning ? "bg-primary/20 text-primary" : "bg-border-dark text-text-muted"}` },
-                        loopRunning ? "LOOP RUNNING" : stateLabel
+                        loopRunning ? `LOOP RUNNING${activeBotModelName ? " · " + activeBotModelName : ""}` : stateLabel
                     )
                 ),
                 React.createElement("div", { className: "flex items-center gap-2" },
+                    // ── Model name badge (shows which model will run) ──
+                    React.createElement("div", {
+                        className: "flex items-center gap-1.5 px-3 py-1 rounded-lg bg-onyx-panel border border-border-dark text-xs font-mono max-w-[220px] overflow-hidden",
+                        title: activeBotModelName || "No model configured"
+                    },
+                        React.createElement("span", { className: "material-symbols-outlined text-[14px] text-primary shrink-0" }, "smart_toy"),
+                        React.createElement("span", {
+                            className: `truncate ${activeBotModelName ? "text-text-secondary" : "text-text-muted italic"}`,
+                        }, activeBotModelName || "No model")
+                    ),
                     // ── Run Full Loop — the primary action ──
                     React.createElement("button", {
                         onClick: runFullLoop,
@@ -4473,7 +4704,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         loopRunning ? "progress_activity" : "check_circle"
                     ),
                     React.createElement("span", { className: "text-green-400 font-bold text-sm" },
-                        loopRunning ? "Autonomous Loop Running" : "Loop Complete"
+                        loopRunning ? `Autonomous Loop Running${activeBotModelName ? " — " + activeBotModelName : ""}` : "Loop Complete"
                     )
                 ),
                 // Phase progress indicators
@@ -6040,6 +6271,29 @@ const DiagnosticsPage = () => {
     const [pipelineEvents, setPipelineEvents] = useState([]);
     const [eventsLoading, setEventsLoading] = useState(true);
     const [botMap, setBotMap] = useState({});
+    // ── LLM Monitoring state ──
+    const [llmStats, setLlmStats] = useState(null);
+    const [llmStatsLoading, setLlmStatsLoading] = useState(true);
+    const [recentLogs, setRecentLogs] = useState([]);
+    const [recentLogsLoading, setRecentLogsLoading] = useState(true);
+    const [expandedLogId, setExpandedLogId] = useState(null);
+    const [expandedLogData, setExpandedLogData] = useState(null);
+    const [expandedConvoId, setExpandedConvoId] = useState(null);
+    const [convoLogs, setConvoLogs] = useState({});
+    // ── Live feed state ──
+    const [liveData, setLiveData] = useState(null);
+    const [liveEnabled, setLiveEnabled] = useState(true);
+    const [lastLiveUpdate, setLastLiveUpdate] = useState(null);
+    const [diagTab, setDiagTab] = useState("live");
+    const liveIntervalRef = useRef(null);
+    // ── Conversations state ──
+    const [convos, setConvos] = useState([]);
+    const [convosLoading, setConvosLoading] = useState(false);
+    const [expandedConvoData, setExpandedConvoData] = useState(null);
+    // ── Workflow state ──
+    const [workflowList, setWorkflowList] = useState([]);
+    const [selectedWorkflow, setSelectedWorkflow] = useState(null);
+    const [selectedNode, setSelectedNode] = useState(null);
 
     const loadStats = async () => {
         setLoading(true);
@@ -6087,7 +6341,108 @@ const DiagnosticsPage = () => {
         } catch (e) { console.error("Bots fetch error:", e); }
     };
 
-    useEffect(() => { loadStats(); loadAudits(); loadPipelineEvents(); loadBots(); }, []);
+    // ── LLM Stats + Logs loaders ──
+    const loadLlmStats = async () => {
+        setLlmStatsLoading(true);
+        try {
+            const res = await fetch("/api/llm/stats");
+            if (res.ok) setLlmStats(await res.json());
+        } catch (e) { console.error("LLM stats error:", e); }
+        setLlmStatsLoading(false);
+    };
+
+    const loadConversations = async () => {
+        setConvosLoading(true);
+        try {
+            const res = await fetch("/api/conversations?limit=100");
+            if (res.ok) {
+                const data = await res.json();
+                setConvos(data.conversations || []);
+            }
+        } catch (e) { console.error("Conversations fetch error:", e); }
+        setConvosLoading(false);
+    };
+
+    const expandConvo = async (convoId) => {
+        if (expandedConvoId === convoId) { setExpandedConvoId(null); setExpandedConvoData(null); return; }
+        setExpandedConvoId(convoId);
+        try {
+            const res = await fetch(`/api/conversations/${convoId}`);
+            if (res.ok) setExpandedConvoData(await res.json());
+        } catch (e) { console.error("Conversation detail error:", e); }
+    };
+
+    const loadRecentLogs = async () => {
+        setRecentLogsLoading(true);
+        try {
+            const res = await fetch("/api/audit/recent?limit=50");
+            if (res.ok) {
+                const data = await res.json();
+                setRecentLogs(data.logs || []);
+            }
+        } catch (e) { console.error("Recent logs error:", e); }
+        setRecentLogsLoading(false);
+    };
+
+    const expandLog = async (logId) => {
+        if (expandedLogId === logId) { setExpandedLogId(null); setExpandedLogData(null); return; }
+        setExpandedLogId(logId);
+        setExpandedLogData(null);
+        try {
+            const res = await fetch(`/api/llm/request/${logId}`);
+            if (res.ok) setExpandedLogData(await res.json());
+        } catch (e) { console.error("Log detail error:", e); }
+    };
+
+    const expandCycleConvo = async (cycleId) => {
+        if (expandedConvoId === cycleId) { setExpandedConvoId(null); return; }
+        setExpandedConvoId(cycleId);
+        if (!convoLogs[cycleId]) {
+            try {
+                const res = await fetch(`/api/audit/cycle/${cycleId}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    setConvoLogs(prev => ({ ...prev, [cycleId]: data.logs || [] }));
+                }
+            } catch (e) { console.error("Convo logs error:", e); }
+        }
+    };
+
+    // ── Live feed loader (Prism /admin/live pattern) ──
+    const loadLive = async () => {
+        try {
+            const res = await fetch("/api/llm/live?minutes=10");
+            if (res.ok) {
+                setLiveData(await res.json());
+                setLastLiveUpdate(new Date());
+            }
+        } catch (e) { console.error("Live feed error:", e); }
+    };
+
+    // ── Workflows loaders ──
+    const loadWorkflows = async () => {
+        try {
+            const res = await fetch("/api/workflows?limit=50");
+            if (res.ok) { const d = await res.json(); setWorkflowList(d.workflows || []); }
+        } catch (e) { console.error("Workflows error:", e); }
+    };
+    const loadWorkflowDetail = async (id) => {
+        setSelectedNode(null);
+        try {
+            const res = await fetch(`/api/workflows/${id}`);
+            if (res.ok) setSelectedWorkflow(await res.json());
+        } catch (e) { console.error("Workflow detail error:", e); }
+    };
+
+    useEffect(() => { loadStats(); loadAudits(); loadPipelineEvents(); loadBots(); loadLlmStats(); loadRecentLogs(); loadLive(); loadWorkflows(); loadConversations(); }, []);
+
+    // Auto-refresh live feed every 5 seconds
+    useEffect(() => {
+        if (liveEnabled) {
+            liveIntervalRef.current = setInterval(loadLive, 5000);
+        }
+        return () => { if (liveIntervalRef.current) clearInterval(liveIntervalRef.current); };
+    }, [liveEnabled]);
 
     const scoreColor = (s) => s >= 7 ? "text-green-400" : s >= 4 ? "text-yellow-400" : "text-red-400";
 
@@ -6107,15 +6462,303 @@ const DiagnosticsPage = () => {
     return (
         <SidebarLayout active="diagnostics">
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
-                <h2 className="text-white font-bold text-lg">Diagnostics</h2>
-                <button onClick={() => { loadStats(); loadAudits(); loadPipelineEvents(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[14px]">refresh</span>
-                    Refresh
-                </button>
+                <div className="flex items-center gap-4">
+                    <h2 className="text-white font-bold text-lg">Diagnostics</h2>
+                    {/* Live indicator */}
+                    <div className="flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full ${liveEnabled ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
+                        <span className="text-[10px] text-text-muted font-mono">
+                            {liveEnabled ? `LIVE` : "PAUSED"}
+                            {liveData ? ` · ${liveData.requests_per_minute} req/min` : ""}
+                        </span>
+                        <button onClick={() => setLiveEnabled(e => !e)} className={`ml-1 px-2 py-0.5 text-[9px] font-bold rounded ${liveEnabled ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                            {liveEnabled ? "ON" : "OFF"}
+                        </button>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    {/* Tab nav */}
+                    {["live", "conversations", "dashboard", "pipeline", "system"].map(t => (
+                        <button key={t} onClick={() => { setDiagTab(t); if (t === "conversations") loadConversations(); }}
+                            className={`px-3 py-1.5 text-[10px] font-bold rounded uppercase tracking-wider transition ${diagTab === t ? "bg-primary/20 text-primary border border-primary/30" : "text-text-muted hover:text-white hover:bg-white/5"}`}>
+                            {t === "live" ? "⚡ Live" : t === "conversations" ? "💬 Conversations" : t === "dashboard" ? "📊 Dashboard" : t === "pipeline" ? "🔀 Pipeline" : "⚙️ System"}
+                        </button>
+                    ))}
+                    <button onClick={() => { loadStats(); loadAudits(); loadPipelineEvents(); loadLlmStats(); loadRecentLogs(); loadLive(); loadWorkflows(); loadConversations(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[14px]">refresh</span>
+                    </button>
+                </div>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
                 {loading ? <Spinner /> : stats && (
                     <div className="space-y-6">
+                        {/* ═══════════════ LIVE TAB ═══════════════ */}
+                        {diagTab === "live" && (<>
+                            {/* Live status bar */}
+                            <div className="glass-card p-4" style={{ borderLeft: "3px solid #22c55e" }}>
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
+                                        <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
+                                        Live Request Stream
+                                        <span className="text-[9px] text-text-muted font-mono ml-2">(10 min window · auto-refresh 5s)</span>
+                                    </h3>
+                                    <div className="flex items-center gap-3">
+                                        {liveData && <span className="text-[10px] text-green-400 font-mono font-bold">{liveData.total} requests · {liveData.requests_per_minute} req/min</span>}
+                                        {lastLiveUpdate && <span className="text-[9px] text-text-muted font-mono">updated {lastLiveUpdate.toLocaleTimeString()}</span>}
+                                    </div>
+                                </div>
+                                {!liveData || liveData.requests.length === 0 ? (
+                                    <div className="text-center py-8">
+                                        <span className="material-symbols-outlined text-[48px] text-text-muted/30 block mb-2">radio_button_checked</span>
+                                        <div className="text-text-muted text-xs">Waiting for LLM requests...</div>
+                                        <div className="text-[10px] text-text-muted/60 mt-1">Requests will appear here in real-time as the bot runs</div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-1 max-h-[600px] overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+                                        {liveData.requests.map((req, idx) => {
+                                            const latMs = req.execution_time_ms || 0;
+                                            const latColor = latMs > 30000 ? "text-red-400" : latMs > 10000 ? "text-yellow-400" : "text-green-400";
+                                            const isNew = idx < 3;
+                                            return (
+                                                <div key={req.id} className={`flex items-center gap-2 px-3 py-2 rounded border transition cursor-pointer hover:bg-white/[0.03] ${isNew ? "bg-green-500/[0.04] border-green-500/20" : "bg-black/30 border-border-dark/50"}`}
+                                                    onClick={() => expandLog(req.id)} style={isNew ? { animation: "fadeIn 0.5s ease-out" } : {}}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNew ? "bg-green-400" : "bg-border-dark"}`} />
+                                                    <span className="text-[10px] text-text-muted font-mono w-16 shrink-0">
+                                                        {req.created_at ? new Date(req.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
+                                                    </span>
+                                                    <span className="text-[10px] text-blue-300 font-mono w-32 truncate shrink-0" title={req.model}>{req.model || "?"}</span>
+                                                    {req.provider && <span className={`text-[8px] font-bold uppercase px-1.5 py-0 rounded border shrink-0 ${req.provider === "vllm" ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30" : req.provider === "prism" ? "bg-purple-500/20 text-purple-400 border-purple-500/30" : "bg-amber-500/20 text-amber-400 border-amber-500/30"}`}>{req.provider}</span>}
+                                                    {req.ticker && <span className="text-[10px] text-primary font-bold w-12 shrink-0">{req.ticker}</span>}
+                                                    <span className="text-[10px] text-white font-mono flex-1 truncate">{req.agent_step || "—"}</span>
+                                                    <span className="text-[10px] text-amber-400 font-mono w-16 text-right shrink-0">{(req.tokens_used || 0).toLocaleString()} tok</span>
+                                                    <span className={`text-[10px] font-mono w-16 text-right shrink-0 ${latColor}`}>
+                                                        {latMs >= 1000 ? `${(latMs / 1000).toFixed(1)}s` : `${latMs}ms`}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                                {/* Expanded detail panel (shared) */}
+                                {expandedLogId && expandedLogData && (
+                                    <div className="mt-3 p-3 bg-black/40 rounded-lg border border-primary/20 animate-fadeIn">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-[9px] text-primary uppercase font-bold">Request Detail</span>
+                                            <button onClick={() => { setExpandedLogId(null); setExpandedLogData(null); }} className="text-text-muted hover:text-white">
+                                                <span className="material-symbols-outlined text-[14px]">close</span>
+                                            </button>
+                                        </div>
+                                        <div className="grid grid-cols-4 gap-2 mb-3">
+                                            <div><span className="text-[9px] text-text-muted uppercase">Model</span><div className="text-[11px] text-white font-mono">{expandedLogData.model}</div></div>
+                                            <div><span className="text-[9px] text-text-muted uppercase">Ticker</span><div className="text-[11px] text-primary font-bold">{expandedLogData.ticker || "—"}</div></div>
+                                            <div><span className="text-[9px] text-text-muted uppercase">Tokens</span><div className="text-[11px] text-amber-400 font-mono">{(expandedLogData.tokens_used || 0).toLocaleString()}</div></div>
+                                            <div><span className="text-[9px] text-text-muted uppercase">Latency</span><div className="text-[11px] text-green-400 font-mono">{expandedLogData.execution_time_ms >= 1000 ? `${(expandedLogData.execution_time_ms / 1000).toFixed(1)}s` : `${expandedLogData.execution_time_ms}ms`}</div></div>
+                                        </div>
+                                        {expandedLogData.system_prompt && (
+                                            <div className="mb-2">
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-[9px] text-text-muted uppercase">System Prompt</span>
+                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedLogData.system_prompt)}>
+                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                    </button>
+                                                </div>
+                                                <pre className="text-[10px] text-text-secondary font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{expandedLogData.system_prompt}</pre>
+                                            </div>
+                                        )}
+                                        {expandedLogData.user_context && (
+                                            <div className="mb-2">
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-[9px] text-text-muted uppercase">User Context</span>
+                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedLogData.user_context)}>
+                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                    </button>
+                                                </div>
+                                                <pre className="text-[10px] text-text-secondary font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{expandedLogData.user_context}</pre>
+                                            </div>
+                                        )}
+                                        {expandedLogData.reasoning_content && (
+                                            <div className="mb-2">
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="material-symbols-outlined text-[11px] text-purple-400">psychology</span>
+                                                        <span className="text-[9px] text-purple-400 uppercase font-bold">Thinking / Reasoning</span>
+                                                        <span className="text-[8px] text-purple-400/60 font-mono">({expandedLogData.reasoning_content.length.toLocaleString()} chars)</span>
+                                                    </div>
+                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedLogData.reasoning_content)}>
+                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                    </button>
+                                                </div>
+                                                <pre className="text-[10px] text-purple-300/70 font-mono bg-purple-950/20 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap border border-purple-500/10" style={{ scrollbarWidth: "thin" }}>{expandedLogData.reasoning_content}</pre>
+                                            </div>
+                                        )}
+                                        {expandedLogData.raw_response && (
+                                            <div>
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-[9px] text-text-muted uppercase">Response</span>
+                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedLogData.raw_response)}>
+                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                    </button>
+                                                </div>
+                                                <pre className="text-[10px] text-green-300/80 font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{expandedLogData.raw_response}</pre>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </>)}
+
+                        {/* ═══════════════ PIPELINE TAB ═══════════════ */}
+                        {diagTab === "pipeline" && (
+                            <div className="flex gap-4" style={{ minHeight: "600px" }}>
+                                {/* ── Workflow List Sidebar ── */}
+                                <div className="w-64 shrink-0 glass-card p-3 overflow-y-auto" style={{ maxHeight: "700px", scrollbarWidth: "thin" }}>
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="text-[10px] font-bold text-white uppercase tracking-wider">Workflows</h4>
+                                        <span className="text-[9px] text-text-muted font-mono">{workflowList.length}</span>
+                                    </div>
+                                    {workflowList.length === 0 ? (
+                                        <div className="text-center py-8">
+                                            <span className="material-symbols-outlined text-[32px] text-text-muted/30 block mb-2">account_tree</span>
+                                            <div className="text-[10px] text-text-muted">No workflows saved yet</div>
+                                            <div className="text-[9px] text-text-muted/60 mt-1">Workflows are auto-saved after each pipeline run</div>
+                                        </div>
+                                    ) : workflowList.map(wf => (
+                                        <div key={wf.id}
+                                            onClick={() => loadWorkflowDetail(wf.id)}
+                                            className={`mb-1.5 px-3 py-2 rounded-lg border cursor-pointer transition hover:bg-white/[0.03] ${
+                                                selectedWorkflow?.id === wf.id ? "bg-primary/10 border-primary/30" : "bg-black/30 border-border-dark/50"
+                                            }`}>
+                                            <div className="flex items-center gap-1.5 mb-1">
+                                                <span className="material-symbols-outlined text-[12px] text-primary">account_tree</span>
+                                                <span className="text-[10px] text-white font-bold truncate">{wf.tickers || "Pipeline Run"}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-[9px] text-text-muted font-mono">
+                                                <span>{wf.node_count} nodes</span>
+                                                <span>·</span>
+                                                <span>{(wf.total_tokens || 0).toLocaleString()} tok</span>
+                                            </div>
+                                            <div className="text-[8px] text-text-muted/60 mt-0.5">
+                                                {wf.created_at ? new Date(wf.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                                                {wf.models ? ` · ${wf.models.split(",")[0]}` : ""}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                {/* ── Node Graph Viewer ── */}
+                                <div className="flex-1 glass-card p-4">
+                                    {!selectedWorkflow ? (
+                                        <div className="flex flex-col items-center justify-center h-full text-center py-16">
+                                            <span className="material-symbols-outlined text-[64px] text-text-muted/20 mb-3">hub</span>
+                                            <div className="text-text-muted text-sm">Select a workflow to view its node graph</div>
+                                            <div className="text-[10px] text-text-muted/60 mt-1">Each pipeline run is saved as a workflow with full prompt/response data</div>
+                                        </div>
+                                    ) : (() => {
+                                        const wf = selectedWorkflow;
+                                        const nodes = wf.nodes || [];
+                                        const connections = wf.connections || [];
+                                        const nodeResults = wf.node_results || {};
+                                        // Calculate layout bounds
+                                        let maxX = 0, maxY = 0;
+                                        nodes.forEach(n => { if (n.position) { maxX = Math.max(maxX, n.position.x + 300); maxY = Math.max(maxY, n.position.y + 100); } });
+                                        const nodeMap = {};
+                                        nodes.forEach(n => nodeMap[n.id] = n);
+                                        const typeColors = { input: "#8b5cf6", model: "#22c55e", viewer: "#3b82f6" };
+                                        return (
+                                            <>
+                                                <div className="flex items-center justify-between mb-3">
+                                                    <div>
+                                                        <h4 className="text-[11px] font-bold text-white">{wf.tickers || "Pipeline Run"}</h4>
+                                                        <div className="text-[9px] text-text-muted font-mono">
+                                                            {wf.node_count} nodes · {wf.connection_count || connections.length} connections · {(wf.total_tokens || 0).toLocaleString()} tokens
+                                                            {wf.total_duration_ms ? ` · ${(wf.total_duration_ms / 1000).toFixed(1)}s` : ""}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-[9px] text-text-muted font-mono">{wf.created_at ? new Date(wf.created_at).toLocaleString() : ""}</span>
+                                                        <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-green-500/20 text-green-400">{wf.status}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="relative overflow-auto border border-border-dark/50 rounded-lg bg-black/20" style={{ height: "480px", scrollbarWidth: "thin" }}>
+                                                    <div style={{ minWidth: `${maxX + 100}px`, minHeight: `${maxY + 80}px`, position: "relative" }}>
+                                                        {/* SVG Connections */}
+                                                        <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+                                                            {connections.map((c, i) => {
+                                                                const src = nodeMap[c.source], tgt = nodeMap[c.target];
+                                                                if (!src?.position || !tgt?.position) return null;
+                                                                const x1 = src.position.x + 140, y1 = src.position.y + 25;
+                                                                const x2 = tgt.position.x, y2 = tgt.position.y + 25;
+                                                                const isChain = c.targetPort === "chain";
+                                                                return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+                                                                    stroke={isChain ? "rgba(124,58,237,0.4)" : "rgba(34,197,94,0.3)"}
+                                                                    strokeWidth={isChain ? 2 : 1.5} strokeDasharray={isChain ? "6 3" : "none"} />;
+                                                            })}
+                                                        </svg>
+                                                        {/* Nodes */}
+                                                        {nodes.map(n => {
+                                                            const color = typeColors[n.nodeType] || "#6366f1";
+                                                            const isSelected = selectedNode?.id === n.id;
+                                                            const result = nodeResults[n.id];
+                                                            return (
+                                                                <div key={n.id} className="absolute" style={{ left: n.position?.x || 0, top: n.position?.y || 0, zIndex: 1, width: "280px" }}>
+                                                                    <div onClick={() => setSelectedNode(isSelected ? null : n)}
+                                                                        className={`rounded-lg border px-3 py-2 cursor-pointer transition hover:bg-white/[0.05] ${isSelected ? "border-primary bg-primary/10" : "bg-black/60 border-border-dark"}`}
+                                                                        style={{ borderLeftColor: color, borderLeftWidth: "3px" }}>
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="material-symbols-outlined text-[12px]" style={{ color }}>
+                                                                                {n.nodeType === "input" ? "input" : n.nodeType === "model" ? "psychology" : "output"}
+                                                                            </span>
+                                                                            <span className="text-[10px] font-bold text-white truncate">{n.label || n.nodeType}</span>
+                                                                            {n.modelName && <span className="text-[8px] text-blue-300 font-mono ml-auto truncate max-w-24">{n.modelName}</span>}
+                                                                        </div>
+                                                                        {n.content && <div className="text-[9px] text-text-muted mt-1 line-clamp-2 overflow-hidden" style={{ maxHeight: "32px" }}>{n.content.substring(0, 120)}</div>}
+                                                                        {n.tokens > 0 && <div className="text-[8px] text-amber-400/70 font-mono mt-0.5">{n.tokens.toLocaleString()} tok · {n.durationMs >= 1000 ? `${(n.durationMs / 1000).toFixed(1)}s` : `${n.durationMs}ms`}</div>}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                                {/* Selected Node Detail */}
+                                                {selectedNode && (
+                                                    <div className="mt-3 p-3 bg-black/40 rounded-lg border border-primary/20 animate-fadeIn">
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-[9px] text-primary uppercase font-bold">{selectedNode.nodeType} Node</span>
+                                                                <span className="text-[11px] text-white font-bold">{selectedNode.label}</span>
+                                                                {selectedNode.modelName && <span className="text-[9px] text-blue-300 font-mono">{selectedNode.modelName}</span>}
+                                                            </div>
+                                                            <button onClick={() => setSelectedNode(null)} className="text-text-muted hover:text-white">
+                                                                <span className="material-symbols-outlined text-[14px]">close</span>
+                                                            </button>
+                                                        </div>
+                                                        {selectedNode.fullContent && (
+                                                            <div className="mb-2">
+                                                                <div className="flex items-center justify-between mb-1">
+                                                                    <span className="text-[9px] text-text-muted uppercase">Content</span>
+                                                                    <button className="text-[9px] text-primary/60 hover:text-primary" onClick={() => navigator.clipboard.writeText(selectedNode.fullContent)}>
+                                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                                    </button>
+                                                                </div>
+                                                                <pre className="text-[10px] text-text-secondary font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{selectedNode.fullContent}</pre>
+                                                            </div>
+                                                        )}
+                                                        {nodeResults[selectedNode.id]?.text && !selectedNode.fullContent && (
+                                                            <div>
+                                                                <span className="text-[9px] text-text-muted uppercase block mb-1">Output</span>
+                                                                <pre className="text-[10px] text-green-300/80 font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{nodeResults[selectedNode.id].text}</pre>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ═══════════════ SYSTEM TAB ═══════════════ */}
+                        {diagTab === "system" && (<>
                         {/* ── Database Table Sizes (compact) ────────────── */}
                         <div className="glass-card p-4">
                             <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
@@ -6280,6 +6923,247 @@ const DiagnosticsPage = () => {
                                 </div>
                             )}
                         </div>
+                        </>)}
+
+                        {/* ═══════════════ CONVERSATIONS TAB ═══════════════ */}
+                        {diagTab === "conversations" && (<>
+                        <div className="glass-card p-4">
+                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                <span className="material-symbols-outlined text-primary text-[16px]">forum</span>
+                                LLM Conversations
+                                <span className="text-[9px] text-text-muted font-normal ml-auto">{convos.length} total</span>
+                            </h3>
+                            {convosLoading ? (
+                                <div className="text-text-muted text-xs text-center py-4">Loading conversations...</div>
+                            ) : convos.length === 0 ? (
+                                <div className="text-center py-8 text-text-muted text-xs">
+                                    <span className="material-symbols-outlined text-[32px] text-text-muted/30 block mb-2">forum</span>
+                                    No conversations recorded yet. Run a trading cycle to see LLM conversations here.
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    {convos.map(c => {
+                                        const isExpanded = expandedConvoId === c.id;
+                                        const provBadge = c.provider === "vllm" ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                                            : c.provider === "prism" ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                                            : "bg-amber-500/20 text-amber-400 border-amber-500/30";
+                                        const statusColor = c.status === "active" ? "text-green-400" : "text-text-muted";
+                                        const tokPerSec = c.tokens_per_second ? c.tokens_per_second.toFixed(1) : "—";
+                                        const duration = c.total_duration_ms >= 1000 ? `${(c.total_duration_ms / 1000).toFixed(1)}s` : `${c.total_duration_ms || 0}ms`;
+                                        return (
+                                            <div key={c.id}>
+                                                <div onClick={() => expandConvo(c.id)}
+                                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-[10px] font-mono ${isExpanded ? "bg-primary/10 border border-primary/20" : "hover:bg-white/5"}`}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.status === "active" ? "bg-green-400 animate-pulse" : "bg-text-muted/30"}`} />
+                                                    <span className="text-text-muted w-16 shrink-0">
+                                                        {c.created_at ? new Date(c.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
+                                                    </span>
+                                                    <span className={`text-[8px] font-bold uppercase px-1.5 py-0 rounded border shrink-0 ${provBadge}`}>{c.provider || "?"}</span>
+                                                    <span className="text-blue-300 w-28 truncate shrink-0" title={c.model}>{c.model || "?"}</span>
+                                                    {c.ticker && <span className="text-primary font-bold w-12 shrink-0">${c.ticker}</span>}
+                                                    <span className="text-white flex-1 truncate">{c.title || c.agent_step || "—"}</span>
+                                                    <span className="text-amber-400 w-16 text-right shrink-0">{(c.total_tokens || 0).toLocaleString()} tok</span>
+                                                    <span className="text-cyan-400 w-16 text-right shrink-0">{tokPerSec} t/s</span>
+                                                    <span className="text-green-400 w-14 text-right shrink-0">{duration}</span>
+                                                    <span className={`w-4 text-right ${statusColor}`}>
+                                                        <span className="material-symbols-outlined text-[12px]">{isExpanded ? "expand_less" : "expand_more"}</span>
+                                                    </span>
+                                                </div>
+                                                {isExpanded && expandedConvoData && (
+                                                    <div className="ml-6 mt-1 mb-2 p-3 bg-black/40 rounded-lg border border-primary/20 animate-fadeIn">
+                                                        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 mb-3">
+                                                            {[
+                                                                { label: "Provider", value: expandedConvoData.provider || "?", color: expandedConvoData.provider === "vllm" ? "text-cyan-400" : "text-purple-400" },
+                                                                { label: "Model", value: expandedConvoData.model || "?", color: "text-blue-300" },
+                                                                { label: "Ticker", value: expandedConvoData.ticker || "—", color: "text-primary" },
+                                                                { label: "Tokens", value: (expandedConvoData.total_tokens || 0).toLocaleString(), color: "text-amber-400" },
+                                                                { label: "Tok/s", value: expandedConvoData.tokens_per_second ? expandedConvoData.tokens_per_second.toFixed(1) : "—", color: "text-cyan-400" },
+                                                                { label: "Duration", value: expandedConvoData.total_duration_ms >= 1000 ? `${(expandedConvoData.total_duration_ms / 1000).toFixed(1)}s` : `${expandedConvoData.total_duration_ms || 0}ms`, color: "text-green-400" },
+                                                            ].map(s => (
+                                                                <div key={s.label} className="bg-black/30 rounded px-2 py-1.5">
+                                                                    <div className="text-[8px] text-text-muted uppercase">{s.label}</div>
+                                                                    <div className={`text-[11px] font-mono font-bold ${s.color}`}>{s.value}</div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        {expandedConvoData.system_prompt && (
+                                                            <div className="mb-2">
+                                                                <div className="flex items-center justify-between mb-1">
+                                                                    <span className="text-[9px] text-text-muted uppercase">System Prompt</span>
+                                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedConvoData.system_prompt)}>
+                                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
+                                                                    </button>
+                                                                </div>
+                                                                <pre className="text-[10px] text-text-secondary font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{expandedConvoData.system_prompt}</pre>
+                                                            </div>
+                                                        )}
+                                                        {expandedConvoData.messages && expandedConvoData.messages.length > 0 && (
+                                                            <div>
+                                                                <span className="text-[9px] text-text-muted uppercase mb-1 block">Audit Log Messages ({expandedConvoData.messages.length})</span>
+                                                                <div className="space-y-1">
+                                                                    {expandedConvoData.messages.map((msg, idx) => (
+                                                                        <div key={idx} className="bg-black/30 rounded p-2 border border-border-dark/30">
+                                                                            <div className="flex items-center gap-2 mb-1">
+                                                                                <span className="text-[9px] text-primary font-bold">{msg.agent_step || "—"}</span>
+                                                                                <span className="text-[9px] text-amber-400 font-mono">{(msg.tokens_used || 0).toLocaleString()} tok</span>
+                                                                                <span className="text-[9px] text-green-400 font-mono">{msg.execution_time_ms >= 1000 ? `${(msg.execution_time_ms / 1000).toFixed(1)}s` : `${msg.execution_time_ms}ms`}</span>
+                                                                                <span className="text-[9px] text-text-muted ml-auto">{msg.created_at ? new Date(msg.created_at).toLocaleString() : ""}</span>
+                                                                            </div>
+                                                                            {msg.reasoning_content && (
+                                                                                <details className="mb-1">
+                                                                                    <summary className="text-[9px] text-purple-400 cursor-pointer">💭 Thinking ({msg.reasoning_content.length.toLocaleString()} chars)</summary>
+                                                                                    <pre className="text-[9px] text-purple-300/70 font-mono bg-black/50 rounded p-1.5 mt-1 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.reasoning_content}</pre>
+                                                                                </details>
+                                                                            )}
+                                                                            <pre className="text-[9px] text-text-secondary font-mono bg-black/50 rounded p-1.5 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.raw_response || ""}</pre>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                        </>)}
+
+                        {/* ═══════════════ DASHBOARD TAB ═══════════════ */}
+                        {diagTab === "dashboard" && (<>
+                        {/* ══════════════════════════════════════════════════ */}
+                        {/* ── LLM Overview Dashboard ────────────────────── */}
+                        {/* ══════════════════════════════════════════════════ */}
+                        <div className="glass-card p-4">
+                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                <span className="material-symbols-outlined text-primary text-[16px]">monitoring</span>
+                                LLM Monitoring Dashboard
+                            </h3>
+                            {llmStatsLoading ? (
+                                <div className="text-text-muted text-xs text-center py-4">Loading LLM stats...</div>
+                            ) : !llmStats ? (
+                                <div className="text-center py-4 text-text-muted text-xs">No LLM data available.</div>
+                            ) : (
+                                <>
+                                    {/* Stat cards row */}
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-2 mb-4">
+                                        {[
+                                            { label: "Total Requests", value: (llmStats.summary.total_requests || 0).toLocaleString(), icon: "send", color: "text-blue-400" },
+                                            { label: "Today", value: (llmStats.today.requests || 0).toLocaleString(), icon: "today", color: "text-primary" },
+                                            { label: "Total Tokens", value: llmStats.summary.total_tokens >= 1000000 ? `${(llmStats.summary.total_tokens / 1000000).toFixed(1)}M` : llmStats.summary.total_tokens >= 1000 ? `${(llmStats.summary.total_tokens / 1000).toFixed(1)}K` : (llmStats.summary.total_tokens || 0).toString(), icon: "token", color: "text-amber-400" },
+                                            { label: "Avg Tok/s", value: (llmStats.summary.avg_tok_per_sec || 0).toFixed(1), icon: "bolt", color: "text-cyan-400" },
+                                            { label: "Avg Latency", value: llmStats.summary.avg_latency_ms >= 1000 ? `${(llmStats.summary.avg_latency_ms / 1000).toFixed(1)}s` : `${Math.round(llmStats.summary.avg_latency_ms)}ms`, icon: "speed", color: "text-green-400" },
+                                            { label: "P95 Latency", value: llmStats.summary.p95_latency_ms >= 1000 ? `${(llmStats.summary.p95_latency_ms / 1000).toFixed(1)}s` : `${Math.round(llmStats.summary.p95_latency_ms)}ms`, icon: "timer", color: "text-orange-400" },
+                                            { label: "Conversations", value: (llmStats.conversation_summary?.total_conversations || 0).toString(), icon: "forum", color: "text-purple-400" },
+                                            { label: "Active Now", value: (llmStats.conversation_summary?.active_now || 0).toString(), icon: "radio_button_checked", color: llmStats.conversation_summary?.active_now > 0 ? "text-green-400" : "text-text-muted" },
+                                        ].map(s => (
+                                            <div key={s.label} className="bg-black/30 rounded-lg px-3 py-2.5 border border-border-dark/50">
+                                                <div className="flex items-center gap-1.5 mb-1">
+                                                    <span className={`material-symbols-outlined text-[14px] ${s.color}`}>{s.icon}</span>
+                                                    <span className="text-[9px] text-text-muted uppercase">{s.label}</span>
+                                                </div>
+                                                <div className={`text-lg font-bold font-mono ${s.color}`}>{s.value}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Sparkline — requests per hour (last 24h) */}
+                                    {llmStats.hourly && llmStats.hourly.length > 0 && (
+                                        <div className="bg-black/30 rounded-lg p-3 border border-border-dark/50 mb-4">
+                                            <div className="text-[9px] text-text-muted uppercase mb-2">Requests per Hour (24h)</div>
+                                            <div className="flex items-end gap-[2px] h-12">
+                                                {(() => {
+                                                    const maxReqs = Math.max(...llmStats.hourly.map(h => h.requests), 1);
+                                                    return llmStats.hourly.map((h, i) => {
+                                                        const pct = (h.requests / maxReqs) * 100;
+                                                        const hourLabel = new Date(h.hour).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                                                        return (
+                                                            <div key={i} title={`${hourLabel}: ${h.requests} reqs, ${h.tokens} tokens`}
+                                                                className="flex-1 rounded-t transition-all hover:opacity-80 cursor-default"
+                                                                style={{ height: `${Math.max(pct, 4)}%`, background: `linear-gradient(to top, rgba(124,58,237,0.6), rgba(124,58,237,0.2))` }} />
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Model breakdown */}
+                                    {llmStats.by_model && llmStats.by_model.length > 0 && (
+                                        <div className="bg-black/30 rounded-lg p-3 border border-border-dark/50 mb-4">
+                                            <div className="text-[9px] text-text-muted uppercase mb-2">By Model</div>
+                                            <div className="space-y-1.5">
+                                                {llmStats.by_model.map(m => {
+                                                    const maxReqs = Math.max(...llmStats.by_model.map(x => x.requests), 1);
+                                                    const pct = (m.requests / maxReqs) * 100;
+                                                    return (
+                                                        <div key={m.model} className="flex items-center gap-2">
+                                                            <span className="text-[10px] text-white font-mono w-48 truncate shrink-0" title={m.model}>{m.model}</span>
+                                                            <div className="flex-1 bg-border-dark/30 rounded-full h-2 overflow-hidden">
+                                                                <div className="h-full rounded-full bg-gradient-to-r from-primary/60 to-primary" style={{ width: `${pct}%` }} />
+                                                            </div>
+                                                            <span className="text-[10px] text-text-muted font-mono w-16 text-right">{m.requests} reqs</span>
+                                                            <span className="text-[10px] text-text-muted font-mono w-20 text-right">{m.avg_ms >= 1000 ? `${(m.avg_ms / 1000).toFixed(1)}s` : `${Math.round(m.avg_ms)}ms`} avg</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Provider breakdown (vLLM / Ollama / Prism) */}
+                                    {llmStats.by_provider && llmStats.by_provider.length > 0 && (
+                                        <div className="bg-black/30 rounded-lg p-3 border border-border-dark/50 mb-4">
+                                            <div className="text-[9px] text-text-muted uppercase mb-2">By Provider</div>
+                                            <div className="space-y-2">
+                                                {llmStats.by_provider.map(p => {
+                                                    const maxReqs = Math.max(...llmStats.by_provider.map(x => x.requests), 1);
+                                                    const pct = (p.requests / maxReqs) * 100;
+                                                    const provColor = p.provider === "vllm" ? "from-cyan-500/60 to-cyan-500"
+                                                        : p.provider === "prism" ? "from-purple-500/60 to-purple-500"
+                                                        : "from-amber-500/60 to-amber-500";
+                                                    const badgeColor = p.provider === "vllm" ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                                                        : p.provider === "prism" ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                                                        : "bg-amber-500/20 text-amber-400 border-amber-500/30";
+                                                    return (
+                                                        <div key={p.provider} className="flex items-center gap-2">
+                                                            <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded border ${badgeColor} w-16 text-center shrink-0`}>{p.provider}</span>
+                                                            <div className="flex-1 bg-border-dark/30 rounded-full h-2.5 overflow-hidden">
+                                                                <div className={`h-full rounded-full bg-gradient-to-r ${provColor}`} style={{ width: `${pct}%` }} />
+                                                            </div>
+                                                            <span className="text-[10px] text-white font-mono w-16 text-right">{p.requests} reqs</span>
+                                                            <span className="text-[10px] text-cyan-400 font-mono w-20 text-right">{p.tok_per_sec} tok/s</span>
+                                                            <span className="text-[10px] text-text-muted font-mono w-20 text-right">{p.avg_ms >= 1000 ? `${(p.avg_ms / 1000).toFixed(1)}s` : `${Math.round(p.avg_ms)}ms`} avg</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Agent step breakdown */}
+                                    {llmStats.by_step && llmStats.by_step.length > 0 && (
+                                        <div className="bg-black/30 rounded-lg p-3 border border-border-dark/50">
+                                            <div className="text-[9px] text-text-muted uppercase mb-2">By Agent Step</div>
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
+                                                {llmStats.by_step.map(s => (
+                                                    <div key={s.step} className="bg-black/40 rounded px-2 py-1.5">
+                                                        <div className="text-[10px] text-white font-mono truncate" title={s.step}>{s.step}</div>
+                                                        <div className="flex items-center gap-2 mt-0.5">
+                                                            <span className="text-[9px] text-primary font-mono">{s.requests} reqs</span>
+                                                            <span className="text-[9px] text-text-muted font-mono">{s.avg_ms >= 1000 ? `${(s.avg_ms / 1000).toFixed(1)}s` : `${Math.round(s.avg_ms)}ms`}</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                        </>)}
                     </div>
                 )}
             </div>

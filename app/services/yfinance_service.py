@@ -107,26 +107,35 @@ class YFinanceCollector:
     async def collect_price_history(
         self,
         ticker: str,
-        period: str = "1y",
+        period: str = "max",
         interval: str = "1d",
     ) -> list[OHLCVRow]:
         """Fetch OHLCV candles and persist to DuckDB.
 
+        Uses incremental fetching:
+        - First call (no data in DB): pulls full history via period="max"
+        - Subsequent calls: only fetches the gap from the latest stored
+          date to today, keeping daily runs fast (~1-5 rows).
+
         Returns the list of rows inserted/updated.
         """
-        logger.info("Collecting price history for %s (period=%s)", ticker, period)
-
-        # Daily guard — skip if we already have today's data
         db = get_db()
         today = date.today()
-        existing = db.execute(
-            "SELECT COUNT(*) FROM price_history WHERE ticker = ? AND date = ?",
-            [ticker, today],
+
+        # ── Check what we already have ──────────────────────────────
+        stored = db.execute(
+            "SELECT COUNT(*) as cnt, MAX(date) as latest_date "
+            "FROM price_history WHERE ticker = ?",
+            [ticker],
         ).fetchone()
-        if existing and existing[0] > 0:
+        row_count = stored[0] if stored else 0
+        latest_date = stored[1] if stored else None
+
+        # Daily guard — skip if we already have today's data
+        if latest_date and str(latest_date) >= str(today):
             logger.info(
-                "Price history for %s already collected today, skipping yfinance call",
-                ticker,
+                "Price history for %s already up-to-date (%s rows, latest=%s), skipping",
+                ticker, row_count, latest_date,
             )
             rows_raw = db.execute(
                 "SELECT ticker, date, open, high, low, close, volume, adj_close "
@@ -135,23 +144,46 @@ class YFinanceCollector:
             ).fetchall()
             return [
                 OHLCVRow(
-                    ticker=r[0],
-                    date=r[1],
-                    open=r[2],
-                    high=r[3],
-                    low=r[4],
-                    close=r[5],
-                    volume=r[6],
-                    adj_close=r[7],
+                    ticker=r[0], date=r[1], open=r[2], high=r[3],
+                    low=r[4], close=r[5], volume=r[6], adj_close=r[7],
                 )
                 for r in rows_raw
             ]
 
         t = self._get_ticker(ticker)
-        df: pd.DataFrame = t.history(period=period, interval=interval)
+
+        # ── Incremental vs full backfill ────────────────────────────
+        if row_count > 0 and latest_date:
+            # We have historical data — only fetch the gap
+            fetch_start = latest_date + timedelta(days=1) if isinstance(
+                latest_date, date
+            ) else date.fromisoformat(str(latest_date)) + timedelta(days=1)
+
+            if fetch_start > today:
+                logger.info("Price history for %s is current, nothing to fetch", ticker)
+                return []
+
+            logger.info(
+                "Incremental price fetch for %s: %s → %s (have %d rows)",
+                ticker, fetch_start, today, row_count,
+            )
+            df: pd.DataFrame = t.history(
+                start=str(fetch_start),
+                end=str(today + timedelta(days=1)),
+                interval=interval,
+            )
+        else:
+            # First run — full backfill
+            logger.info(
+                "Initial full backfill for %s (period=%s)", ticker, period,
+            )
+            df = t.history(period=period, interval=interval)
 
         if df.empty:
-            logger.warning("No price data returned for %s", ticker)
+            if row_count == 0:
+                logger.warning("No price data returned for %s", ticker)
+            else:
+                logger.info("No new price data for %s (market closed?)", ticker)
             return []
 
         rows: list[OHLCVRow] = []
@@ -179,20 +211,18 @@ class YFinanceCollector:
             """,
             [
                 [
-                    r.ticker,
-                    r.date,
-                    r.open,
-                    r.high,
-                    r.low,
-                    r.close,
-                    r.volume,
-                    r.adj_close,
+                    r.ticker, r.date, r.open, r.high,
+                    r.low, r.close, r.volume, r.adj_close,
                 ]
                 for r in rows
             ],
         )
 
-        logger.info("Stored %d price rows for %s", len(rows), ticker)
+        total_now = row_count + len(rows)
+        logger.info(
+            "Stored %d new price rows for %s (total: %d)",
+            len(rows), ticker, total_now,
+        )
         return rows
 
     # ------------------------------------------------------------------

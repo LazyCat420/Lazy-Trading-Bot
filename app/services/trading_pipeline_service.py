@@ -188,6 +188,20 @@ class TradingPipelineService:
         with contextlib.suppress(Exception):
             self._artifacts.save_summary(cycle_dir, summary)
 
+        # ── Auto-save workflow (Prism-style node graph) ─────────
+        with contextlib.suppress(Exception):
+            from app.services.llm_audit_logger import LLMAuditLogger
+            from app.services.workflow_assembler import save_workflow
+            audit_logs = LLMAuditLogger.get_logs_for_cycle(cycle_id)
+            if audit_logs:
+                wf_id = save_workflow(cycle_id, audit_logs)
+                if wf_id:
+                    summary["workflow_id"] = wf_id
+                    logger.info(
+                        "[TradingPipeline] Workflow saved: %s (%d steps)",
+                        wf_id, len(audit_logs),
+                    )
+
         return summary
 
     async def _process_ticker(
@@ -296,32 +310,7 @@ class TradingPipelineService:
             "decision_id": decision_id,
         }
 
-        # ── Post per-ticker workflow to Prism/Retna ────────────
-        try:
-            tracker = WorkflowTracker(
-                title=f"${ticker} — Trade Decision",
-                source="lazy-trading-bot",
-            )
-            tracker.add_step(
-                model=llm_meta.get("model", "unknown"),
-                label=f"{ticker} — {action.action}",
-                system_prompt=llm_meta.get("system_prompt", ""),
-                user_input=llm_meta.get("user_prompt", ""),
-                output=llm_meta.get("raw_output", ""),
-                duration=llm_meta.get("duration_s", 0.0),
-            )
-            wf_id = await tracker.post_workflow()
-            if wf_id:
-                result["workflow_id"] = wf_id
-                logger.info(
-                    "[TradingPipeline] $%s workflow posted to Prism: %s",
-                    ticker, wf_id,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[TradingPipeline] Workflow posting failed for %s: %s",
-                ticker, exc,
-            )
+        # (Workflow is assembled locally at end of cycle from audit logs)
 
         # Save decision artifact
         if cycle_dir:

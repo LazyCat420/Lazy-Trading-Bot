@@ -105,6 +105,7 @@ class LLMService:
 
     def __init__(self, *, model_override: str = "") -> None:
         self._model_override = model_override
+        self._last_reasoning: str = ""  # Carries thinking from vLLM to audit
 
     @property
     def base_url(self) -> str:
@@ -217,9 +218,14 @@ class LLMService:
                 self.model, elapsed_ms / 1000,
             )
 
-        # Non-blocking audit log (never crashes the pipeline)
+        # Non-blocking audit log + conversation tracking
         try:
+            from app.config import settings as _settings
+            from app.services.ConversationTracker import ConversationTracker
             from app.services.llm_audit_logger import LLMAuditLogger
+
+            # Determine provider
+            provider = _settings.LLM_PROVIDER  # "vllm" or "prism"
 
             # Extract system/user from effective messages
             sys_text = ""
@@ -229,6 +235,35 @@ class LLMService:
                     sys_text = m.get("content", "")
                 elif m.get("role") == "user":
                     usr_text = m.get("content", "")
+
+            # Capture reasoning from the last vLLM call (if any)
+            reasoning_text = self._last_reasoning
+            self._last_reasoning = ""  # Reset for next call
+
+            # Start a conversation record
+            conv_title = f"${audit_ticker} — {audit_step}" if audit_ticker else audit_step or "LLM Call"
+            conv_id = ConversationTracker.start_conversation(
+                title=conv_title,
+                model=self.model,
+                provider=provider,
+                system_prompt=sys_text,
+                cycle_id=audit_cycle_id,
+                ticker=audit_ticker,
+                agent_step=audit_step,
+            )
+
+            # Add the response message to the conversation
+            est_tokens = self.estimate_tokens(content)
+            ConversationTracker.add_message(
+                conv_id,
+                role="assistant",
+                content=content,
+                tokens=est_tokens,
+                duration_ms=elapsed_ms,
+            )
+
+            # End the conversation
+            ConversationTracker.end_conversation(conv_id)
 
             # Try to parse response as JSON for the parsed_json column
             parsed = None
@@ -247,10 +282,13 @@ class LLMService:
                 system_prompt=sys_text,
                 user_context=usr_text,
                 raw_response=content,
+                reasoning_content=reasoning_text,
                 parsed_json=parsed,
-                tokens_used=self.estimate_tokens(content),
+                tokens_used=est_tokens,
                 execution_time_ms=elapsed_ms,
                 model=self.model,
+                provider=provider,
+                conversation_id=conv_id,
             )
         except Exception:
             pass  # Audit logging must never block trading
@@ -269,8 +307,9 @@ class LLMService:
         audit_step: str = "",
         audit_cycle_id: str = "",
     ) -> str:
-        """Call the Prism AI Gateway for text generation.
+        """Call the configured LLM provider for text generation.
 
+        Dispatches to Prism (Ollama) or vLLM based on settings.LLM_PROVIDER.
         Implements a dual-mode retry: if JSON-format response returns empty
         (some models can't handle grammar constraints), the call is retried
         with text format and explicit JSON instructions.
@@ -284,7 +323,7 @@ class LLMService:
             return ""
 
         # ── Queue: serialize all LLM requests ──────────────────
-        # Only one request hits Ollama at a time; others wait in
+        # Only one request hits the GPU at a time; others wait in
         # a FIFO queue to maximize single-GPU throughput.
         global _llm_queue_waiters
         queue = _get_llm_queue()
@@ -301,16 +340,30 @@ class LLMService:
         async with queue:
             _llm_queue_waiters = max(0, _llm_queue_waiters - 1)
 
-            content = await self._send_prism_request(
-                messages,
-                response_format,
-                max_tokens,
-                temperature,
-                schema=schema,
-                audit_ticker=audit_ticker,
-                audit_step=audit_step,
-                audit_cycle_id=audit_cycle_id,
-            )
+            # ── Provider dispatch ──────────────────────────────
+            provider = settings.LLM_PROVIDER
+            if provider == "vllm":
+                content = await self._send_vllm_request(
+                    messages,
+                    response_format,
+                    max_tokens,
+                    temperature,
+                    schema=schema,
+                    audit_ticker=audit_ticker,
+                    audit_step=audit_step,
+                    audit_cycle_id=audit_cycle_id,
+                )
+            else:
+                content = await self._send_prism_request(
+                    messages,
+                    response_format,
+                    max_tokens,
+                    temperature,
+                    schema=schema,
+                    audit_ticker=audit_ticker,
+                    audit_step=audit_step,
+                    audit_cycle_id=audit_cycle_id,
+                )
 
             # ── Dual-mode retry for empty JSON responses ──
             # Some models (e.g. GLM-4.7-flash) return 0 chars when
@@ -475,12 +528,15 @@ class LLMService:
         # Derive a short context label from the system prompt
         _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
 
-        # ── Dynamic timeout based on model size ──────────────────
+        # ── Generous timeout for Prism (non-streaming) ──────────────
+        # Prism/Ollama uses non-streaming, so we give it a generous
+        # timeout. The httpx shared client already has read=600s.
+        # We use max(configured, 600) to be safe for thinking models.
         _base_timeout = settings.LLM_CALL_TIMEOUT_SECONDS
         _measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
         _file_size = _measurement.get("model_file_size", 0)
         _model_file_gb = _file_size / (1024**3) if _file_size else 0
-        _timeout = max(_base_timeout, 300) if _model_file_gb > 15 else _base_timeout
+        _timeout = max(_base_timeout, 600) if _model_file_gb > 15 else max(_base_timeout, 600)
 
         logger.info(
             "Prism request START -> %s model=%s format=%s maxTokens=%d timeout=%ds",
@@ -660,6 +716,330 @@ class LLMService:
         )
         return content
 
+    async def _send_vllm_request(
+        self,
+        messages: list[dict],
+        response_format: str,
+        max_tokens: int | None,
+        temperature: float,
+        *,
+        schema: dict | None = None,
+        audit_ticker: str = "",
+        audit_step: str = "",
+        audit_cycle_id: str = "",
+    ) -> str:
+        """Send a streaming request to a vLLM server (OpenAI-compatible API).
+
+        Uses SSE streaming with activity-based idle timeout:
+        - Tokens flowing → never timeout (idle timer resets on each chunk)
+        - No tokens for LLM_IDLE_TIMEOUT_SECONDS → abort
+        - No hard wall-clock timeout on the generation itself
+
+        Handles thinking/reasoning tokens from models like Qwen3.
+        """
+        import json as _json
+
+        url = f"{settings.VLLM_URL.rstrip('/')}/v1/chat/completions"
+
+        # Build the messages, injecting JSON instructions if needed
+        effective_msgs = list(messages)
+        if schema is not None or response_format == "json":
+            json_instruction = (
+                "\n\nIMPORTANT: You MUST respond with valid JSON only. "
+                "No markdown, no code fences, no explanations — pure JSON."
+            )
+            if schema is not None:
+                json_instruction += (
+                    f"\n\nYour response MUST conform to this JSON Schema:\n"
+                    f"{_json.dumps(schema, indent=2)}"
+                )
+            if effective_msgs and effective_msgs[0].get("role") == "system":
+                effective_msgs[0] = {
+                    **effective_msgs[0],
+                    "content": effective_msgs[0]["content"] + json_instruction,
+                }
+
+        # Build OpenAI-compatible payload — STREAMING enabled
+        payload: dict = {
+            "model": self.model,
+            "messages": effective_msgs,
+            "temperature": temperature,
+            "max_tokens": max_tokens or 4096,
+            "stream": True,  # ← streaming enabled
+        }
+
+        # JSON mode
+        if schema is not None or response_format == "json":
+            payload["response_format"] = {"type": "json_object"}
+
+        # Derive context label
+        _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
+
+        # ── Timeouts ──
+        _connect_timeout = settings.LLM_CALL_TIMEOUT_SECONDS  # For initial connection
+        _idle_timeout = settings.LLM_IDLE_TIMEOUT_SECONDS      # Between chunks
+
+        # ── Label for logging ──
+        _hb_label = f"{self.model}"
+        if audit_ticker:
+            _hb_label += f" — {audit_ticker}"
+        if audit_step:
+            _hb_label += f" {audit_step}"
+
+        logger.info(
+            "vLLM STREAM START -> %s model=%s format=%s maxTokens=%d "
+            "connect_timeout=%ds idle_timeout=%ds",
+            url, self.model, response_format,
+            payload.get("max_tokens", 0), _connect_timeout, _idle_timeout,
+        )
+        t0 = time.perf_counter()
+
+        # ── Accumulators ──
+        content_chunks: list[str] = []
+        thinking_chunks: list[str] = []
+        chunk_count = 0
+        last_progress_log = 0  # Track when we last logged progress
+
+        try:
+            client = await _get_shared_client()
+
+            # Phase 1: Connect and start streaming
+            # Use a dedicated client with read=idle_timeout so httpx automatically
+            # raises ReadTimeout if no data arrives between chunks for idle_timeout seconds.
+            _stream_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=float(_connect_timeout),
+                    read=float(_idle_timeout),   # ← idle timeout between chunks
+                    write=30.0,
+                    pool=30.0,
+                ),
+                limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+            )
+            try:
+                resp = await _stream_client.send(
+                    _stream_client.build_request("POST", url, json=payload),
+                    stream=True,
+                )
+                resp.raise_for_status()
+            except (TimeoutError, httpx.ReadTimeout):
+                elapsed = time.perf_counter() - t0
+                logger.error(
+                    "vLLM STREAM connect TIMEOUT after %.1fs (limit=%ds)",
+                    elapsed, _connect_timeout,
+                )
+                log_llm_call(
+                    context=_ctx, model=self.model,
+                    duration_seconds=elapsed, timed_out=True,
+                )
+                raise
+            except httpx.HTTPStatusError as exc:
+                elapsed = time.perf_counter() - t0
+                error_body = ""
+                try:
+                    error_body = exc.response.text[:500]
+                except Exception:
+                    pass
+                logger.warning(
+                    "vLLM STREAM FAILED -> %.1fs: HTTP %d — %s",
+                    elapsed, exc.response.status_code,
+                    error_body or str(exc)[:120],
+                )
+                log_llm_call(
+                    context=_ctx, model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
+                )
+                if exc.response.status_code >= 500:
+                    return ""
+                raise
+            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+                elapsed = time.perf_counter() - t0
+                exc_type = type(exc).__name__
+                logger.warning(
+                    "vLLM STREAM CONN_ERROR -> %.1fs: %s: %s",
+                    elapsed, exc_type, str(exc)[:200] or "(no message)",
+                )
+                log_llm_call(
+                    context=_ctx, model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"{exc_type}: {str(exc)[:120]}",
+                )
+                return ""
+
+            # Phase 2: Stream chunks with idle timeout
+            # Each chunk resets the idle timer — active generation never times out
+            try:
+                async for raw_line in resp.aiter_lines():
+                    # Reset idle timer: we got data, model is alive
+                    # (asyncio timeout is reset by the outer wait_for per-line)
+
+                    if not raw_line.startswith("data: "):
+                        continue
+
+                    data_str = raw_line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        chunk_data = _json.loads(data_str)
+                    except _json.JSONDecodeError:
+                        continue
+
+                    choices = chunk_data.get("choices", [])
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta", {})
+
+                    # Content tokens
+                    if delta.get("content"):
+                        content_chunks.append(delta["content"])
+                        chunk_count += 1
+
+                    # Reasoning/thinking tokens (Qwen3)
+                    if delta.get("reasoning_content"):
+                        thinking_chunks.append(delta["reasoning_content"])
+                        chunk_count += 1
+
+                    # Log progress every 30s
+                    elapsed_now = time.perf_counter() - t0
+                    if elapsed_now - last_progress_log >= 30:
+                        content_len = sum(len(c) for c in content_chunks)
+                        thinking_len = sum(len(c) for c in thinking_chunks)
+                        logger.info(
+                            "[vLLM] ⏳ Streaming: %d chunks, %d content chars, "
+                            "%d reasoning chars (%.1fs elapsed) [%s]",
+                            chunk_count, content_len, thinking_len,
+                            elapsed_now, _hb_label,
+                        )
+                        last_progress_log = elapsed_now
+
+            except (httpx.ReadTimeout, TimeoutError):
+                # Idle timeout fired — model went silent
+                elapsed = time.perf_counter() - t0
+                content_len = sum(len(c) for c in content_chunks)
+                thinking_len = sum(len(c) for c in thinking_chunks)
+                if chunk_count > 0:
+                    logger.warning(
+                        "[vLLM] ⚠️ Stream IDLE TIMEOUT after %.1fs — "
+                        "model stopped sending tokens. Got %d chunks, "
+                        "%d content chars, %d reasoning chars so far. "
+                        "Using partial response. [%s]",
+                        elapsed, chunk_count, content_len, thinking_len,
+                        _hb_label,
+                    )
+                else:
+                    logger.error(
+                        "[vLLM] Stream IDLE TIMEOUT after %.1fs — "
+                        "no tokens received at all [%s]",
+                        elapsed, _hb_label,
+                    )
+                    log_llm_call(
+                        context=_ctx, model=self.model,
+                        duration_seconds=elapsed, timed_out=True,
+                    )
+                    return ""
+            except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
+                elapsed = time.perf_counter() - t0
+                exc_type = type(exc).__name__
+                content_len = sum(len(c) for c in content_chunks)
+                if chunk_count > 0:
+                    logger.warning(
+                        "[vLLM] Stream broken after %d chunks (%.1fs): %s — "
+                        "using partial response (%d chars) [%s]",
+                        chunk_count, elapsed, exc_type, content_len,
+                        _hb_label,
+                    )
+                else:
+                    logger.error(
+                        "[vLLM] Stream failed immediately: %s: %s [%s]",
+                        exc_type, str(exc)[:200], _hb_label,
+                    )
+                    log_llm_call(
+                        context=_ctx, model=self.model,
+                        duration_seconds=elapsed,
+                        error=f"{exc_type}: {str(exc)[:120]}",
+                    )
+                    return ""
+            finally:
+                await resp.aclose()
+                await _stream_client.aclose()
+
+        except Exception as exc:
+            if not isinstance(exc, (TimeoutError, httpx.ReadTimeout,
+                                    httpx.HTTPStatusError, httpx.ConnectError,
+                                    httpx.ReadError, httpx.RemoteProtocolError)):
+                elapsed = time.perf_counter() - t0
+                exc_type = type(exc).__name__
+                logger.warning(
+                    "vLLM STREAM FAILED -> %.1fs: %s: %s",
+                    elapsed, exc_type, str(exc)[:200] or repr(exc)[:200],
+                )
+                log_llm_call(
+                    context=_ctx, model=self.model,
+                    duration_seconds=elapsed,
+                    error=f"{exc_type}: {str(exc)[:120]}",
+                )
+                raise
+
+        # ── Assemble final response ──
+        content = "".join(content_chunks)
+        thinking = "".join(thinking_chunks)
+        tokens = chunk_count
+
+        # ── Thinking-model fallback (same as Prism path) ──
+        if not content.strip() and thinking.strip():
+            clean_thinking = re.sub(
+                r"<think>.*?</think>", "", thinking, flags=re.DOTALL,
+            ).strip()
+            text_to_parse = clean_thinking or thinking
+
+            candidate = LLMService.clean_json_response(text_to_parse)
+            if candidate.strip().startswith("{"):
+                try:
+                    parsed = _json.loads(candidate)
+                    content = candidate
+                    _keys = list(parsed.keys())[:5]
+                    logger.info(
+                        "[vLLM] Extracted JSON from reasoning stream: keys=%s (%d chars)",
+                        _keys, len(content),
+                    )
+                except _json.JSONDecodeError:
+                    pass
+
+            if not content.strip():
+                content = clean_thinking or thinking
+                logger.warning(
+                    "[vLLM] Using raw reasoning text as response (%d chars) — no JSON found",
+                    len(content),
+                )
+
+        elapsed = time.perf_counter() - t0
+
+        # ── Store reasoning for audit logger in chat() ──
+        self._last_reasoning = thinking
+
+        if thinking:
+            logger.info(
+                "vLLM STREAM DONE -> %.2fs, %d content chars, %d reasoning chars, "
+                "%d chunks [%s]",
+                elapsed, len(content), len(thinking), chunk_count, _hb_label,
+            )
+        else:
+            logger.info(
+                "vLLM STREAM DONE -> %.2fs, %d chars, %d chunks [%s]",
+                elapsed, len(content), chunk_count, _hb_label,
+            )
+
+        log_llm_call(
+            context=_ctx, model=self.model,
+            duration_seconds=elapsed, tokens_used=tokens,
+        )
+
+        # (Conversation tracking handled locally in chat() via ConversationTracker)
+
+        return content
+
     @staticmethod
     def _trim_messages(messages: list[dict]) -> list[dict]:
         """Trim the longest message by ~40% to fit within context window."""
@@ -827,6 +1207,24 @@ class LLMService:
                 exc,
             )
             return await LLMService.fetch_models(settings.OLLAMA_URL)
+
+    @staticmethod
+    async def fetch_models_from_vllm(vllm_url: str | None = None) -> list[str]:
+        """Fetch available models from a vLLM server via /v1/models.
+
+        vLLM serves an OpenAI-compatible API, so we query GET /v1/models.
+        Returns a list of model ID strings.
+        """
+        base = (vllm_url or settings.VLLM_URL).rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base}/v1/models")
+                resp.raise_for_status()
+                data = resp.json()
+                return [m["id"] for m in data.get("data", [])]
+        except Exception as exc:
+            logger.warning("[LLM] vLLM model fetch failed (%s): %s", base, exc)
+            return []
 
     @staticmethod
     async def unload_ollama_model(base_url: str, model: str) -> bool:

@@ -290,3 +290,113 @@ class TestWatchlistImportScoping:
         assert "bot_id" in source, (
             "WatchlistManager.add_ticker must use self.bot_id"
         )
+
+
+# =====================================================================
+# Test 8: Phase toggles are enforced in run_shared_phases
+# =====================================================================
+
+class TestPhaseTogglesSharedPhases:
+    """Verify run_shared_phases respects _is_phase_enabled toggles."""
+
+    def test_shared_phases_checks_discovery_toggle(self):
+        """run_shared_phases must check _is_phase_enabled('discovery')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_shared_phases)
+        assert '_is_phase_enabled("discovery")' in source or "_is_phase_enabled('discovery')" in source, (
+            "run_shared_phases must check _is_phase_enabled('discovery')"
+        )
+
+    def test_shared_phases_checks_import_toggle(self):
+        """run_shared_phases must check _is_phase_enabled('import')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_shared_phases)
+        assert '_is_phase_enabled("import")' in source or "_is_phase_enabled('import')" in source, (
+            "run_shared_phases must check _is_phase_enabled('import')"
+        )
+
+    def test_shared_phases_checks_collection_toggle(self):
+        """run_shared_phases must check _is_phase_enabled('collection')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_shared_phases)
+        assert '_is_phase_enabled("collection")' in source or "_is_phase_enabled('collection')" in source, (
+            "run_shared_phases must check _is_phase_enabled('collection')"
+        )
+
+    def test_shared_phases_checks_embedding_toggle(self):
+        """run_shared_phases must check _is_phase_enabled('embedding')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_shared_phases)
+        assert '_is_phase_enabled("embedding")' in source or "_is_phase_enabled('embedding')" in source, (
+            "run_shared_phases must check _is_phase_enabled('embedding')"
+        )
+
+
+# =====================================================================
+# Test 9: Phase toggles are enforced in run_llm_only_loop
+# =====================================================================
+
+class TestPhaseTogglesLLMLoop:
+    """Verify run_llm_only_loop respects _is_phase_enabled toggles."""
+
+    def test_llm_loop_checks_import_toggle(self):
+        """run_llm_only_loop must check _is_phase_enabled('import')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_llm_only_loop)
+        assert '_is_phase_enabled("import")' in source or "_is_phase_enabled('import')" in source, (
+            "run_llm_only_loop must check _is_phase_enabled('import')"
+        )
+
+    def test_llm_loop_checks_analysis_toggle(self):
+        """run_llm_only_loop must check _is_phase_enabled('analysis')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_llm_only_loop)
+        assert '_is_phase_enabled("analysis")' in source or "_is_phase_enabled('analysis')" in source, (
+            "run_llm_only_loop must check _is_phase_enabled('analysis')"
+        )
+
+    def test_llm_loop_checks_trading_toggle(self):
+        """run_llm_only_loop must check _is_phase_enabled('trading')."""
+        import inspect
+        from app.services.autonomous_loop import AutonomousLoop
+        source = inspect.getsource(AutonomousLoop.run_llm_only_loop)
+        assert '_is_phase_enabled("trading")' in source or "_is_phase_enabled('trading')" in source, (
+            "run_llm_only_loop must check _is_phase_enabled('trading')"
+        )
+
+
+# =====================================================================
+# Test 10: Phase toggles produce correct skip reports when disabled
+# =====================================================================
+
+class TestPhaseTogglesFunctional:
+    """Verify that setting toggles to False produces 'skipped' in set_phase_toggles."""
+
+    def test_toggle_disables_phase(self):
+        """Disabling a phase via set_phase_toggles makes _is_phase_enabled return False."""
+        from app.services.autonomous_loop import AutonomousLoop
+        loop = AutonomousLoop(max_tickers=5, bot_id="test")
+        loop.set_phase_toggles({"discovery": False, "import": False, "collection": False})
+        assert loop._is_phase_enabled("discovery") is False
+        assert loop._is_phase_enabled("import") is False
+        assert loop._is_phase_enabled("collection") is False
+        assert loop._is_phase_enabled("embedding") is True
+        assert loop._is_phase_enabled("analysis") is True
+        assert loop._is_phase_enabled("trading") is True
+
+    def test_toggle_get_returns_current_state(self):
+        """get_phase_toggles returns the current toggle state."""
+        from app.services.autonomous_loop import AutonomousLoop
+        loop = AutonomousLoop(max_tickers=5, bot_id="test")
+        loop.set_phase_toggles({"discovery": False, "analysis": False})
+        result = loop.get_phase_toggles()
+        assert result["discovery"] is False
+        assert result["analysis"] is False
+        assert result["import"] is True
+

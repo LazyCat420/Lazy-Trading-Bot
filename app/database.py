@@ -857,11 +857,52 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             system_prompt    TEXT DEFAULT '',
             user_context     TEXT DEFAULT '',
             raw_response     TEXT DEFAULT '',
+            reasoning_content TEXT DEFAULT '',
             parsed_json      TEXT,
             tokens_used      INTEGER DEFAULT 0,
             execution_time_ms INTEGER DEFAULT 0,
             model            VARCHAR DEFAULT '',
+            provider         VARCHAR DEFAULT '',
+            conversation_id  VARCHAR DEFAULT '',
             created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_conversations (
+            id                VARCHAR PRIMARY KEY,
+            cycle_id          VARCHAR DEFAULT '',
+            title             VARCHAR DEFAULT '',
+            model             VARCHAR DEFAULT '',
+            provider          VARCHAR DEFAULT '',
+            system_prompt     TEXT DEFAULT '',
+            status            VARCHAR DEFAULT 'active',
+            total_tokens      INTEGER DEFAULT 0,
+            total_duration_ms INTEGER DEFAULT 0,
+            tokens_per_second DOUBLE DEFAULT 0,
+            message_count     INTEGER DEFAULT 0,
+            ticker            VARCHAR DEFAULT '',
+            agent_step        VARCHAR DEFAULT '',
+            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at      TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_workflows (
+            id                VARCHAR PRIMARY KEY,
+            cycle_id          VARCHAR DEFAULT '',
+            tickers           VARCHAR DEFAULT '',
+            models            VARCHAR DEFAULT '',
+            node_count        INTEGER DEFAULT 0,
+            connection_count  INTEGER DEFAULT 0,
+            total_tokens      INTEGER DEFAULT 0,
+            total_duration_ms INTEGER DEFAULT 0,
+            status            VARCHAR DEFAULT 'completed',
+            nodes             TEXT DEFAULT '[]',
+            connections       TEXT DEFAULT '[]',
+            node_results      TEXT DEFAULT '{}',
+            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
@@ -1075,6 +1116,12 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
     # ---- pipeline_events: model_name for activity log tracking ----
     _add_col("pipeline_events", "model_name", "VARCHAR DEFAULT ''")
 
+    # ---- llm_audit_logs: reasoning_content for thinking models ----
+    _add_col("llm_audit_logs", "reasoning_content", "TEXT DEFAULT ''")
+
+    # ---- llm_audit_logs: provider + conversation tracking ----
+    _add_col("llm_audit_logs", "provider", "VARCHAR DEFAULT ''")
+    _add_col("llm_audit_logs", "conversation_id", "VARCHAR DEFAULT ''")
     # ---- bots: queue ordering for Run All ----
     _add_col("bots", "queue_order", "INTEGER DEFAULT 0")
 

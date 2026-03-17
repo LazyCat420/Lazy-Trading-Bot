@@ -33,10 +33,13 @@ class LLMAuditLogger:
         system_prompt: str = "",
         user_context: str = "",
         raw_response: str = "",
+        reasoning_content: str = "",
         parsed_json: dict | None = None,
         tokens_used: int = 0,
         execution_time_ms: int = 0,
         model: str = "",
+        provider: str = "",
+        conversation_id: str = "",
     ) -> str:
         """Insert a single audit row. Returns the log ID."""
         log_id = str(uuid.uuid4())
@@ -47,9 +50,10 @@ class LLMAuditLogger:
                 INSERT INTO llm_audit_logs (
                     id, cycle_id, ticker, agent_step,
                     system_prompt, user_context, raw_response,
-                    parsed_json, tokens_used, execution_time_ms,
-                    model, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reasoning_content, parsed_json, tokens_used,
+                    execution_time_ms, model, provider,
+                    conversation_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     log_id,
@@ -59,16 +63,21 @@ class LLMAuditLogger:
                     system_prompt[:10_000],     # Cap to prevent DB bloat
                     user_context[:50_000],      # Large context is fine
                     raw_response[:50_000],
+                    reasoning_content[:50_000], # Full thinking chain
                     json.dumps(parsed_json) if parsed_json else None,
                     tokens_used,
                     execution_time_ms,
                     model,
+                    provider,
+                    conversation_id,
                     datetime.now(),
                 ],
             )
             logger.debug(
-                "[LLMAudit] Logged %s: %s/%s (%dms, %d tokens)",
-                log_id[:8], ticker or "global", agent_step, execution_time_ms, tokens_used,
+                "[LLMAudit] Logged %s: %s/%s (%s %dms, %d tokens%s)",
+                log_id[:8], ticker or "global", agent_step, provider or "?",
+                execution_time_ms, tokens_used,
+                f", reasoning={len(reasoning_content)} chars" if reasoning_content else "",
             )
         except Exception as exc:
             # Never let audit logging crash the trading pipeline
@@ -84,8 +93,8 @@ class LLMAuditLogger:
                 """
                 SELECT id, cycle_id, ticker, agent_step,
                        system_prompt, user_context, raw_response,
-                       parsed_json, tokens_used, execution_time_ms,
-                       model, created_at
+                       reasoning_content, parsed_json, tokens_used,
+                       execution_time_ms, model, created_at
                 FROM llm_audit_logs
                 WHERE ticker = ?
                 ORDER BY created_at DESC
@@ -96,13 +105,12 @@ class LLMAuditLogger:
             columns = [
                 "id", "cycle_id", "ticker", "agent_step",
                 "system_prompt", "user_context", "raw_response",
-                "parsed_json", "tokens_used", "execution_time_ms",
-                "model", "created_at",
+                "reasoning_content", "parsed_json", "tokens_used",
+                "execution_time_ms", "model", "created_at",
             ]
             results = []
             for row in rows:
                 d = dict(zip(columns, row, strict=False))
-                # Parse JSON back to dict if present
                 if d["parsed_json"]:
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         d["parsed_json"] = json.loads(d["parsed_json"])
@@ -122,8 +130,8 @@ class LLMAuditLogger:
                 """
                 SELECT id, cycle_id, ticker, agent_step,
                        system_prompt, user_context, raw_response,
-                       parsed_json, tokens_used, execution_time_ms,
-                       model, created_at
+                       reasoning_content, parsed_json, tokens_used,
+                       execution_time_ms, model, created_at
                 FROM llm_audit_logs
                 WHERE cycle_id = ?
                 ORDER BY created_at ASC
@@ -133,8 +141,8 @@ class LLMAuditLogger:
             columns = [
                 "id", "cycle_id", "ticker", "agent_step",
                 "system_prompt", "user_context", "raw_response",
-                "parsed_json", "tokens_used", "execution_time_ms",
-                "model", "created_at",
+                "reasoning_content", "parsed_json", "tokens_used",
+                "execution_time_ms", "model", "created_at",
             ]
             results = []
             for row in rows:

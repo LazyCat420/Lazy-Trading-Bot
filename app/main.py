@@ -83,10 +83,18 @@ class PortfolioResetRequest(BaseModel):
 
 
 class LLMConfigRequest(BaseModel):
+    llm_provider: str | None = None
     ollama_url: str | None = None
+    vllm_url: str | None = None
+    prism_url: str | None = None
+    prism_secret: str | None = None
+    prism_project: str | None = None
     model: str | None = None
     context_size: int | None = None
     temperature: float | None = None
+    discovery_temperature: float | None = None
+    trading_temperature: float | None = None
+    top_p: float | None = None
     # RAG / Embedding settings
     embedding_model: str | None = None
     rag_enabled: bool | None = None
@@ -692,12 +700,18 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
         if not bot_for_model:
             # Auto-create a bot entry for this model
-            _prov_url = merged.get("ollama_url", "http://localhost:11434")
+            _prov = merged.get("llm_provider", "prism")
+            if _prov == "vllm":
+                _prov_url = merged.get("vllm_url", "http://10.0.0.30:8000")
+                _prov_name = "vllm"
+            else:
+                _prov_url = merged.get("ollama_url", "http://localhost:11434")
+                _prov_name = "ollama"
             _ctx = merged.get("context_size", 8192)
             bot_for_model = _BReg.register_bot(
                 model_name=model_id,
                 display_name=model_id.split("/")[-1] if "/" in model_id else model_id,
-                provider="ollama",
+                provider=_prov_name,
                 provider_url=_prov_url,
                 context_length=_ctx,
                 temperature=merged.get("temperature", 0.3),
@@ -742,12 +756,25 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 @app.get("/api/llm-models")
 async def get_llm_models(
     url: str = Query(default=None),
+    provider: str = Query(default=None),
 ) -> dict:
     """Fetch available models.
 
     Uses Prism /config by default.  If a custom Ollama URL is provided
     (frontend testing), queries that URL directly.
+    When provider=vllm, queries the vLLM server's /v1/models endpoint.
     """
+    # ── vLLM provider ──
+    if provider == "vllm":
+        vllm_url = url or settings.VLLM_URL
+        models = await LLMService.fetch_models_from_vllm(vllm_url)
+        return {
+            "provider": "vllm",
+            "url": vllm_url,
+            "models": models,
+            "connected": len(models) > 0,
+        }
+
     if url:
         # Direct Ollama query — used when testing a custom URL
         models = await LLMService.fetch_models(url)
@@ -1192,12 +1219,24 @@ def _set_active_bot(bot_id: str) -> None:
         )
         settings.LLM_TEMPERATURE = bot.get("temperature", settings.LLM_TEMPERATURE)
         settings.LLM_TOP_P = bot.get("top_p", settings.LLM_TOP_P)
+        provider = bot.get("provider", "ollama")
         provider_url = bot.get("provider_url", "")
-        if provider_url:
-            settings.OLLAMA_URL = provider_url
+
+        # Sync LLM provider based on bot's provider field
+        if provider == "vllm":
+            settings.LLM_PROVIDER = "vllm"
+            if provider_url:
+                settings.VLLM_URL = provider_url
+        else:
+            settings.LLM_PROVIDER = "prism"
+            if provider_url:
+                settings.OLLAMA_URL = provider_url
+
         logger.info(
-            "[ActiveBot] Synced settings: model=%s ctx=%d url=%s",
-            settings.LLM_MODEL, settings.LLM_CONTEXT_SIZE, settings.OLLAMA_URL,
+            "[ActiveBot] Synced settings: model=%s ctx=%d provider=%s url=%s",
+            settings.LLM_MODEL, settings.LLM_CONTEXT_SIZE,
+            settings.LLM_PROVIDER,
+            settings.VLLM_URL if settings.LLM_PROVIDER == "vllm" else settings.OLLAMA_URL,
         )
 
 
@@ -1555,6 +1594,16 @@ from app.services.autonomous_loop import AutonomousLoop  # noqa: E402
 _loop = AutonomousLoop()
 _loop_task: asyncio.Task | None = None
 
+# Module-level toggle state — survives _loop re-creation
+_phase_toggles: dict[str, bool] = {
+    "discovery": True,
+    "import": True,
+    "collection": True,
+    "embedding": True,
+    "analysis": True,
+    "trading": True,
+}
+
 
 @app.post("/api/bot/run-loop")
 async def run_full_loop(max_tickers: int = 10) -> dict:
@@ -1577,6 +1626,8 @@ async def run_full_loop(max_tickers: int = 10) -> dict:
         bot_id=bot_id,
         model_name=settings.LLM_MODEL,
     )
+    # Restore persisted phase toggles so dev-tools settings survive
+    _loop.set_phase_toggles(_phase_toggles)
 
     async def _run() -> None:
         try:
@@ -1711,6 +1762,76 @@ async def run_trading_phase() -> dict:
 
     asyncio.create_task(_run())
     return {"status": "started", "phase": "trading"}
+
+
+@app.post("/api/bot/run-collection")
+async def run_collection_phase() -> dict:
+    """Run ONLY Phase 2.5: Data Collection for all active tickers."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "collection",
+                "Collecting financial data for all active tickers…",
+                _loop._do_collection,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Collection phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Collection phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "collection"}
+
+
+@app.post("/api/bot/run-embedding")
+async def run_embedding_phase() -> dict:
+    """Run ONLY Phase 2.7: RAG Embedding of collected data."""
+    if _loop._state.get("running"):
+        raise HTTPException(status_code=409, detail="Loop is already running")
+
+    _loop._reset_state()
+
+    async def _run() -> None:
+        try:
+            result = await _loop._run_phase(
+                "embedding",
+                "Embedding collected data for RAG retrieval…",
+                _loop._do_embedding,
+            )
+            _loop._state["running"] = False
+            _loop._state["phase"] = "done"
+            _loop._log(f"Embedding phase completed: {result.get('status')}")
+        except Exception:
+            _loop._state["running"] = False
+            logger.exception("[AutoLoop] Embedding phase error")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "phase": "embedding"}
+
+
+# ── Phase Toggle API (skip phases during full loop) ──────────────────
+
+@app.get("/api/bot/phase-toggles")
+async def get_phase_toggles() -> dict:
+    """Get current phase enable/disable state."""
+    return {"phases": _loop.get_phase_toggles()}
+
+
+@app.put("/api/bot/phase-toggles")
+async def set_phase_toggles(body: dict) -> dict:
+    """Set which phases are enabled/disabled. Body: {phases: {discovery: true, import: false, ...}}"""
+    phases = body.get("phases", {})
+    _loop.set_phase_toggles(phases)
+    # Persist to module-level dict so toggles survive _loop re-creation
+    _phase_toggles.update(_loop.get_phase_toggles())
+    return {"status": "updated", "phases": _loop.get_phase_toggles()}
 
 
 # ── Stop / Emergency Stop / Shutdown ──────────────────────────────────
@@ -2537,6 +2658,8 @@ async def run_bot_loop(bot_id: str, max_tickers: int = 10) -> dict:
         bot_id=bot_id,
         model_name=bot.get("model_name", ""),
     )
+    # Apply persisted phase toggles from dev-tools
+    loop.set_phase_toggles(_phase_toggles)
     BotRegistry.record_run(bot_id)
 
     async def _run() -> None:
@@ -2595,14 +2718,36 @@ def _run_all_log(
 
 
 @app.post("/api/bots/run-all")
-async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
+async def run_all_bots(
+    max_tickers: int = Query(default=10),
+    force: bool = Query(default=False),
+) -> dict:
     """Run the full loop for ALL active bots sequentially.
 
     For each bot: hot-patches global settings with the bot's LLM config,
     loads the model via LM Studio API, runs the autonomous loop, then
     moves to the next bot.
+
+    By default, refuses to start outside market hours (weekdays 6AM-5PM ET).
+    Pass force=true to override.
     """
     global _run_all_task
+
+    # ── Market-hours guard ──
+    if not force:
+        from app.utils.market_hours import is_market_open, market_status
+        mkt = market_status()
+        if not mkt.get("is_open", False):
+            next_open = mkt.get("next_open", "next trading day")
+            return {
+                "error": "market_closed",
+                "message": (
+                    f"Market is currently closed. "
+                    f"Next open: {next_open}. "
+                    f"Use force=true to override."
+                ),
+                "market": mkt,
+            }
 
     if _run_all_state["running"]:
         raise HTTPException(
@@ -2760,6 +2905,8 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
             bot_id="data-scraper",
             model_name="data-scraper",
         )
+        # Apply persisted phase toggles from dev-tools
+        shared_loop.set_phase_toggles(_phase_toggles)
 
         import asyncio as _aio
 
@@ -3098,6 +3245,8 @@ async def run_all_bots(max_tickers: int = Query(default=10)) -> dict:
                     bot_id=bot_id,
                     model_name=model_name,
                 )
+                # Apply persisted phase toggles from dev-tools
+                loop.set_phase_toggles(_phase_toggles)
                 BotRegistry.record_run(bot_id)
 
                 # Run LLM-only loop — periodically merge sub-logs
@@ -3463,6 +3612,468 @@ async def get_audit_logs_for_cycle(cycle_id: str) -> dict:
 
     logs = LLMAuditLogger.get_logs_for_cycle(cycle_id)
     return {"cycle_id": cycle_id, "logs": logs, "count": len(logs)}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# LLM MONITORING DASHBOARD (vLLM / Prism stats)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/llm/stats")
+async def get_llm_stats() -> dict:
+    """Aggregate LLM usage stats for the monitoring dashboard."""
+    db = get_db()
+
+    # ── Total requests + tokens + latency ──
+    try:
+        summary = db.execute("""
+            SELECT
+                COUNT(*)                                AS total_requests,
+                COALESCE(SUM(tokens_used), 0)           AS total_tokens,
+                COALESCE(AVG(execution_time_ms), 0)     AS avg_latency_ms,
+                COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_time_ms), 0)
+                                                        AS p95_latency_ms,
+                COALESCE(MAX(execution_time_ms), 0)     AS max_latency_ms,
+                COALESCE(MIN(created_at), NULL)         AS first_request,
+                COALESCE(MAX(created_at), NULL)         AS latest_request
+            FROM llm_audit_logs
+        """).fetchone()
+    except Exception:
+        summary = (0, 0, 0, 0, 0, None, None)
+
+    # ── Today's requests ──
+    try:
+        today_row = db.execute("""
+            SELECT COUNT(*), COALESCE(SUM(tokens_used), 0)
+            FROM llm_audit_logs
+            WHERE created_at >= CURRENT_DATE
+        """).fetchone()
+    except Exception:
+        today_row = (0, 0)
+
+    # ── By model breakdown ──
+    try:
+        model_rows = db.execute("""
+            SELECT
+                model,
+                COUNT(*)                        AS requests,
+                COALESCE(SUM(tokens_used), 0)   AS tokens,
+                COALESCE(AVG(execution_time_ms), 0) AS avg_ms
+            FROM llm_audit_logs
+            GROUP BY model
+            ORDER BY requests DESC
+            LIMIT 20
+        """).fetchall()
+    except Exception:
+        model_rows = []
+
+    # ── By agent step breakdown ──
+    try:
+        step_rows = db.execute("""
+            SELECT
+                agent_step,
+                COUNT(*)                        AS requests,
+                COALESCE(SUM(tokens_used), 0)   AS tokens,
+                COALESCE(AVG(execution_time_ms), 0) AS avg_ms
+            FROM llm_audit_logs
+            GROUP BY agent_step
+            ORDER BY requests DESC
+            LIMIT 20
+        """).fetchall()
+    except Exception:
+        step_rows = []
+
+    # ── Hourly histogram (last 24h) ──
+    try:
+        hourly_rows = db.execute("""
+            SELECT
+                DATE_TRUNC('hour', created_at) AS hour,
+                COUNT(*)                       AS requests,
+                COALESCE(SUM(tokens_used), 0)  AS tokens
+            FROM llm_audit_logs
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            GROUP BY hour
+            ORDER BY hour
+        """).fetchall()
+    except Exception:
+        hourly_rows = []
+
+    # ── Conversations (unique cycle_ids) ──
+    try:
+        convo_rows = db.execute("""
+            SELECT
+                cycle_id,
+                MIN(created_at)                     AS started_at,
+                MAX(created_at)                     AS ended_at,
+                COUNT(*)                            AS request_count,
+                COALESCE(SUM(tokens_used), 0)       AS total_tokens,
+                COALESCE(SUM(execution_time_ms), 0) AS total_ms,
+                STRING_AGG(DISTINCT ticker, ', ')   AS tickers,
+                STRING_AGG(DISTINCT model, ', ')    AS models
+            FROM llm_audit_logs
+            WHERE cycle_id IS NOT NULL AND cycle_id != ''
+            GROUP BY cycle_id
+            ORDER BY started_at DESC
+            LIMIT 30
+        """).fetchall()
+    except Exception:
+        convo_rows = []
+
+    # ── By provider breakdown (vllm / ollama / prism) ──
+    try:
+        provider_rows = db.execute("""
+            SELECT
+                CASE WHEN provider = '' OR provider IS NULL THEN 'unknown' ELSE provider END AS prov,
+                COUNT(*)                            AS requests,
+                COALESCE(SUM(tokens_used), 0)       AS tokens,
+                COALESCE(AVG(execution_time_ms), 0) AS avg_ms,
+                COALESCE(SUM(tokens_used), 0) * 1000.0 / NULLIF(SUM(execution_time_ms), 0)
+                                                    AS avg_tok_per_sec
+            FROM llm_audit_logs
+            GROUP BY prov
+            ORDER BY requests DESC
+        """).fetchall()
+    except Exception:
+        provider_rows = []
+
+    # ── Overall tok/s ──
+    try:
+        tps_row = db.execute("""
+            SELECT
+                SUM(tokens_used) * 1000.0 / NULLIF(SUM(execution_time_ms), 0) AS avg_tok_per_sec
+            FROM llm_audit_logs
+            WHERE execution_time_ms > 0
+        """).fetchone()
+        overall_tps = round(tps_row[0], 1) if tps_row and tps_row[0] else 0.0
+    except Exception:
+        overall_tps = 0.0
+
+    # ── Conversation summary from llm_conversations table ──
+    try:
+        from app.services.ConversationTracker import ConversationTracker
+        conv_summary = ConversationTracker.get_summary()
+    except Exception:
+        conv_summary = {"total_conversations": 0, "active_now": 0, "by_provider": []}
+
+    return {
+        "summary": {
+            "total_requests": summary[0],
+            "total_tokens": summary[1],
+            "avg_latency_ms": round(summary[2], 1),
+            "p95_latency_ms": round(summary[3], 1),
+            "max_latency_ms": round(summary[4], 1),
+            "first_request": str(summary[5]) if summary[5] else None,
+            "latest_request": str(summary[6]) if summary[6] else None,
+            "avg_tok_per_sec": overall_tps,
+        },
+        "today": {
+            "requests": today_row[0],
+            "tokens": today_row[1],
+        },
+        "by_model": [
+            {"model": r[0] or "unknown", "requests": r[1], "tokens": r[2], "avg_ms": round(r[3], 1)}
+            for r in model_rows
+        ],
+        "by_step": [
+            {"step": r[0] or "unknown", "requests": r[1], "tokens": r[2], "avg_ms": round(r[3], 1)}
+            for r in step_rows
+        ],
+        "by_provider": [
+            {
+                "provider": r[0],
+                "requests": r[1],
+                "tokens": r[2],
+                "avg_ms": round(r[3], 1),
+                "tok_per_sec": round(r[4], 1) if r[4] else 0.0,
+            }
+            for r in provider_rows
+        ],
+        "hourly": [
+            {"hour": str(r[0]), "requests": r[1], "tokens": r[2]}
+            for r in hourly_rows
+        ],
+        "conversations": [
+            {
+                "cycle_id": r[0],
+                "started_at": str(r[1]),
+                "ended_at": str(r[2]),
+                "request_count": r[3],
+                "total_tokens": r[4],
+                "total_ms": r[5],
+                "tickers": r[6] or "",
+                "models": r[7] or "",
+            }
+            for r in convo_rows
+        ],
+        "conversation_summary": conv_summary,
+    }
+
+
+@app.get("/api/llm/request/{log_id}")
+async def get_llm_request_detail(log_id: str) -> dict:
+    """Full detail for one LLM request (prompt + response)."""
+    from app.services.llm_audit_logger import LLMAuditLogger
+    import json as _json
+
+    db = get_db()
+    try:
+        row = db.execute("""
+            SELECT id, cycle_id, ticker, agent_step,
+                   system_prompt, user_context, raw_response,
+                   reasoning_content, parsed_json, tokens_used,
+                   execution_time_ms, model, created_at
+            FROM llm_audit_logs
+            WHERE id = ?
+        """, [log_id]).fetchone()
+    except Exception:
+        row = None
+
+    if not row:
+        return {"error": "not_found"}
+
+    columns = [
+        "id", "cycle_id", "ticker", "agent_step",
+        "system_prompt", "user_context", "raw_response",
+        "reasoning_content", "parsed_json", "tokens_used",
+        "execution_time_ms", "model", "created_at",
+    ]
+    d = dict(zip(columns, row))
+    if d["parsed_json"] and isinstance(d["parsed_json"], str):
+        try:
+            d["parsed_json"] = _json.loads(d["parsed_json"])
+        except Exception:
+            pass
+    d["created_at"] = str(d["created_at"])
+    return d
+
+
+@app.get("/api/llm/live")
+async def get_llm_live(
+    minutes: int = Query(default=10, ge=1, le=1440),
+) -> dict:
+    """Real-time live feed — requests from the last N minutes (Prism /admin/live pattern)."""
+    from datetime import datetime, timedelta
+    db = get_db()
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+
+    try:
+        rows = db.execute("""
+            SELECT id, cycle_id, ticker, agent_step,
+                   system_prompt, user_context, raw_response,
+                   tokens_used, execution_time_ms, model, provider,
+                   created_at
+            FROM llm_audit_logs
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+        """, [cutoff]).fetchall()
+    except Exception:
+        rows = []
+
+    columns = [
+        "id", "cycle_id", "ticker", "agent_step",
+        "system_prompt", "user_context", "raw_response",
+        "tokens_used", "execution_time_ms", "model", "provider",
+        "created_at",
+    ]
+    requests = []
+    for r in rows:
+        d = dict(zip(columns, r))
+        d["created_at"] = str(d["created_at"])
+        requests.append(d)
+
+    # Requests per minute rate
+    total = len(requests)
+    rpm = round(total / max(minutes, 1), 2)
+
+    return {
+        "requests": requests,
+        "total": total,
+        "requests_per_minute": rpm,
+        "window_minutes": minutes,
+    }
+
+
+@app.get("/api/llm/conversations")
+async def get_llm_conversations(
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    """Conversations — unique cycle_ids with aggregated stats (Prism pattern)."""
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT
+                cycle_id,
+                MIN(created_at)                     AS started_at,
+                MAX(created_at)                     AS ended_at,
+                COUNT(*)                            AS request_count,
+                COALESCE(SUM(tokens_used), 0)       AS total_tokens,
+                COALESCE(SUM(execution_time_ms), 0) AS total_ms,
+                STRING_AGG(DISTINCT ticker, ', ')   AS tickers,
+                STRING_AGG(DISTINCT model, ', ')    AS models,
+                STRING_AGG(DISTINCT agent_step, ', ') AS steps
+            FROM llm_audit_logs
+            WHERE cycle_id IS NOT NULL AND cycle_id != ''
+            GROUP BY cycle_id
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, [limit]).fetchall()
+    except Exception:
+        rows = []
+
+    conversations = []
+    for r in rows:
+        conversations.append({
+            "cycle_id": r[0],
+            "started_at": str(r[1]),
+            "ended_at": str(r[2]),
+            "request_count": r[3],
+            "total_tokens": r[4],
+            "total_ms": r[5],
+            "tickers": r[6] or "",
+            "models": r[7] or "",
+            "steps": r[8] or "",
+            "duration_s": round((r[5] or 0) / 1000, 1),
+        })
+
+    return {"conversations": conversations, "total": len(conversations)}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CONVERSATIONS API — Local Prism-style conversation tracking
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/conversations")
+async def list_conversations(
+    limit: int = Query(default=50),
+    provider: str = Query(default=""),
+    model: str = Query(default=""),
+) -> dict:
+    """List conversations with optional filters (mirrors Prism admin)."""
+    from app.services.ConversationTracker import ConversationTracker
+
+    convos = ConversationTracker.get_recent(limit=limit, provider=provider, model=model)
+    return {"conversations": convos, "total": len(convos)}
+
+
+@app.get("/api/conversations/active")
+async def get_active_conversations() -> dict:
+    """Get currently active (generating) conversations."""
+    from app.services.ConversationTracker import ConversationTracker
+
+    active = ConversationTracker.get_active()
+    return {"conversations": active, "total": len(active)}
+
+
+@app.get("/api/conversations/summary")
+async def get_conversations_summary() -> dict:
+    """Aggregate diagnostics: total convos, tokens, tok/s, by provider."""
+    from app.services.ConversationTracker import ConversationTracker
+
+    return ConversationTracker.get_summary()
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation_detail(conversation_id: str) -> dict:
+    """Full conversation detail with linked audit log messages."""
+    from app.services.ConversationTracker import ConversationTracker
+
+    detail = ConversationTracker.get_by_id(conversation_id)
+    if not detail:
+        return {"error": "not_found"}
+    return detail
+
+
+# ══════════════════════════════════════════════════════════════════════
+# WORKFLOW API — Prism-style workflow persistence & node graph
+# ══════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/workflows")
+async def list_workflows(limit: int = Query(default=50)) -> dict:
+    """List saved workflows (metadata only, no node data)."""
+    try:
+        db = get_db()
+        rows = db.execute(
+            """
+            SELECT id, cycle_id, tickers, models, node_count,
+                   connection_count, total_tokens, total_duration_ms,
+                   status, created_at
+            FROM pipeline_workflows
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [limit],
+        ).fetchall()
+        cols = [
+            "id", "cycle_id", "tickers", "models", "node_count",
+            "connection_count", "total_tokens", "total_duration_ms",
+            "status", "created_at",
+        ]
+        workflows = [dict(zip(cols, r)) for r in rows]
+        for w in workflows:
+            if w.get("created_at"):
+                w["created_at"] = str(w["created_at"])
+        return {"workflows": workflows, "total": len(workflows)}
+    except Exception as e:
+        logger.error(f"GET /api/workflows error: {e}")
+        return {"workflows": [], "total": 0}
+
+
+@app.get("/api/workflows/{workflow_id}")
+async def get_workflow_detail(workflow_id: str) -> dict:
+    """Get full workflow including nodes, connections, and results."""
+    import json as _json
+    try:
+        db = get_db()
+        row = db.execute(
+            """
+            SELECT id, cycle_id, tickers, models, node_count,
+                   connection_count, total_tokens, total_duration_ms,
+                   status, nodes, connections, node_results, created_at
+            FROM pipeline_workflows
+            WHERE id = ?
+            """,
+            [workflow_id],
+        ).fetchone()
+        if not row:
+            return {"error": "Workflow not found"}
+        cols = [
+            "id", "cycle_id", "tickers", "models", "node_count",
+            "connection_count", "total_tokens", "total_duration_ms",
+            "status", "nodes", "connections", "node_results", "created_at",
+        ]
+        wf = dict(zip(cols, row))
+        # Parse JSON fields
+        for field in ("nodes", "connections", "node_results"):
+            if isinstance(wf.get(field), str):
+                try:
+                    wf[field] = _json.loads(wf[field])
+                except Exception:
+                    pass
+        if wf.get("created_at"):
+            wf["created_at"] = str(wf["created_at"])
+        return wf
+    except Exception as e:
+        logger.error(f"GET /api/workflows/{workflow_id} error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/workflows/assemble/{cycle_id}")
+async def assemble_workflow_for_cycle(cycle_id: str) -> dict:
+    """Manually assemble and save a workflow from a cycle's audit logs."""
+    from app.services.workflow_assembler import save_workflow
+    try:
+        logs = LLMAuditLogger.get_logs_for_cycle(cycle_id)
+        if not logs:
+            return {"error": "No audit logs found for this cycle"}
+        wf_id = save_workflow(cycle_id, logs)
+        if wf_id:
+            return {"success": True, "workflow_id": wf_id, "logs_used": len(logs)}
+        return {"error": "Failed to assemble workflow"}
+    except Exception as e:
+        logger.error(f"POST /api/workflows/assemble/{cycle_id} error: {e}")
+        return {"error": str(e)}
 
 
 # ══════════════════════════════════════════════════════════════════════

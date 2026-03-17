@@ -272,7 +272,11 @@ class WatchlistManager:
         min_score: float = 3.0,
         max_tickers: int = 10,
     ) -> dict:
-        """Pull top-scoring tickers from discovery into the watchlist."""
+        """Pull top-scoring tickers from discovery into the watchlist.
+
+        NOTE: This is the legacy threshold-based import. For LLM-powered
+        evaluation, use llm_import_evaluation() instead.
+        """
         db = get_db()
 
         rows = db.execute(
@@ -322,6 +326,336 @@ class WatchlistManager:
             "imported": imported,
             "skipped": skipped,
             "total_imported": len(imported),
+        }
+
+    async def llm_import_evaluation(
+        self,
+        min_score: float = 2.0,
+        max_candidates: int = 10,
+    ) -> dict:
+        """LLM-powered import: evaluate discovered tickers using collected data.
+
+        Instead of a simple score threshold, this method:
+        1. Gets candidate tickers from discovery (score >= min_score)
+        2. Builds a data summary from DB (fundamentals, technicals, risk, analyst)
+        3. Sends ALL candidates to the LLM in one call
+        4. LLM decides which tickers deserve watchlist spots
+
+        Returns dict with imported/rejected lists and LLM rationale.
+        """
+        import json as _json
+        from app.services.llm_service import LLMService
+
+        db = get_db()
+
+        # ── 1. Get candidate tickers ──
+        rows = db.execute(
+            """
+            SELECT ticker, total_score, sentiment_hint, mention_count,
+                   youtube_score, reddit_score
+            FROM ticker_scores
+            WHERE is_validated = TRUE
+              AND total_score >= ?
+              AND ticker NOT IN (
+                  SELECT ticker FROM watchlist
+                  WHERE status = 'active' AND bot_id = ?
+              )
+            ORDER BY total_score DESC
+            LIMIT ?
+            """,
+            [min_score, self.bot_id, max_candidates],
+        ).fetchall()
+
+        if not rows:
+            logger.info(
+                "[Watchlist] LLM import: no candidates (min_score=%.1f)",
+                min_score,
+            )
+            return {
+                "imported": [],
+                "rejected": [],
+                "total_imported": 0,
+                "llm_used": False,
+            }
+
+        candidates = []
+        for row in rows:
+            ticker = row[0]
+            candidate = {
+                "ticker": ticker,
+                "discovery_score": row[1],
+                "sentiment_hint": row[2],
+                "mention_count": row[3],
+                "youtube_score": row[4],
+                "reddit_score": row[5],
+            }
+
+            # ── 2. Build data summary from DB ──
+            # Fundamentals
+            try:
+                fund_row = db.execute(
+                    """
+                    SELECT market_cap, trailing_pe, forward_pe, peg_ratio,
+                           profit_margin, operating_margin, revenue_growth,
+                           return_on_equity, debt_to_equity, free_cash_flow,
+                           sector, industry, dividend_yield
+                    FROM fundamentals
+                    WHERE ticker = ?
+                    ORDER BY snapshot_date DESC LIMIT 1
+                    """,
+                    [ticker],
+                ).fetchone()
+                if fund_row:
+                    candidate["fundamentals"] = {
+                        "market_cap": fund_row[0],
+                        "trailing_pe": fund_row[1],
+                        "forward_pe": fund_row[2],
+                        "peg_ratio": fund_row[3],
+                        "profit_margin": fund_row[4],
+                        "operating_margin": fund_row[5],
+                        "revenue_growth": fund_row[6],
+                        "return_on_equity": fund_row[7],
+                        "debt_to_equity": fund_row[8],
+                        "free_cash_flow": fund_row[9],
+                        "sector": fund_row[10],
+                        "industry": fund_row[11],
+                        "dividend_yield": fund_row[12],
+                    }
+            except Exception:
+                pass
+
+            # Latest technicals
+            try:
+                tech_row = db.execute(
+                    """
+                    SELECT rsi, macd, macd_signal, sma_20, sma_50, sma_200,
+                           bb_upper, bb_lower, adx, stoch_k
+                    FROM technicals
+                    WHERE ticker = ?
+                    ORDER BY date DESC LIMIT 1
+                    """,
+                    [ticker],
+                ).fetchone()
+                if tech_row:
+                    candidate["technicals"] = {
+                        "rsi": tech_row[0],
+                        "macd": tech_row[1],
+                        "macd_signal": tech_row[2],
+                        "sma_20": tech_row[3],
+                        "sma_50": tech_row[4],
+                        "sma_200": tech_row[5],
+                        "bb_upper": tech_row[6],
+                        "bb_lower": tech_row[7],
+                        "adx": tech_row[8],
+                        "stoch_k": tech_row[9],
+                    }
+            except Exception:
+                pass
+
+            # Risk metrics
+            try:
+                risk_row = db.execute(
+                    """
+                    SELECT sharpe_ratio, sortino_ratio, max_drawdown,
+                           var_95, daily_volatility, beta, alpha
+                    FROM risk_metrics
+                    WHERE ticker = ?
+                    ORDER BY computed_date DESC LIMIT 1
+                    """,
+                    [ticker],
+                ).fetchone()
+                if risk_row:
+                    candidate["risk"] = {
+                        "sharpe_ratio": risk_row[0],
+                        "sortino_ratio": risk_row[1],
+                        "max_drawdown": risk_row[2],
+                        "var_95": risk_row[3],
+                        "daily_volatility": risk_row[4],
+                        "beta": risk_row[5],
+                        "alpha": risk_row[6],
+                    }
+            except Exception:
+                pass
+
+            # Analyst consensus
+            try:
+                analyst_row = db.execute(
+                    """
+                    SELECT target_mean, target_median, num_analysts,
+                           strong_buy, buy, hold, sell, strong_sell
+                    FROM analyst_data
+                    WHERE ticker = ?
+                    ORDER BY snapshot_date DESC LIMIT 1
+                    """,
+                    [ticker],
+                ).fetchone()
+                if analyst_row:
+                    candidate["analyst"] = {
+                        "target_mean": analyst_row[0],
+                        "target_median": analyst_row[1],
+                        "num_analysts": analyst_row[2],
+                        "strong_buy": analyst_row[3],
+                        "buy": analyst_row[4],
+                        "hold": analyst_row[5],
+                        "sell": analyst_row[6],
+                        "strong_sell": analyst_row[7],
+                    }
+            except Exception:
+                pass
+
+            # Latest price
+            try:
+                price_row = db.execute(
+                    """
+                    SELECT close, volume
+                    FROM price_history
+                    WHERE ticker = ?
+                    ORDER BY date DESC LIMIT 1
+                    """,
+                    [ticker],
+                ).fetchone()
+                if price_row:
+                    candidate["latest_price"] = price_row[0]
+                    candidate["latest_volume"] = price_row[1]
+            except Exception:
+                pass
+
+            candidates.append(candidate)
+
+        logger.info(
+            "[Watchlist] LLM import: evaluating %d candidates: %s",
+            len(candidates),
+            [c["ticker"] for c in candidates],
+        )
+
+        # ── 3. Send to LLM for evaluation ──
+        llm = LLMService()
+
+        # Build the prompt with all candidate data
+        candidates_json = _json.dumps(candidates, indent=2, default=str)
+
+        system_prompt = (
+            "You are a stock screening analyst for a trading bot. "
+            "Your job is to evaluate candidate stocks and decide which ones "
+            "deserve to be added to the active watchlist for further analysis and trading.\n\n"
+            "You will receive a list of candidate tickers with their financial data:\n"
+            "- Discovery data (social media mentions, sentiment)\n"
+            "- Fundamentals (P/E, margins, growth, debt)\n"
+            "- Technicals (RSI, MACD, moving averages)\n"
+            "- Risk metrics (Sharpe, drawdown, VaR)\n"
+            "- Analyst consensus (price targets, recommendations)\n\n"
+            "SELECTION CRITERIA:\n"
+            "1. Reasonable valuation — not extreme P/E unless justified by high growth\n"
+            "2. Positive or improving technical trend — RSI not overbought, MACD positive or crossing\n"
+            "3. Acceptable risk profile — positive Sharpe, reasonable drawdown\n"
+            "4. Analyst sentiment aligns — more buys than sells\n"
+            "5. Not just social media hype — needs fundamental backing\n"
+            "6. If data is missing for a ticker, note it but don't auto-reject — "
+            "some newly discovered tickers may not have full data yet\n\n"
+            "Be selective but reasonable. Aim to promote 2-5 tickers per evaluation.\n"
+            "If NO tickers meet the criteria, return an empty selections array.\n\n"
+            "Respond with valid JSON ONLY."
+        )
+
+        user_prompt = (
+            f"Evaluate these {len(candidates)} candidate tickers for watchlist promotion:\n\n"
+            f"{candidates_json}\n\n"
+            "Return JSON with this exact structure:\n"
+            "{\n"
+            '  "selections": [\n'
+            '    {"ticker": "SYMBOL", "rationale": "Brief reason for selection", "score": 8.5}\n'
+            "  ],\n"
+            '  "rejections": [\n'
+            '    {"ticker": "SYMBOL", "reason": "Brief reason for rejection"}\n'
+            "  ]\n"
+            "}\n\n"
+            "The score should be 1-10 reflecting overall investment quality."
+        )
+
+        try:
+            response = await llm.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format="json",
+                audit_step="import_evaluation",
+            )
+
+            # Parse LLM response
+            cleaned = LLMService.clean_json_response(response)
+            result_data = _json.loads(cleaned)
+
+            selections = result_data.get("selections", [])
+            rejections = result_data.get("rejections", [])
+
+            logger.info(
+                "[Watchlist] LLM import evaluation result: %d selected, %d rejected",
+                len(selections), len(rejections),
+            )
+
+        except Exception as exc:
+            logger.error(
+                "[Watchlist] LLM import evaluation failed: %s — "
+                "falling back to threshold-based import",
+                exc,
+            )
+            # Fallback to simple threshold
+            return self.import_from_discovery(
+                min_score=min_score, max_tickers=max_candidates,
+            )
+
+        # ── 4. Import selected tickers ──
+        imported = []
+        skipped = []
+
+        for sel in selections:
+            ticker = sel.get("ticker", "").upper().strip()
+            if not ticker:
+                continue
+
+            score = sel.get("score", 5.0)
+            rationale = sel.get("rationale", "LLM selected")
+
+            add_result = self.add_ticker(
+                ticker=ticker,
+                source="llm_import",
+                discovery_score=score,
+                sentiment_hint="positive",
+                notes=f"LLM: {rationale[:200]}",
+            )
+            if add_result.get("status") in ("added", "reactivated"):
+                imported.append(ticker)
+                logger.info(
+                    "[Watchlist] LLM imported %s (score=%.1f): %s",
+                    ticker, score, rationale[:100],
+                )
+            else:
+                skipped.append(ticker)
+
+        # Log rejections
+        for rej in rejections:
+            ticker = rej.get("ticker", "")
+            reason = rej.get("reason", "no reason given")
+            logger.info(
+                "[Watchlist] LLM rejected %s: %s", ticker, reason[:100],
+            )
+
+        logger.info(
+            "[Watchlist] LLM import complete: %d imported, %d skipped, %d rejected",
+            len(imported), len(skipped), len(rejections),
+        )
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "rejected": [
+                {"ticker": r.get("ticker"), "reason": r.get("reason")}
+                for r in rejections
+            ],
+            "total_imported": len(imported),
+            "llm_used": True,
+            "selections_detail": selections,
         }
 
     def clear(self) -> dict:
