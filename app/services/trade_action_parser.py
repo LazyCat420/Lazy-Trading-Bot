@@ -55,18 +55,14 @@ def _log_parse_event(
 ) -> None:
     """Log a parse/repair event to pipeline_events for diagnostics."""
     try:
-        from app.database import get_db
-        conn = get_db()
-        conn.execute(
-            "INSERT INTO pipeline_events "
-            "(bot_id, event_type, event_data, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            [
-                bot_id,
-                f"trade_parse:{event_type}",
-                json.dumps({"symbol": symbol, **details}, default=str),
-                datetime.now().isoformat(),
-            ],
+        from app.services.event_logger import log_event
+        log_event(
+            phase="trading",
+            event_type=f"trade_parse:{event_type}",
+            detail=f"Trade parse event: {event_type}",
+            ticker=symbol.upper(),
+            metadata={"symbol": symbol, **details},
+            bot_id=bot_id,
         )
     except Exception as exc:
         logger.debug("[TradeActionParser] Failed to log event: %s", exc)

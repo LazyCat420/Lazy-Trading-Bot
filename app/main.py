@@ -3475,10 +3475,10 @@ async def get_diagnostics_pipeline_events(limit: int = Query(default=50)) -> lis
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT bot_id, event_type, event_data, created_at "
+            "SELECT bot_id, event_type, metadata as event_data, timestamp as created_at "
             "FROM pipeline_events "
             "WHERE event_type LIKE 'trade_parse:%' OR event_type LIKE 'trading_agent:%' "
-            "ORDER BY created_at DESC LIMIT ?",
+            "ORDER BY timestamp DESC LIMIT ?",
             [limit],
         ).fetchall()
         cols = ["bot_id", "event_type", "event_data", "created_at"]

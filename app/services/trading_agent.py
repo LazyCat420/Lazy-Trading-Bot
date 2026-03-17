@@ -30,24 +30,20 @@ def _log_tool_usage(
 ) -> None:
     """Log tool usage to pipeline_events for diagnostics."""
     try:
-        from app.database import get_db
-        conn = get_db()
+        from app.services.event_logger import log_event
         event_type = "tool_usage" if tools_used else "no_tools_used"
-        conn.execute(
-            "INSERT INTO pipeline_events "
-            "(bot_id, event_type, event_data, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            [
-                bot_id,
-                f"trading_agent:{event_type}",
-                json.dumps({
-                    "symbol": symbol,
-                    "tools_used": tools_used,
-                    "tools_count": len(tools_used),
-                    "turns_taken": turns_taken,
-                }, default=str),
-                datetime.now().isoformat(),
-            ],
+        log_event(
+            phase="trading",
+            event_type=f"trading_agent:{event_type}",
+            detail=f"Tool usage: {len(tools_used)} tools",
+            ticker=symbol.upper(),
+            metadata={
+                "symbol": symbol,
+                "tools_used": tools_used,
+                "tools_count": len(tools_used),
+                "turns_taken": turns_taken,
+            },
+            bot_id=bot_id,
         )
     except Exception as exc:
         logger.debug("[TradingAgent] Failed to log tool event: %s", exc)

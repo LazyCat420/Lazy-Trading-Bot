@@ -81,10 +81,10 @@ class ImprovementFeed:
       # Pipeline events: errors
       rows = conn.execute(
         """
-        SELECT phase, event_type, ticker, detail, status, created_at
+        SELECT phase, event_type, ticker, detail, status, timestamp
         FROM pipeline_events
-        WHERE status = 'error' AND created_at >= ?
-        ORDER BY created_at DESC
+        WHERE status = 'error' AND timestamp >= ?
+        ORDER BY timestamp DESC
         LIMIT 20
         """,
         [self._cutoff],

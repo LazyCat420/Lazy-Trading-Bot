@@ -118,107 +118,7 @@ class AutonomousLoop:
         logger.info("=" * 60)
         log_event("system", "loop_start", "Full autonomous loop started")
 
-        # ── Unload stale models, then pre-warm the target LLM ──
-        # Previous runs (or run-all) may have left other models loaded
-        # in Ollama VRAM.  Unload everything first so only our model
-        # occupies VRAM — prevents OOM and context thrashing.
-        from app.config import settings
-        from app.services.llm_service import LLMService
-
-        logger.info(
-            "[AutoLoop] Clearing VRAM before loading %s…",
-            settings.LLM_MODEL,
-        )
-        try:
-            freed = await LLMService.unload_all_ollama_models(
-                settings.OLLAMA_URL,
-            )
-            if freed:
-                logger.info(
-                    "[AutoLoop] 🧹 Unloaded %d stale model(s) from VRAM",
-                    freed,
-                )
-        except Exception as _unload_exc:
-            logger.warning(
-                "[AutoLoop] Failed to unload stale models: %s",
-                _unload_exc,
-            )
-
-        logger.info(
-            "[AutoLoop] Pre-warming Ollama model: %s @ %s",
-            settings.LLM_MODEL, settings.OLLAMA_URL,
-        )
-        warm_result = await LLMService.verify_and_warm_ollama_model(
-            settings.OLLAMA_URL,
-            settings.LLM_MODEL,
-            keep_alive="2h",
-        )
-        if warm_result.get("status") == "oom_error":
-            # OOM — apply the suggested (lower) context size
-            sug_ctx = warm_result.get("suggested_ctx", 8192)
-            settings.LLM_CONTEXT_SIZE = min(sug_ctx, settings.MAX_CONTEXT_SIZE)
-            logger.warning(
-                "[AutoLoop] ⚠️ OOM at ctx=%d — using suggested ctx=%d",
-                warm_result.get("requested_ctx", 0), sug_ctx,
-            )
-            self._health.record_check(
-                "LLM model pre-warmed",
-                passed=True,
-                detail=(
-                    f"{settings.LLM_MODEL} OOM → ctx={sug_ctx} "
-                    f"(suggested)"
-                ),
-            )
-        elif warm_result.get("pre_warmed"):
-            # Persist the resolved model name (e.g. "ibm/granite-3.2-8b" → "granite3.2:8b")
-            # so all LLMService instances (including Prism calls) use the Ollama name.
-            # Use 'base_model' (resolved Ollama name), NOT 'model' (may be ephemeral wrapper).
-            resolved_model = warm_result.get("base_model", settings.LLM_MODEL)
-            if resolved_model != settings.LLM_MODEL:
-                logger.info(
-                    "[AutoLoop] Model name resolved: '%s' → '%s'",
-                    settings.LLM_MODEL, resolved_model,
-                )
-                settings.LLM_MODEL = resolved_model
-
-            rec_ctx = warm_result.get("recommended_ctx", 32768)
-            model_max = warm_result.get("model_max_ctx", 0)
-            vram_bytes = warm_result.get("vram_bytes", 0)
-            vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
-
-            # Apply the VRAM-based cap to settings
-            old_ctx = settings.LLM_CONTEXT_SIZE
-            settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx, settings.MAX_CONTEXT_SIZE)
-
-            logger.info(
-                "[AutoLoop] ✅ Model pre-warmed | "
-                "VRAM=%.1fGB | model_max_ctx=%d | "
-                "user_ctx=%d → effective_ctx=%d",
-                vram_gb, model_max, old_ctx,
-                settings.LLM_CONTEXT_SIZE,
-            )
-            self._log(
-                f"✅ Pre-warmed {settings.LLM_MODEL} | "
-                f"VRAM Used: {vram_gb:.1f}GB | "
-                f"Max Ctx Loaded: {settings.LLM_CONTEXT_SIZE}"
-            )
-            self._health.record_check(
-                "LLM model pre-warmed",
-                passed=True,
-                detail=(
-                    f"{settings.LLM_MODEL} "
-                    f"ctx={settings.LLM_CONTEXT_SIZE}"
-                ),
-            )
-        else:
-            logger.warning(
-                "[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result,
-            )
-            self._health.record_check(
-                "LLM model pre-warmed",
-                passed=False,
-                detail=warm_result.get("status", "unknown"),
-            )
+        # ── LLM Pre-warm removed from here (Moved before Step 3) ──
 
         report: dict[str, Any] = {
             "started_at": datetime.now().isoformat(),
@@ -304,6 +204,82 @@ class AutonomousLoop:
         else:
             self._log("⏭️ Embedding phase SKIPPED (toggled off)")
             report["phases"]["embedding"] = {"status": "skipped"}
+
+        # ── Unload stale models, then pre-warm the target LLM ──
+        # Doing this AFTER embedding and BEFORE analysis prevents VRAM contention
+        # on single-GPU setups (Embedding uses nomic-embed-text).
+        from app.config import settings
+        from app.services.llm_service import LLMService
+
+        if self._is_phase_enabled("analysis") or self._is_phase_enabled("trading") or self._is_phase_enabled("import"):
+            logger.info(
+                "[AutoLoop] Clearing VRAM before loading %s…",
+                settings.LLM_MODEL,
+            )
+            try:
+                freed = await LLMService.unload_all_ollama_models(
+                    settings.OLLAMA_URL,
+                )
+                if freed:
+                    logger.info(
+                        "[AutoLoop] 🧹 Unloaded %d stale model(s) from VRAM",
+                        freed,
+                    )
+            except Exception as _unload_exc:
+                logger.warning(
+                    "[AutoLoop] Failed to unload stale models: %s",
+                    _unload_exc,
+                )
+
+            logger.info(
+                "[AutoLoop] Pre-warming Ollama model: %s @ %s",
+                settings.LLM_MODEL, settings.OLLAMA_URL,
+            )
+            warm_result = await LLMService.verify_and_warm_ollama_model(
+                settings.OLLAMA_URL,
+                settings.LLM_MODEL,
+                keep_alive="2h",
+            )
+            if warm_result.get("status") == "oom_error":
+                sug_ctx = warm_result.get("suggested_ctx", 8192)
+                settings.LLM_CONTEXT_SIZE = min(sug_ctx, settings.MAX_CONTEXT_SIZE)
+                logger.warning(
+                    "[AutoLoop] ⚠️ OOM at ctx=%d — using suggested ctx=%d",
+                    warm_result.get("requested_ctx", 0), sug_ctx,
+                )
+                self._health.record_check(
+                    "LLM model pre-warmed", passed=True,
+                    detail=f"{settings.LLM_MODEL} OOM → ctx={sug_ctx} (suggested)",
+                )
+            elif warm_result.get("pre_warmed"):
+                resolved_model = warm_result.get("base_model", settings.LLM_MODEL)
+                if resolved_model != settings.LLM_MODEL:
+                    logger.info("[AutoLoop] Model name resolved: '%s' → '%s'", settings.LLM_MODEL, resolved_model)
+                    settings.LLM_MODEL = resolved_model
+
+                rec_ctx = warm_result.get("recommended_ctx", 32768)
+                model_max = warm_result.get("model_max_ctx", 0)
+                vram_bytes = warm_result.get("vram_bytes", 0)
+                vram_gb = vram_bytes / (1024 ** 3) if vram_bytes else 0
+
+                old_ctx = settings.LLM_CONTEXT_SIZE
+                settings.LLM_CONTEXT_SIZE = min(old_ctx, rec_ctx, settings.MAX_CONTEXT_SIZE)
+
+                logger.info(
+                    "[AutoLoop] ✅ Model pre-warmed | VRAM=%.1fGB | model_max_ctx=%d | user_ctx=%d → effective_ctx=%d",
+                    vram_gb, model_max, old_ctx, settings.LLM_CONTEXT_SIZE,
+                )
+                self._log(f"✅ Pre-warmed {settings.LLM_MODEL} | VRAM Used: {vram_gb:.1f}GB | Max Ctx Loaded: {settings.LLM_CONTEXT_SIZE}")
+                self._health.record_check(
+                    "LLM model pre-warmed", passed=True,
+                    detail=f"{settings.LLM_MODEL} ctx={settings.LLM_CONTEXT_SIZE}",
+                )
+            else:
+                logger.warning("[AutoLoop] ⚠️ Model pre-warm failed: %s", warm_result)
+                self._health.record_check(
+                    "LLM model pre-warmed", passed=False,
+                    detail=warm_result.get("status", "unknown"),
+                )
 
         # ── Step 3: Deep Analysis (all active tickers) ────────────
         if self._is_phase_enabled("analysis"):

@@ -166,7 +166,7 @@ class PromptEvolver:
       row = conn.execute(
         "SELECT COUNT(*) FROM pipeline_events "
         "WHERE bot_id = ? AND event_type = ? "
-        "AND created_at > CURRENT_TIMESTAMP - INTERVAL 24 HOUR",
+        "AND timestamp > CURRENT_TIMESTAMP - INTERVAL 24 HOUR",
         [self.bot_id, event_type],
       ).fetchone()
       return row[0] if row else 0

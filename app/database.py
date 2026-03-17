@@ -954,20 +954,6 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
-    # ── Pipeline Events ───────────────────────────────────────────
-    conn.execute("""
-        CREATE SEQUENCE IF NOT EXISTS pipeline_events_seq START 1;
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_events (
-            id               INTEGER PRIMARY KEY DEFAULT nextval('pipeline_events_seq'),
-            bot_id           VARCHAR NOT NULL,
-            event_type       VARCHAR NOT NULL,
-            event_data       TEXT,
-            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-
     # ── RAG: Embedding vectors for retrieval-augmented generation ──
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS embeddings_seq START 1;
