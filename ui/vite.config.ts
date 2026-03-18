@@ -10,6 +10,11 @@ export default defineConfig({
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true
+      },
+      '/prism': {
+        target: 'http://localhost:3020',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/prism/, ''),
       }
     }
   }

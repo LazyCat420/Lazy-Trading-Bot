@@ -186,7 +186,7 @@ class LLMService:
 
         t0 = _time.monotonic()
         try:
-            content = await self._call_prism(
+            content = await self._call_provider(
                 effective_msgs,
                 response_format,
                 max_tokens,
@@ -295,7 +295,7 @@ class LLMService:
 
         return content
 
-    async def _call_prism(
+    async def _call_provider(
         self,
         messages: list[dict],
         response_format: str,
@@ -354,7 +354,7 @@ class LLMService:
                     audit_cycle_id=audit_cycle_id,
                 )
             else:
-                content = await self._send_prism_request(
+                content = await self._send_ollama_request(
                     messages,
                     response_format,
                     max_tokens,
@@ -385,7 +385,7 @@ class LLMService:
                             "explanations — pure JSON."
                         ),
                     }
-                content = await self._send_prism_request(
+                content = await self._send_ollama_request(
                     retry_msgs,
                     "text",
                     max_tokens,
@@ -403,7 +403,7 @@ class LLMService:
 
             return content
 
-    async def _send_prism_request(
+    async def _send_ollama_request(
         self,
         messages: list[dict],
         response_format: str,
@@ -415,31 +415,17 @@ class LLMService:
         audit_step: str = "",
         audit_cycle_id: str = "",
     ) -> str:
-        """Send a single request to the Prism AI Gateway.
-
-        Routes through Prism's POST /chat?stream=false endpoint which
-        forwards to the configured Ollama backend.  Prism logs all calls
-        centrally.  When audit metadata is provided, a conversationMeta
-        object is included so the call auto-creates a conversation in
-        Prism's live activity dashboard.
-        """
-        url = f"{self.base_url}/chat?stream=false"
-
-        # Build Prism options
+        """Send a single request natively to Ollama."""
+        from app.config import settings
+        url = f"{settings.OLLAMA_URL.rstrip('/')}/api/chat"
         options: dict = {"temperature": temperature}
-
-        # ── Max tokens: cap generation length to prevent runaway thinking ──
         if max_tokens:
-            options["maxTokens"] = max_tokens
+            options["num_predict"] = max_tokens
         else:
-            default_predict = 4096 if response_format == "json" or schema else 4096
-            options["maxTokens"] = default_predict
+            options["num_predict"] = 4096 if response_format == "json" or schema else 4096
 
-        # Build the messages, injecting JSON instructions if needed
-        effective_msgs = list(messages)  # shallow copy
+        effective_msgs = list(messages)
         if schema is not None or response_format == "json":
-            # Prism doesn't support Ollama's format field,
-            # so we enforce JSON output via system prompt instruction
             json_instruction = (
                 "\n\nIMPORTANT: You MUST respond with valid JSON only. "
                 "No markdown, no code fences, no explanations — pure JSON."
@@ -450,7 +436,6 @@ class LLMService:
                     f"\n\nYour response MUST conform to this JSON Schema:\n"
                     f"{_json.dumps(schema, indent=2)}"
                 )
-            # Append to system message
             if effective_msgs and effective_msgs[0].get("role") == "system":
                 effective_msgs[0] = {
                     **effective_msgs[0],
@@ -458,262 +443,89 @@ class LLMService:
                 }
 
         payload: dict = {
-            "provider": "ollama",
             "model": self.model,
             "messages": effective_msgs,
+            "stream": False,
             "options": options,
         }
 
-        # ── Pass `format` field for Ollama constrained decoding ──
-        # When Ollama receives a JSON Schema in the `format` field,
-        # it uses GBNF grammar to guarantee valid JSON at the token
-        # generation level — no more malformed output.
         if schema is not None:
-            payload["format"] = schema  # Full JSON Schema → GBNF enforcement
+            payload["format"] = schema
         elif response_format == "json":
-            payload["format"] = "json"  # Generic JSON mode
+            payload["format"] = "json"
 
-        # ── Conversation tracking via conversationMeta ──
-        # Prism auto-creates a conversation when conversationId +
-        # conversationMeta are present in the payload.
-        import uuid
-        from datetime import datetime as _dt, timezone as _tz
-
-        conversation_id = str(uuid.uuid4())
-        title_parts = []
-        if audit_ticker:
-            title_parts.append(audit_ticker)
-        if audit_step:
-            title_parts.append(audit_step)
-        if audit_cycle_id:
-            title_parts.append(f"cycle:{audit_cycle_id[:8]}")
-        conv_title = " — ".join(title_parts) if title_parts else f"{self.model} generation"
-
-        payload["conversationId"] = conversation_id
-        payload["conversationMeta"] = {
-            "title": conv_title,
-            "systemPrompt": (
-                effective_msgs[0].get("content", "")[:500]
-                if effective_msgs and effective_msgs[0].get("role") == "system"
-                else ""
-            ),
-            "settings": {
-                "provider": "ollama",
-                "model": self.model,
-                "temperature": temperature,
-                "maxTokens": options.get("maxTokens"),
-            },
-        }
-
-        # Extract user message content for Prism conversation auto-append
-        user_content = ""
-        for m in effective_msgs:
-            if m.get("role") == "user":
-                user_content = m.get("content", "")
-                break
-
-        payload["userMessage"] = {
-            "content": user_content,
-            "timestamp": _dt.now(_tz.utc).isoformat(),
-        }
-
-        # Prism auth headers
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-secret": settings.PRISM_SECRET,
-            "x-project": settings.PRISM_PROJECT,
-            "x-username": self.model,
-        }
-
-        # Derive a short context label from the system prompt
         _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
-
-        # ── Generous timeout for Prism (non-streaming) ──────────────
-        # Prism/Ollama uses non-streaming, so we give it a generous
-        # timeout. The httpx shared client already has read=600s.
-        # We use max(configured, 600) to be safe for thinking models.
         _base_timeout = settings.LLM_CALL_TIMEOUT_SECONDS
         _measurement = settings.LLM_VRAM_MEASUREMENTS.get(self.model, {})
-        _file_size = _measurement.get("model_file_size", 0)
-        _model_file_gb = _file_size / (1024**3) if _file_size else 0
-        _timeout = max(_base_timeout, 600) if _model_file_gb > 15 else max(_base_timeout, 600)
+        _timeout = max(_base_timeout, 600) if _measurement.get("model_file_size", 0)/(1024**3) > 15 else max(_base_timeout, 600)
 
+        import time, asyncio, httpx
+        from app.services.llm_service import _get_shared_client, log_llm_call, logger
+        
         logger.info(
-            "Prism request START -> %s model=%s format=%s maxTokens=%d timeout=%ds",
-            url,
-            self.model,
-            response_format,
-            options.get("maxTokens", 0),
-            _timeout,
+            "Ollama request START -> %s model=%s format=%s timeout=%ds",
+            url, self.model, response_format, _timeout,
         )
         t0 = time.perf_counter()
-
-        # ── Heartbeat: log every 30s so the user knows we're not stuck ──
-        _hb_label = f"{self.model}"
-        if audit_ticker:
-            _hb_label += f" — {audit_ticker}"
-        if audit_step:
-            _hb_label += f" {audit_step}"
+        _hb_label = f"{self.model}{' — ' + audit_ticker if audit_ticker else ''}{' ' + audit_step if audit_step else ''}"
 
         async def _heartbeat() -> None:
             _elapsed = 0
             while True:
                 await asyncio.sleep(30)
                 _elapsed += 30
-                logger.info(
-                    "[LLM] ⏳ Still waiting on %s (%ds elapsed)…",
-                    _hb_label, _elapsed,
-                )
+                logger.info("[LLM] ⏳ Still waiting on %s (%ds elapsed)…", _hb_label, _elapsed)
 
         _hb_task = asyncio.create_task(_heartbeat())
 
         try:
             try:
                 client = await _get_shared_client()
-                resp = await asyncio.wait_for(
-                    client.post(url, json=payload, headers=headers),
-                    timeout=_timeout,
-                )
+                resp = await asyncio.wait_for(client.post(url, json=payload), timeout=_timeout)
                 resp.raise_for_status()
-            except (TimeoutError, httpx.ReadTimeout):
-                elapsed = time.perf_counter() - t0
-                logger.error(
-                    "Prism request TIMEOUT after %.1fs (limit=%ds)",
-                    elapsed,
-                    _timeout,
-                )
-                log_llm_call(
-                    context=_ctx,
-                    model=self.model,
-                    duration_seconds=elapsed,
-                    timed_out=True,
-                )
-                raise
-            except httpx.HTTPStatusError as exc:
-                elapsed = time.perf_counter() - t0
-                error_body = ""
-                try:
-                    error_body = exc.response.text[:500]
-                except Exception:
-                    pass
-                logger.warning(
-                    "Prism request FAILED -> %.1fs: HTTP %d — %s",
-                    elapsed,
-                    exc.response.status_code,
-                    error_body or str(exc)[:120],
-                )
-                log_llm_call(
-                    context=_ctx,
-                    model=self.model,
-                    duration_seconds=elapsed,
-                    error=f"HTTP {exc.response.status_code}: {error_body[:120]}",
-                )
-                if exc.response.status_code >= 500:
-                    return ""
-                raise
-            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
-                # Connection-level failures — Prism may be loading the model
-                elapsed = time.perf_counter() - t0
-                exc_type = type(exc).__name__
-                logger.warning(
-                    "Prism request CONN_ERROR -> %.1fs: %s: %s",
-                    elapsed,
-                    exc_type,
-                    str(exc)[:200] or "(no message)",
-                )
-                log_llm_call(
-                    context=_ctx,
-                    model=self.model,
-                    duration_seconds=elapsed,
-                    error=f"{exc_type}: {str(exc)[:120]}",
-                )
-                # Return empty so dual-mode retry can attempt again
-                return ""
             except Exception as exc:
                 elapsed = time.perf_counter() - t0
-                exc_type = type(exc).__name__
-                logger.warning(
-                    "Prism request FAILED -> %.1fs: %s: %s",
-                    elapsed,
-                    exc_type,
-                    str(exc)[:200] or repr(exc)[:200],
-                )
-                log_llm_call(
-                    context=_ctx,
-                    model=self.model,
-                    duration_seconds=elapsed,
-                    error=f"{exc_type}: {str(exc)[:120]}",
-                )
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                err_msg = str(exc)[:200]
+                logger.warning("Ollama FAILED -> %.1fs: %s", elapsed, err_msg)
+                log_llm_call(context=_ctx, model=self.model, duration_seconds=elapsed, error=f"{type(exc).__name__}: {err_msg[:120]}")
+                if status_code and status_code >= 500: return ""
+                if isinstance(exc, (httpx.ConnectError, httpx.ReadError)): return ""
                 raise
         finally:
             _hb_task.cancel()
 
         data = resp.json()
-        content = data.get("text", "")
-        thinking = data.get("thinking", "") or ""
-        usage = data.get("usage", {})
-        tokens = usage.get("outputTokens", 0)
+        if "message" in data and "content" in data["message"]:
+            content = data["message"]["content"]
+        else:
+            content = data.get("response", "")
+            
+        thinking = ""
+        tokens = data.get("eval_count", 0)
 
-        # ── Thinking-model fallback ──
-        # Some thinking models put all reasoning in `thinking` and
-        # leave `text` empty. Try to extract JSON from thinking.
-        if not content.strip() and thinking.strip():
-            import json as _json
-
-            # Strip <think>...</think> blocks from thinking text
-            clean_thinking = re.sub(
-                r"<think>.*?</think>",
-                "",
-                thinking,
-                flags=re.DOTALL,
-            ).strip()
-            text_to_parse = clean_thinking or thinking
-
-            candidate = LLMService.clean_json_response(text_to_parse)
-            if candidate.strip().startswith("{"):
-                try:
-                    parsed = _json.loads(candidate)
-                    content = candidate
-                    _keys = list(parsed.keys())[:5]
-                    logger.info(
-                        "[LLM] Extracted JSON from thinking field: keys=%s (%d chars)",
-                        _keys,
-                        len(content),
-                    )
-                except _json.JSONDecodeError:
-                    pass
-
-            if not content.strip():
-                content = clean_thinking or thinking
-                logger.warning(
-                    "[LLM] Using raw thinking text as response (%d chars) — no JSON found",
-                    len(content),
-                )
+        if "<think>" in content and "</think>" in content:
+            import re
+            thinking_match = re.search(r"<think>(.*?)</think>", content, flags=re.DOTALL)
+            if thinking_match: thinking = thinking_match.group(1).strip()
+            clean_content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            
+            if not clean_content.strip() and thinking.strip():
+                import json as _json
+                candidate = LLMService.clean_json_response(clean_content or content)
+                if candidate.strip().startswith("{"):
+                    try:
+                        _json.loads(candidate)
+                        content = candidate
+                    except _json.JSONDecodeError:
+                        pass
+                if not content.strip(): content = clean_content or content
+            else:
+                self._last_reasoning = thinking
 
         elapsed = time.perf_counter() - t0
-
-        if thinking:
-            logger.info(
-                "Prism request DONE  -> %.2fs, %d chars (thinking: %d chars) [%s]",
-                elapsed,
-                len(content),
-                len(thinking),
-                _hb_label,
-            )
-        else:
-            logger.info(
-                "Prism request DONE  -> %.2fs, %d chars [%s]",
-                elapsed,
-                len(content),
-                _hb_label,
-            )
-
-        log_llm_call(
-            context=_ctx,
-            model=self.model,
-            duration_seconds=elapsed,
-            tokens_used=tokens,
-        )
+        logger.info("Ollama request DONE  -> %.2fs, %d chars [%s]", elapsed, len(content), _hb_label)
+        log_llm_call(context=_ctx, model=self.model, duration_seconds=elapsed, tokens_used=tokens)
         return content
 
     async def _send_vllm_request(
@@ -740,6 +552,15 @@ class LLMService:
         import json as _json
 
         url = f"{settings.VLLM_URL.rstrip('/')}/v1/chat/completions"
+
+        # ── Route through Prism/Retina gateway if configured ──
+        # Prism proxies requests to the vLLM backend and provides
+        # logging, monitoring, and request tracking.
+        if getattr(settings, "PRISM_URL", None):
+            url = f"{settings.PRISM_URL.rstrip('/')}/chat"
+            logger.debug(
+                "[LLM] Routing vLLM request through Prism: %s", url,
+            )
 
         # Build the messages, injecting JSON instructions if needed
         effective_msgs = list(messages)
@@ -1176,39 +997,6 @@ class LLMService:
             return []
 
     @staticmethod
-    async def fetch_models_from_prism() -> list[str]:
-        """Fetch available Ollama models via the Prism /config endpoint.
-
-        Returns model names pulled from Prism's centralized config.
-        Falls back to direct Ollama if Prism is unreachable.
-        """
-        prism_url = settings.PRISM_URL.rstrip("/")
-        try:
-            headers = {
-                "x-api-secret": settings.PRISM_SECRET,
-                "x-project": settings.PRISM_PROJECT,
-                "x-username": "trading-bot",
-            }
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{prism_url}/config",
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                # Extract Ollama models from Prism config
-                ttt = data.get("textToText", {})
-                models_map = ttt.get("models", {})
-                ollama_models = models_map.get("ollama", [])
-                return [m.get("name", "") for m in ollama_models if m.get("name")]
-        except Exception as exc:
-            logger.warning(
-                "[LLM] Prism model fetch failed, falling back to direct Ollama: %s",
-                exc,
-            )
-            return await LLMService.fetch_models(settings.OLLAMA_URL)
-
-    @staticmethod
     async def fetch_models_from_vllm(vllm_url: str | None = None) -> list[str]:
         """Fetch available models from a vLLM server via /v1/models.
 
@@ -1225,6 +1013,93 @@ class LLMService:
         except Exception as exc:
             logger.warning("[LLM] vLLM model fetch failed (%s): %s", base, exc)
             return []
+
+    @staticmethod
+    async def verify_vllm_model(
+        vllm_url: str | None = None,
+        model: str | None = None,
+    ) -> dict:
+        """Verify a vLLM model is loaded and reachable.
+
+        Pings GET /v1/models on the vLLM server (Docker container) and
+        checks that the requested model name is in the served model list.
+
+        Returns a result dict compatible with the Ollama pre-warm flow:
+            {"pre_warmed": True, "base_model": ..., "model": ..., ...}
+        """
+        from app.config import settings as _cfg
+
+        base = (vllm_url or _cfg.VLLM_URL).rstrip("/")
+        target_model = model or _cfg.LLM_MODEL
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(f"{base}/v1/models")
+                resp.raise_for_status()
+                data = resp.json()
+                served = [m["id"] for m in data.get("data", [])]
+
+            if not served:
+                logger.warning(
+                    "[LLM] vLLM at %s returned 0 models", base,
+                )
+                return {
+                    "status": "no_models",
+                    "model": target_model,
+                    "base_model": target_model,
+                    "pre_warmed": False,
+                    "available_models": [],
+                }
+
+            # vLLM model IDs may differ in casing or prefix — do a fuzzy match
+            model_found = target_model in served
+            if not model_found:
+                # Try substring match (e.g. "Qwen3.5-35B" in a longer path)
+                for s in served:
+                    if target_model in s or s in target_model:
+                        target_model = s  # Use the served name
+                        model_found = True
+                        break
+
+            if not model_found:
+                logger.warning(
+                    "[LLM] vLLM model '%s' not found — served: %s",
+                    target_model, served,
+                )
+                return {
+                    "status": "model_not_found",
+                    "model": target_model,
+                    "base_model": target_model,
+                    "pre_warmed": False,
+                    "available_models": served,
+                }
+
+            logger.info(
+                "[LLM] ✅ vLLM model verified: %s @ %s",
+                target_model, base,
+            )
+            return {
+                "status": "model_verified",
+                "model": target_model,
+                "base_model": target_model,
+                "pre_warmed": True,
+                "model_found": True,
+                "available_models": served,
+                "recommended_ctx": _cfg.LLM_CONTEXT_SIZE,
+                "model_max_ctx": _cfg.LLM_CONTEXT_SIZE,
+                "vram_bytes": 0,  # vLLM manages its own VRAM
+            }
+        except Exception as exc:
+            logger.warning(
+                "[LLM] vLLM verification failed (%s): %s", base, exc,
+            )
+            return {
+                "status": "verification_failed",
+                "error": str(exc),
+                "model": target_model,
+                "base_model": target_model,
+                "pre_warmed": False,
+            }
 
     @staticmethod
     async def unload_ollama_model(base_url: str, model: str) -> bool:
@@ -1827,7 +1702,7 @@ class LLMService:
                 return {
                     "status": "ok",
                     "provider": "ollama",
-                    "prism_url": self.base_url,
+                    
                     "ollama_url": ollama_url,
                     "models": models,
                     "configured_model": self.model,
@@ -1837,7 +1712,7 @@ class LLMService:
             return {
                 "status": "error",
                 "provider": "ollama",
-                "prism_url": self.base_url,
+                
                 "ollama_url": ollama_url,
                 "error": str(e),
             }

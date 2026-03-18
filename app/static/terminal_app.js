@@ -2,7 +2,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 const { createRoot } = ReactDOM;
 const { HashRouter, Routes, Route, Link, useNavigate, useParams } = ReactRouterDOM;
 
-// ***************************************************************
+const MonitorDataContext = React.createContext(null);
 // UTILITIES
 // ***************************************************************
 
@@ -1716,14 +1716,20 @@ const WatchlistPage = ({
 // DEV TOOLS – run individual phases, toggle phases on/off
 // ***************************************************************
 const DevDebugPanel = () => {
-    const [open, setOpen] = useState(false);
-    const [runningPhase, setRunningPhase] = useState(null);
-    const [lastResult, setLastResult] = useState(null);
-    const [toggles, setToggles] = useState({
+    const monitorData = React.useContext(MonitorDataContext);
+    const open = monitorData?.devToolsOpen || false;
+    const setOpen = monitorData?.setDevToolsOpen || (() => {});
+    const runningPhase = monitorData?.devToolsRunningPhase || null;
+    const setRunningPhase = monitorData?.setDevToolsRunningPhase || (() => {});
+    const lastResult = monitorData?.devToolsLastResult || null;
+    const setLastResult = monitorData?.setDevToolsLastResult || (() => {});
+    const toggles = monitorData?.devToolsToggles || {
         discovery: true, import: true, collection: true,
         embedding: true, analysis: true, trading: true,
-    });
-    const [togglesLoaded, setTogglesLoaded] = useState(false);
+    };
+    const setToggles = monitorData?.setDevToolsToggles || (() => {});
+    const togglesLoaded = monitorData?.devToolsTogglesLoaded || false;
+    const setTogglesLoaded = monitorData?.setDevToolsTogglesLoaded || (() => {});
 
     const phases = [
         { key: "discovery",  label: "1 · Discovery",  icon: "search",                endpoint: "/api/bot/run-discovery",  color: "text-orange-400" },
@@ -1796,6 +1802,7 @@ const DevDebugPanel = () => {
     };
 
     const enabledCount = Object.values(toggles).filter(Boolean).length;
+    const globalRunning = monitorData?.loopRunning || runningPhase !== null;
 
     return (
         <div className="border-t border-amber-500/20">
@@ -1848,9 +1855,9 @@ const DevDebugPanel = () => {
                                 {/* Run button */}
                                 <button
                                     onClick={() => runPhase(p)}
-                                    disabled={!!runningPhase || !enabled}
+                                    disabled={globalRunning || !enabled}
                                     className={`w-8 flex items-center justify-center rounded transition ${
-                                        !enabled || runningPhase
+                                        !enabled || globalRunning
                                             ? "text-text-muted/30 cursor-not-allowed"
                                             : "text-amber-400/60 hover:text-amber-400 hover:bg-amber-500/10"
                                     }`}
@@ -1867,51 +1874,45 @@ const DevDebugPanel = () => {
                     {/* ── Run Enabled Phases button ── */}
                     <button
                         onClick={async () => {
-                            if (runningPhase) return;
+                            if (globalRunning) return;
                             RetroSFX.click();
-                            setRunningPhase("full_loop");
-                            setLastResult(null);
-                            try {
-                                const res = await fetch("/api/bot/run-loop?max_tickers=10", { method: "POST" });
-                                if (!res.ok) {
-                                    const body = await res.json();
-                                    setLastResult({ error: body.detail || "Failed" });
-                                    setRunningPhase(null);
-                                    return;
-                                }
-                                const poll = setInterval(async () => {
-                                    try {
-                                        const sr = await fetch("/api/bot/loop-status");
-                                        const st = await sr.json();
-                                        if (!st.running) {
-                                            clearInterval(poll);
-                                            setRunningPhase(null);
-                                            setLastResult({ ok: true, phase: "enabled phases" });
-                                            RetroSFX.successChime();
-                                        }
-                                    } catch (e) {
-                                        clearInterval(poll);
-                                        setRunningPhase(null);
-                                        setLastResult({ error: "Poll failed" });
+                            if (monitorData) {
+                                monitorData.setLoopRunning(true);
+                                monitorData.setLoopStatus(null);
+                                try {
+                                    const res = await fetch("/api/bot/run-loop?max_tickers=10", { method: "POST" });
+                                    if (!res.ok) {
+                                        const body = await res.json();
+                                        setLastResult({ error: body.detail || "Failed" });
+                                        monitorData.setLoopRunning(false);
+                                        return;
                                     }
-                                }, 2000);
-                            } catch (e) {
-                                setRunningPhase(null);
-                                setLastResult({ error: e.message });
+                                    monitorData.startLoopPoll();
+                                } catch (e) {
+                                    monitorData.setLoopRunning(false);
+                                    setLastResult({ error: e.message });
+                                }
+                            } else {
+                                // Fallback just in case context mapping fails
+                                setRunningPhase("full_loop");
+                                try {
+                                    await fetch("/api/bot/run-loop?max_tickers=10", { method: "POST" });
+                                    setRunningPhase(null);
+                                } catch (e) {}
                             }
                         }}
-                        disabled={!!runningPhase || enabledCount === 0}
+                        disabled={globalRunning || enabledCount === 0}
                         className={`w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
-                            runningPhase || enabledCount === 0
+                            globalRunning || enabledCount === 0
                                 ? "bg-white/5 text-text-muted/40 cursor-not-allowed"
                                 : "bg-gradient-to-r from-green-500/20 to-emerald-500/20 text-green-400 hover:from-green-500/30 hover:to-emerald-500/30 border border-green-500/30 hover:border-green-400/50"
                         }`}
                         title={`Run ${enabledCount} enabled phase(s) in sequence`}
                     >
-                        <span className={`material-symbols-outlined text-[16px] ${runningPhase === "full_loop" ? "animate-spin" : ""}`}>
-                            {runningPhase === "full_loop" ? "progress_activity" : "play_arrow"}
+                        <span className={`material-symbols-outlined text-[16px] ${monitorData?.loopRunning ? "animate-spin" : ""}`}>
+                            {monitorData?.loopRunning ? "progress_activity" : "play_arrow"}
                         </span>
-                        {runningPhase === "full_loop" ? "Running Pipeline…" : `▶ Run ${enabledCount} Enabled Phase${enabledCount !== 1 ? "s" : ""}`}
+                        {monitorData?.loopRunning ? "Running Pipeline…" : `▶ Run ${enabledCount} Enabled Phase${enabledCount !== 1 ? "s" : ""}`}
                     </button>
 
                     {/* Status line */}
@@ -3787,6 +3788,11 @@ let _runAllStatus = null;
 let _runAllPollId = null;
 let _loopRunning = false;
 let _loopStatus = null;
+let _devToolsOpen = false;
+let _devToolsRunningPhase = null;
+let _devToolsLastResult = null;
+let _devToolsToggles = { discovery: true, import: true, collection: true, embedding: true, analysis: true, trading: true };
+let _devToolsTogglesLoaded = false;
 
 
 const useMonitorData = () => {
@@ -3825,6 +3831,13 @@ const useMonitorData = () => {
     const [loopRunning, setLoopRunning] = useState(_loopRunning);
     const [loopStatus, setLoopStatus] = useState(_loopStatus);
 
+    // ── Dev Tools state (initialized from module-level) ──
+    const [devToolsOpen, setDevToolsOpen] = useState(_devToolsOpen);
+    const [devToolsRunningPhase, setDevToolsRunningPhase] = useState(_devToolsRunningPhase);
+    const [devToolsLastResult, setDevToolsLastResult] = useState(_devToolsLastResult);
+    const [devToolsToggles, setDevToolsToggles] = useState(_devToolsToggles);
+    const [devToolsTogglesLoaded, setDevToolsTogglesLoaded] = useState(_devToolsTogglesLoaded);
+
     // ── Multi-Bot state ──
     const [activeBotId, setActiveBotId] = useState("default");
     const [activeBotInfo, setActiveBotInfo] = useState(null);
@@ -3845,6 +3858,11 @@ const useMonitorData = () => {
     useEffect(() => { _runAllStatus = runAllStatus; }, [runAllStatus]);
     useEffect(() => { _loopRunning = loopRunning; }, [loopRunning]);
     useEffect(() => { _loopStatus = loopStatus; }, [loopStatus]);
+    useEffect(() => { _devToolsOpen = devToolsOpen; }, [devToolsOpen]);
+    useEffect(() => { _devToolsRunningPhase = devToolsRunningPhase; }, [devToolsRunningPhase]);
+    useEffect(() => { _devToolsLastResult = devToolsLastResult; }, [devToolsLastResult]);
+    useEffect(() => { _devToolsToggles = devToolsToggles; }, [devToolsToggles]);
+    useEffect(() => { _devToolsTogglesLoaded = devToolsTogglesLoaded; }, [devToolsTogglesLoaded]);
 
     // Fetch active bot info on mount + listen for config saves
     useEffect(() => {
@@ -4426,7 +4444,7 @@ const useMonitorData = () => {
         // Portfolio state
         portfolio, orders, triggers, portfolioHistory, portfolioLoading,
         // Loop state
-        loopRunning, loopStatus, setLoopStatus,
+        loopRunning, setLoopRunning, loopStatus, setLoopStatus,
         // Multi-Bot state
         activeBotId, activeBotInfo, activeBotModelName, botList, leaderboard,
         fetchActiveBot, fetchBotList, switchBot, fetchLeaderboard,
@@ -4434,8 +4452,12 @@ const useMonitorData = () => {
         runAllRunning, runAllStatus, runAllBots,
         // Scheduler state
         schedulerStatus, schedulerHistory, schedulerLoading,
+        // Dev Tools state
+        devToolsOpen, setDevToolsOpen, devToolsRunningPhase, setDevToolsRunningPhase,
+        devToolsLastResult, setDevToolsLastResult, devToolsToggles, setDevToolsToggles,
+        devToolsTogglesLoaded, setDevToolsTogglesLoaded,
         // Actions
-        fetchAll, runScan, clearData,
+        fetchAll, runScan, clearData, startLoopPoll,
         addToWatchlist, removeFromWatchlist, deleteFromScoreboard,
         importFromDiscovery, deepAnalyzeTicker, deepAnalyzeAll,
         fetchDossier, fetchWatchlist, clearWatchlist, runFullLoop,
@@ -4693,49 +4715,6 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         className: "icon-btn", title: "Refresh",
                     }, React.createElement("span", { className: "material-symbols-outlined text-[20px]" }, "refresh")),
                 )
-            ),
-
-            // ── Loop Progress Panel (visible while running or just finished) ──
-            (loopRunning || (loopStatus && loopStatus.phase === "done")) && React.createElement("div", {
-                className: "mx-6 mt-3 p-4 rounded-xl border border-green-500/20 bg-green-500/5"
-            },
-                React.createElement("div", { className: "flex items-center gap-3 mb-3" },
-                    React.createElement("span", { className: `material-symbols-outlined text-green-400 ${loopRunning ? "animate-spin" : ""}` },
-                        loopRunning ? "progress_activity" : "check_circle"
-                    ),
-                    React.createElement("span", { className: "text-green-400 font-bold text-sm" },
-                        loopRunning ? `Autonomous Loop Running${activeBotModelName ? " — " + activeBotModelName : ""}` : "Loop Complete"
-                    )
-                ),
-                // Phase progress indicators
-                loopStatus && React.createElement("div", { className: "flex items-center gap-4 mb-3" },
-                    ...["discovery", "import", "analysis"].map(phase => {
-                        const st = loopStatus.phases?.[phase];
-                        const icon = st === "done" ? "check_circle" : st === "running" ? "progress_activity" : st === "error" ? "error" : "circle";
-                        const color = st === "done" ? "text-green-400" : st === "running" ? "text-primary animate-spin" : st === "error" ? "text-red-400" : "text-text-muted";
-                        const label = phase === "discovery" ? "Discovery" : phase === "import" ? "Import" : "Deep Analysis";
-                        return React.createElement("div", { key: phase, className: "flex items-center gap-1.5" },
-                            React.createElement("span", { className: `material-symbols-outlined text-[16px] ${color}` }, icon),
-                            React.createElement("span", { className: `text-xs font-mono ${st === "running" ? "text-white" : "text-text-muted"}` }, label)
-                        );
-                    })
-                ),
-                // Log messages
-                loopStatus?.log?.length > 0 && React.createElement("div", {
-                    className: "max-h-32 overflow-y-auto space-y-0.5 text-[11px] font-mono text-text-muted bg-onyx-black/40 rounded-lg p-2"
-                },
-                    ...loopStatus.log.map((entry, i) =>
-                        React.createElement("div", { key: i },
-                            React.createElement("span", { className: "text-text-muted/50" }, `[${entry.time}] `),
-                            entry.message
-                        )
-                    )
-                ),
-                // Dismiss button when done
-                !loopRunning && loopStatus?.phase === "done" && React.createElement("button", {
-                    onClick: () => { RetroSFX.click(); setLoopStatus(null); },
-                    className: "mt-2 text-xs text-text-muted hover:text-white transition"
-                }, "Dismiss")
             ),
 
             // ── Scrollable content
@@ -6263,6 +6242,12 @@ const AutobotMonitorPage = ({ monitorData }) => {
 // ***************************************************************
 
 const DiagnosticsPage = () => {
+    const monitorData = React.useContext(MonitorDataContext);
+    const loopRunning = monitorData?.loopRunning || false;
+    const loopStatus = monitorData?.loopStatus || null;
+    const setLoopStatus = monitorData?.setLoopStatus || (() => {});
+    const activeBotModelName = monitorData?.activeBotModelName || "";
+
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [audits, setAudits] = useState([]);
@@ -6489,6 +6474,50 @@ const DiagnosticsPage = () => {
                     </button>
                 </div>
             </div>
+            {/* ── Loop Progress Panel (moved from AutobotMonitor) ── */}
+            {(loopRunning || (loopStatus && loopStatus.phase === "done")) && (
+                <div className="mx-6 mt-4 p-4 rounded-xl border border-green-500/20 bg-green-500/5">
+                    <div className="flex items-center gap-3 mb-3">
+                        <span className={`material-symbols-outlined text-green-400 ${loopRunning ? "animate-spin" : ""}`}>
+                            {loopRunning ? "progress_activity" : "check_circle"}
+                        </span>
+                        <span className="text-green-400 font-bold text-sm">
+                            {loopRunning ? `Autonomous Loop Running${activeBotModelName ? " — " + activeBotModelName : ""}` : "Loop Complete"}
+                        </span>
+                    </div>
+                    {loopStatus && (
+                        <div className="flex items-center gap-4 mb-3">
+                            {["discovery", "import", "analysis"].map(phase => {
+                                const st = loopStatus.phases?.[phase];
+                                const icon = st === "done" ? "check_circle" : st === "running" ? "progress_activity" : st === "error" ? "error" : "circle";
+                                const color = st === "done" ? "text-green-400" : st === "running" ? "text-primary animate-spin" : st === "error" ? "text-red-400" : "text-text-muted";
+                                const label = phase === "discovery" ? "Discovery" : phase === "import" ? "Import" : "Deep Analysis";
+                                return (
+                                    <div key={phase} className="flex items-center gap-1.5">
+                                        <span className={`material-symbols-outlined text-[16px] ${color}`}>{icon}</span>
+                                        <span className={`text-xs font-mono ${st === "running" ? "text-white" : "text-text-muted"}`}>{label}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                    {loopStatus?.log?.length > 0 && (
+                        <div className="max-h-48 overflow-y-auto space-y-0.5 text-[11px] font-mono text-text-muted bg-onyx-black/40 rounded-lg p-2 border border-white/5">
+                            {loopStatus.log.map((entry, i) => (
+                                <div key={i} className="flex gap-2 hover:bg-white/5 px-1 py-0.5 rounded">
+                                    <span className="text-text-muted/50 shrink-0">[{entry.time}]</span>
+                                    <span className="break-words">{entry.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {!loopRunning && loopStatus?.phase === "done" && (
+                        <button onClick={() => { RetroSFX.click(); setLoopStatus(null); }} className="mt-2 text-[10px] font-mono uppercase bg-white/5 hover:bg-white/10 text-white transition px-3 py-1 rounded">
+                            Dismiss Log
+                        </button>
+                    )}
+                </div>
+            )}
             <div className="flex-1 overflow-y-auto p-6">
                 {loading ? <Spinner /> : stats && (
                     <div className="space-y-6">
@@ -8653,18 +8682,20 @@ const App = () => {
     );
 
     return (
-        <HashRouter>
-            <Routes>
-                <Route path="/dashboard" element={<DashboardPage {...terminalData} monitorData={monitorData} />} />
-                <Route path="/" element={<WatchlistPage {...terminalData} monitorData={monitorData} />} />
-                <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} monitorData={monitorData} />} />
-                <Route path="/data" element={<DataExplorerPage {...terminalData} monitorData={monitorData} />} />
+        <MonitorDataContext.Provider value={monitorData}>
+            <HashRouter>
+                <Routes>
+                    <Route path="/dashboard" element={<DashboardPage {...terminalData} monitorData={monitorData} />} />
+                    <Route path="/" element={<WatchlistPage {...terminalData} monitorData={monitorData} />} />
+                    <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} monitorData={monitorData} />} />
+                    <Route path="/data" element={<DataExplorerPage {...terminalData} monitorData={monitorData} />} />
 
-                <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/diagnostics" element={<DiagnosticsPage />} />
-            </Routes>
-        </HashRouter>
+                    <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
+                    <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="/diagnostics" element={<DiagnosticsPage />} />
+                </Routes>
+            </HashRouter>
+        </MonitorDataContext.Provider>
     );
 };
 

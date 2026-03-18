@@ -4,11 +4,13 @@ import '@xyflow/react/dist/style.css';
 
 import { usePipelineSocket } from './hooks/usePipelineSocket';
 import { usePipelineStore } from './store/pipelineStore';
+import { useChatStore } from './store/chatStore';
 import { initialNodes } from './data/initialNodes';
 import { initialEdges } from './data/initialEdges';
 import PipelineNode from './components/nodes/PipelineNode';
+import ChatPanel from './components/chat/ChatPanel';
 import styles from './App.module.scss';
-import { Activity } from 'lucide-react';
+import { Activity, BotMessageSquare } from 'lucide-react';
 
 const nodeTypes = {
   pipeline: PipelineNode,
@@ -21,6 +23,9 @@ function App() {
   const nodeStatuses = usePipelineStore(state => state.nodeStatuses);
   const events = usePipelineStore(state => state.events);
   const feedRef = useRef<HTMLDivElement>(null);
+
+  const isChatOpen = useChatStore(state => state.isOpen);
+  const toggleChat = useChatStore(state => state.toggleOpen);
 
   const nodes = useMemo(() => {
     return initialNodes.map(node => ({
@@ -54,6 +59,18 @@ function App() {
           <Controls />
           <MiniMap nodeStrokeColor="#4a5568" nodeColor="#1e1e1e" maskColor="rgba(0,0,0,0.5)" />
         </ReactFlow>
+
+        {/* Chat toggle button */}
+        <button className={styles.chatToggle} onClick={toggleChat} title="Toggle chat">
+          <BotMessageSquare size={22} />
+        </button>
+
+        {/* Chat panel overlay */}
+        {isChatOpen && (
+          <div className={styles.chatOverlay}>
+            <ChatPanel />
+          </div>
+        )}
       </div>
       
       <div className={styles.sidebar}>

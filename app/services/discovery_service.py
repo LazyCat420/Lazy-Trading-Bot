@@ -96,6 +96,26 @@ class DiscoveryService:
         logger.info("[Discovery] Starting full discovery run (max_tickers=%s)", max_tickers)
         logger.info("=" * 70)
 
+        # ── Temporarily override per-source fetch limits when Limit is set ──
+        # The UI "Limit" field controls BOTH how many tickers to return AND
+        # how many items each collector fetches per source.
+        from app.config import settings as _cfg
+
+        _saved_yt = _cfg.YOUTUBE_MAX_VIDEOS
+        _saved_reddit = _cfg.REDDIT_MAX_POSTS_PER_SUB
+        _saved_news = _cfg.NEWS_FETCH_LIMIT
+
+        if max_tickers and max_tickers > 0:
+            _cfg.YOUTUBE_MAX_VIDEOS = max_tickers
+            _cfg.REDDIT_MAX_POSTS_PER_SUB = max_tickers
+            _cfg.NEWS_FETCH_LIMIT = max_tickers
+            # Also update the RedditCollector instance's cached value
+            self.reddit.MAX_POSTS_PER_SUB = max_tickers
+            logger.info(
+                "[Discovery] Per-source limits overridden: yt=%d, reddit=%d, news=%d",
+                max_tickers, max_tickers, max_tickers,
+            )
+
         reddit_tickers: list[ScoredTicker] = []
         youtube_tickers: list[ScoredTicker] = []
         sec_13f_tickers: list[ScoredTicker] = []
@@ -192,6 +212,12 @@ class DiscoveryService:
             _timed_collect("Congress", _collect_congress()),
             _timed_collect("RSS News", _collect_rss_news()),
         )
+
+        # ── Restore original per-source limits ──
+        _cfg.YOUTUBE_MAX_VIDEOS = _saved_yt
+        _cfg.REDDIT_MAX_POSTS_PER_SUB = _saved_reddit
+        _cfg.NEWS_FETCH_LIMIT = _saved_news
+        self.reddit.MAX_POSTS_PER_SUB = _saved_reddit
 
         # Merge scores from ALL sources
         merged = self._merge_scores(

@@ -45,19 +45,17 @@ class Settings:
         self._db_path_override = value
 
     # ── LLM Provider ───────────────────────────────────────────────
-    # Provider selection: "prism" (Ollama via Prism gateway) or "vllm"
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "prism")
+    # Provider selection: "ollama" or "vllm"
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
 
-    # Prism AI Gateway (centralized LLM proxy)
-    PRISM_URL: str = os.getenv("PRISM_URL", "http://localhost:3020")
-    PRISM_SECRET: str = os.getenv("PRISM_SECRET", "banana")
-    PRISM_PROJECT: str = os.getenv("PRISM_PROJECT", "lazy-trading-bot")
-
-    # Ollama direct URL (used only for model warm-up and VRAM estimation)
+    # Ollama direct URL
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
     # vLLM (OpenAI-compatible API on remote GPU, e.g. Jetson Orin)
     VLLM_URL: str = os.getenv("VLLM_URL", "http://10.0.0.30:8000")
+
+    # Prism/Retina AI Gateway — routes LLM requests for logging/monitoring
+    PRISM_URL: str = os.getenv("PRISM_URL", "http://localhost:3020")
 
     # Model name (e.g. "gemma3:27b" for Ollama)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gemma3:27b")
@@ -132,11 +130,6 @@ class Settings:
     NEWS_FETCH_LIMIT: int = int(os.getenv("NEWS_FETCH_LIMIT", "3"))
     SEC_13F_MAX_FILERS: int = int(os.getenv("SEC_13F_MAX_FILERS", "3"))
 
-    @property
-    def LLM_BASE_URL(self) -> str:
-        """Computed: returns the Prism gateway URL for LLM calls."""
-        return self.PRISM_URL.rstrip("/")
-
     # Server
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
@@ -177,17 +170,13 @@ class Settings:
     def _apply_llm_config(self, data: dict[str, Any]) -> None:
         """Apply a config dict to the running settings instance."""
         if "llm_provider" in data:
-            self.LLM_PROVIDER = str(data["llm_provider"])
-        if "prism_url" in data:
-            self.PRISM_URL = str(data["prism_url"])
-        if "prism_secret" in data:
-            self.PRISM_SECRET = str(data["prism_secret"])
-        if "prism_project" in data:
-            self.PRISM_PROJECT = str(data["prism_project"])
+            self.LLM_PROVIDER = str(data["llm_provider"]).lower()
         if "ollama_url" in data:
             self.OLLAMA_URL = str(data["ollama_url"])
         if "vllm_url" in data:
             self.VLLM_URL = str(data["vllm_url"])
+        if "prism_url" in data:
+            self.PRISM_URL = str(data["prism_url"])
         if "model" in data:
             self.LLM_MODEL = str(data["model"])
         if "context_size" in data:
@@ -268,13 +257,11 @@ class Settings:
 
     def get_llm_config(self) -> dict[str, Any]:
         """Return the current LLM configuration as a dict."""
-        cfg: dict[str, Any] = {
+        return {
             "llm_provider": self.LLM_PROVIDER,
-            "prism_url": self.PRISM_URL,
-            "prism_secret": self.PRISM_SECRET,
-            "prism_project": self.PRISM_PROJECT,
             "ollama_url": self.OLLAMA_URL,
             "vllm_url": self.VLLM_URL,
+            "prism_url": self.PRISM_URL,
             "model": self.LLM_MODEL,
             "context_size": self.LLM_CONTEXT_SIZE,
             "temperature": self.LLM_TEMPERATURE,

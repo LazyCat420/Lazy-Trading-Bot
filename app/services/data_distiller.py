@@ -1039,7 +1039,7 @@ class DataDistiller:
         rsi_first = [r for r in rsi_first if r is not None]
         rsi_second = [r for r in rsi_second if r is not None]
 
-        if rsi_first and rsi_second:
+        if rsi_first and rsi_second and p_first and p_second:
             price_up = np.mean(p_second) > np.mean(p_first)
             rsi_up = np.mean(rsi_second) > np.mean(rsi_first)
 

@@ -1,4 +1,4 @@
-"""Tests for LLM service — validates Prism API endpoint and payload format."""
+"""Tests for LLM service — validates native Ollama API endpoint and payload format."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ def _reset_llm_queue():
     yield
 
 
-class TestSendPrismRequest:
-    """Test that _send_prism_request calls the correct Prism endpoint."""
+class TestSendOllamaRequest:
+    """Test that _send_ollama_request calls the correct Ollama endpoint."""
 
     @pytest.mark.asyncio
     async def test_uses_chat_endpoint(self):
-        """Verify URL is /chat?stream=false (not the old /text-to-text)."""
+        """Verify URL is /api/chat."""
         from app.services.llm_service import LLMService
 
         svc = LLMService(model_override="test-model")
@@ -32,9 +32,9 @@ class TestSendPrismRequest:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "text": "hello",
-            "thinking": "",
-            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "model": "test-model",
+            "message": {"role": "assistant", "content": "hello"},
+            "eval_count": 10,
         }
         mock_resp.raise_for_status = MagicMock()
 
@@ -43,7 +43,7 @@ class TestSendPrismRequest:
         mock_client.is_closed = False
 
         with patch("app.services.llm_service._get_shared_client", return_value=mock_client):
-            result = await svc._send_prism_request(
+            result = await svc._send_ollama_request(
                 messages=[
                     {"role": "system", "content": "You are helpful."},
                     {"role": "user", "content": "Hello"},
@@ -56,16 +56,14 @@ class TestSendPrismRequest:
         # Verify the URL used
         call_args = mock_client.post.call_args
         url = call_args[0][0] if call_args[0] else call_args[1].get("url", "")
-        assert "/chat?stream=false" in url, (
-            f"Expected /chat?stream=false in URL, got {url}"
+        assert "/api/chat" in url, (
+            f"Expected /api/chat in URL, got {url}"
         )
-        assert "/text-to-text" not in url, (
-            f"Old /text-to-text endpoint should not be used, got {url}"
-        )
+        assert getattr(mock_client.post, 'call_count', 0) == 1
 
     @pytest.mark.asyncio
-    async def test_payload_has_conversation_meta(self):
-        """Verify payload includes conversationMeta (not a separate /conversations/start call)."""
+    async def test_payload_format(self):
+        """Verify payload matches standard Ollama chat protocol."""
         from app.services.llm_service import LLMService
 
         svc = LLMService(model_override="test-model")
@@ -73,9 +71,8 @@ class TestSendPrismRequest:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "text": "response",
-            "thinking": "",
-            "usage": {"inputTokens": 10, "outputTokens": 5},
+            "message": {"content": "response"},
+            "eval_count": 5,
         }
         mock_resp.raise_for_status = MagicMock()
 
@@ -84,40 +81,29 @@ class TestSendPrismRequest:
         mock_client.is_closed = False
 
         with patch("app.services.llm_service._get_shared_client", return_value=mock_client):
-            await svc._send_prism_request(
+            await svc._send_ollama_request(
                 messages=[
                     {"role": "system", "content": "System prompt"},
                     {"role": "user", "content": "User message"},
                 ],
-                response_format="text",
+                response_format="json",
                 max_tokens=100,
                 temperature=0.3,
-                audit_ticker="AAPL",
-                audit_step="discovery",
             )
-
-        # Only ONE call should be made (to /chat), not two (no /conversations/start)
-        assert mock_client.post.call_count == 1, (
-            f"Expected exactly 1 HTTP call, got {mock_client.post.call_count}. "
-            "The old /conversations/start call should be removed."
-        )
 
         call_args = mock_client.post.call_args
         payload = call_args[1].get("json", call_args[0][1] if len(call_args[0]) > 1 else {})
 
-        # Verify conversationMeta is present
-        assert "conversationMeta" in payload, (
-            "Payload must include conversationMeta for Prism conversation auto-creation"
-        )
-        meta = payload["conversationMeta"]
-        assert "title" in meta
-        assert "AAPL" in meta["title"]
-        assert "settings" in meta
-        assert meta["settings"]["model"] == "test-model"
-
+        assert payload["model"] == "test-model"
+        assert "messages" in payload
+        assert payload["stream"] is False
+        assert "options" in payload
+        assert "temperature" in payload["options"]
+        assert payload["format"] == "json"
+        
     @pytest.mark.asyncio
-    async def test_payload_has_conversation_id(self):
-        """Verify payload includes a conversationId UUID."""
+    async def test_response_parsing(self):
+        """Verify the response is parsed from standard Ollama format."""
         from app.services.llm_service import LLMService
 
         svc = LLMService(model_override="test-model")
@@ -125,9 +111,9 @@ class TestSendPrismRequest:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "text": "ok",
-            "thinking": "",
-            "usage": {},
+            "model": "test-model",
+            "message": {"role": "assistant", "content": "The answer is 42"},
+            "eval_count": 20,
         }
         mock_resp.raise_for_status = MagicMock()
 
@@ -136,42 +122,7 @@ class TestSendPrismRequest:
         mock_client.is_closed = False
 
         with patch("app.services.llm_service._get_shared_client", return_value=mock_client):
-            await svc._send_prism_request(
-                messages=[{"role": "user", "content": "Hi"}],
-                response_format="text",
-                max_tokens=100,
-                temperature=0.3,
-            )
-
-        call_args = mock_client.post.call_args
-        payload = call_args[1].get("json", {})
-
-        assert "conversationId" in payload
-        assert isinstance(payload["conversationId"], str)
-        assert len(payload["conversationId"]) == 36  # UUID format
-
-    @pytest.mark.asyncio
-    async def test_response_parsing_unchanged(self):
-        """Verify the response is parsed the same way (text, thinking, usage)."""
-        from app.services.llm_service import LLMService
-
-        svc = LLMService(model_override="test-model")
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "text": "The answer is 42",
-            "thinking": "Let me think...",
-            "usage": {"inputTokens": 50, "outputTokens": 20},
-        }
-        mock_resp.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        mock_client.is_closed = False
-
-        with patch("app.services.llm_service._get_shared_client", return_value=mock_client):
-            result = await svc._send_prism_request(
+            result = await svc._send_ollama_request(
                 messages=[{"role": "user", "content": "What is 6*7?"}],
                 response_format="text",
                 max_tokens=100,

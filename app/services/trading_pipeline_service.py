@@ -25,7 +25,7 @@ from app.services.execution_service import ExecutionService
 from app.services.paper_trader import PaperTrader
 from app.services.symbol_filter import get_filter_pipeline
 from app.services.trading_agent import TradingAgent
-from app.services.WorkflowService import WorkflowTracker
+
 from app.utils.logger import logger
 
 

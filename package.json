@@ -1,0 +1,13 @@
+{
+  "name": "lazy-trading-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "./venv/bin/python server.py",
+    "dev:frontend": "cd ui && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

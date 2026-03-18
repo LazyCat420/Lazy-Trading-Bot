@@ -1,0 +1,29 @@
+{
+  "ab": {
+    "test": "ab_comparison",
+    "passed": true,
+    "checks": [],
+    "brain_loop": {
+      "action": "BUY",
+      "confidence": 0.74,
+      "elapsed_s": 133.47,
+      "turns": 3,
+      "rationale_len": 872,
+      "has_thesis": true,
+      "cites_data": false,
+      "memos": 5,
+      "contradictions": 3
+    },
+    "legacy": {
+      "action": "HOLD",
+      "confidence": 0.65,
+      "elapsed_s": 28.48,
+      "turns": 2,
+      "rationale_len": 490,
+      "has_thesis": true,
+      "cites_data": true
+    },
+    "quality_a": 4,
+    "quality_b": 3
+  }
+}

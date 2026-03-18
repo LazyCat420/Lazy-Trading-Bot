@@ -86,9 +86,6 @@ class LLMConfigRequest(BaseModel):
     llm_provider: str | None = None
     ollama_url: str | None = None
     vllm_url: str | None = None
-    prism_url: str | None = None
-    prism_secret: str | None = None
-    prism_project: str | None = None
     model: str | None = None
     context_size: int | None = None
     temperature: float | None = None
@@ -700,7 +697,7 @@ async def update_llm_config(req: LLMConfigRequest) -> dict:
 
         if not bot_for_model:
             # Auto-create a bot entry for this model
-            _prov = merged.get("llm_provider", "prism")
+            _prov = merged.get("llm_provider", "ollama")
             if _prov == "vllm":
                 _prov_url = merged.get("vllm_url", "http://10.0.0.30:8000")
                 _prov_name = "vllm"
@@ -760,9 +757,8 @@ async def get_llm_models(
 ) -> dict:
     """Fetch available models.
 
-    Uses Prism /config by default.  If a custom Ollama URL is provided
-    (frontend testing), queries that URL directly.
-    When provider=vllm, queries the vLLM server's /v1/models endpoint.
+    Uses Ollama /api/tags by default. If provider=vllm, queries the vLLM
+    server's /v1/models endpoint instead.
     """
     # ── vLLM provider ──
     if provider == "vllm":
@@ -775,21 +771,12 @@ async def get_llm_models(
             "connected": len(models) > 0,
         }
 
-    if url:
-        # Direct Ollama query — used when testing a custom URL
-        models = await LLMService.fetch_models(url)
-        return {
-            "provider": "ollama",
-            "url": url,
-            "models": models,
-            "connected": len(models) > 0,
-        }
-
-    # Default: fetch from Prism
-    models = await LLMService.fetch_models_from_prism()
+    # Default: fetch from Ollama
+    ollama_url = url or settings.OLLAMA_URL
+    models = await LLMService.fetch_models(ollama_url)
     return {
         "provider": "ollama",
-        "url": settings.PRISM_URL,
+        "url": ollama_url,
         "models": models,
         "connected": len(models) > 0,
     }
@@ -1222,13 +1209,12 @@ def _set_active_bot(bot_id: str) -> None:
         provider = bot.get("provider", "ollama")
         provider_url = bot.get("provider_url", "")
 
-        # Sync LLM provider based on bot's provider field
         if provider == "vllm":
             settings.LLM_PROVIDER = "vllm"
             if provider_url:
                 settings.VLLM_URL = provider_url
         else:
-            settings.LLM_PROVIDER = "prism"
+            settings.LLM_PROVIDER = "ollama"
             if provider_url:
                 settings.OLLAMA_URL = provider_url
 
@@ -1626,8 +1612,11 @@ async def run_full_loop(max_tickers: int = 10) -> dict:
         bot_id=bot_id,
         model_name=settings.LLM_MODEL,
     )
-    # Restore persisted phase toggles so dev-tools settings survive
     _loop.set_phase_toggles(_phase_toggles)
+    
+    # Synchronously mark as running so frontend polling immediately sees it's active
+    _loop._state["running"] = True
+    _loop._state["phase"] = "starting"
 
     async def _run() -> None:
         try:
@@ -1667,6 +1656,8 @@ async def run_discovery_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "discovery"
 
     async def _run() -> None:
         try:
@@ -1693,6 +1684,8 @@ async def run_import_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "import"
 
     async def _run() -> None:
         try:
@@ -1719,6 +1712,8 @@ async def run_analysis_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "analysis"
 
     async def _run() -> None:
         try:
@@ -1745,6 +1740,8 @@ async def run_trading_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "trading"
 
     async def _run() -> None:
         try:
@@ -1771,6 +1768,8 @@ async def run_collection_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "collection"
 
     async def _run() -> None:
         try:
@@ -1797,6 +1796,8 @@ async def run_embedding_phase() -> dict:
         raise HTTPException(status_code=409, detail="Loop is already running")
 
     _loop._reset_state()
+    _loop._state["running"] = True
+    _loop._state["phase"] = "embedding"
 
     async def _run() -> None:
         try:
