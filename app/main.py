@@ -163,7 +163,7 @@ async def health() -> dict:
         "llm": llm_status,
         "config": {
             "model": settings.LLM_MODEL,
-            "base_url": settings.LLM_BASE_URL,
+            "base_url": settings.VLLM_URL if settings.LLM_PROVIDER == "vllm" else settings.OLLAMA_URL,
         },
     }
 

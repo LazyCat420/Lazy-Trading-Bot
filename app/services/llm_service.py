@@ -109,7 +109,9 @@ class LLMService:
 
     @property
     def base_url(self) -> str:
-        return settings.LLM_BASE_URL
+        if settings.LLM_PROVIDER == "vllm":
+            return settings.VLLM_URL
+        return settings.OLLAMA_URL
 
     @property
     def model(self) -> str:

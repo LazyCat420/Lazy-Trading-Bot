@@ -15,7 +15,7 @@ export const usePipelineSocket = () => {
     // Protocol relative websocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // If dev, hitting proxy, else relative
-    const host = import.meta.env.DEV ? 'localhost:8000' : window.location.host;
+    const host = import.meta.env.DEV ? 'localhost:4000' : window.location.host;
     
     ws.current = new WebSocket(`${protocol}//${host}/ws/pipeline`);
     

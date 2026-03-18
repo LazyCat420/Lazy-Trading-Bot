@@ -3,9 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "./venv/bin/python server.py",
-    "dev:frontend": "cd ui && npm run dev"
+    "dev": "npx -y live-server frontend --port=3000 --proxy=/api:http://localhost:4000/api --proxy=/ws:http://localhost:4000/ws --proxy=/health:http://localhost:4000/health --proxy=/ws/pipeline:http://localhost:4000/ws/pipeline",
+    "build:ui": "cd ui && npm run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -98,3 +98,6 @@ node_modules/
 # ── Prism AI Gateway (embedded service) ───────────
 prism/secrets.js
 prism/node_modules/
+example_repos/RedditPurgeScraper
+example_repos/Trading-Terminal
+example_repos/Youtube-News-Extracter

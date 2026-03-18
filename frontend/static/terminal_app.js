@@ -1315,22 +1315,22 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                         <StatCard icon="account_balance"
                             label="Total Portfolio"
-                            value={fmt.usdShort(summary.total_portfolio_value)}
-                            sub={`Across ${summary.bot_count} bots`} />
+                            value={fmt.usdShort(summary.total_portfolio_value || 0)}
+                            sub={`Across ${summary.bot_count || 0} bots`} />
                         <StatCard icon="trending_up"
                             label="Total P&L"
-                            value={`${summary.total_pnl >= 0 ? "+" : ""}${fmt.usdShort(summary.total_pnl)}`}
-                            color={summary.total_pnl >= 0 ? "text-green-400" : "text-red-400"}
-                            sub={`Best: ${summary.best_bot.name}`} />
+                            value={`${(summary.total_pnl || 0) >= 0 ? "+" : ""}${fmt.usdShort(summary.total_pnl || 0)}`}
+                            color={(summary.total_pnl || 0) >= 0 ? "text-green-400" : "text-red-400"}
+                            sub={`Best: ${summary.best_bot?.name || 'N/A'}`} />
                         <StatCard icon="swap_vert"
                             label="Total Trades"
-                            value={summary.total_trades.toLocaleString()}
-                            sub={`Win Rate: ${summary.overall_win_rate}%`} />
+                            value={(summary.total_trades || 0).toLocaleString()}
+                            sub={`Win Rate: ${summary.overall_win_rate || 0}%`} />
                         <StatCard icon="emoji_events"
                             label="Top Bot"
-                            value={summary.best_bot.name}
+                            value={summary.best_bot?.name || 'N/A'}
                             color="text-primary"
-                            sub={`${summary.best_bot.pnl >= 0 ? "+" : ""}${fmt.usdShort(summary.best_bot.pnl)} P&L`} />
+                            sub={`${(summary.best_bot?.pnl || 0) >= 0 ? "+" : ""}${fmt.usdShort(summary.best_bot?.pnl || 0)} P&L`} />
                     </div>
                 )}
 
@@ -6476,10 +6476,10 @@ const DiagnosticsPage = () => {
                 </div>
                 <div className="flex items-center gap-2">
                     {/* Tab nav */}
-                    {["live", "conversations", "dashboard", "pipeline", "system"].map(t => (
-                        <button key={t} onClick={() => { setDiagTab(t); if (t === "conversations") loadConversations(); }}
+                    {["live", "dashboard", "pipeline"].map(t => (
+                        <button key={t} onClick={() => { setDiagTab(t); if (t === "live") loadConversations(); }}
                             className={`px-3 py-1.5 text-[10px] font-bold rounded uppercase tracking-wider transition ${diagTab === t ? "bg-primary/20 text-primary border border-primary/30" : "text-text-muted hover:text-white hover:bg-white/5"}`}>
-                            {t === "live" ? "⚡ Live" : t === "conversations" ? "💬 Conversations" : t === "dashboard" ? "📊 Dashboard" : t === "pipeline" ? "🔀 Pipeline" : "⚙️ System"}
+                            {t === "live" ? "⚡ Live" : t === "dashboard" ? "📊 Dashboard" : "🔀 Pipeline"}
                         </button>
                     ))}
                     <button onClick={() => { loadStats(); loadAudits(); loadPipelineEvents(); loadLlmStats(); loadRecentLogs(); loadLive(); loadWorkflows(); loadConversations(); }} className="px-3 py-1.5 bg-primary/20 hover:bg-primary/30 text-primary text-xs font-bold rounded transition flex items-center gap-1.5">
@@ -6536,8 +6536,10 @@ const DiagnosticsPage = () => {
                     <div className="space-y-6">
                         {/* ═══════════════ LIVE TAB ═══════════════ */}
                         {diagTab === "live" && (<>
-                            {/* Live status bar */}
-                            <div className="glass-card p-4" style={{ borderLeft: "3px solid #22c55e" }}>
+                            <div className="flex gap-4" style={{ minHeight: "500px" }}>
+                            {/* ── Left Box: Live Request Stream ── */}
+                            <div className="flex-1" style={{ minWidth: 0 }}>
+                            <div className="glass-card p-4 h-full" style={{ borderLeft: "3px solid #22c55e" }}>
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
                                         <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
@@ -6647,10 +6649,187 @@ const DiagnosticsPage = () => {
                                     </div>
                                 )}
                             </div>
+                            </div>
+                            {/* ── Right Box: Conversations ── */}
+                            <div style={{ width: "40%", minWidth: 0 }}>
+                            <div className="glass-card p-4 h-full overflow-y-auto" style={{ borderLeft: "3px solid #8b5cf6", maxHeight: "700px", scrollbarWidth: "thin" }}>
+                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                <span className="material-symbols-outlined text-purple-400 text-[16px]">forum</span>
+                                Conversations
+                                <span className="text-[9px] text-text-muted font-normal ml-auto">{convos.length} total</span>
+                            </h3>
+                            {convosLoading ? (
+                                <div className="text-text-muted text-xs text-center py-4">Loading conversations...</div>
+                            ) : convos.length === 0 ? (
+                                <div className="text-center py-8 text-text-muted text-xs">
+                                    <span className="material-symbols-outlined text-[32px] text-text-muted/30 block mb-2">forum</span>
+                                    No conversations recorded yet.
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    {convos.map(c => {
+                                        const isExpanded = expandedConvoId === c.id;
+                                        const provBadge = c.provider === "vllm" ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                                            : c.provider === "prism" ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                                            : "bg-amber-500/20 text-amber-400 border-amber-500/30";
+                                        const duration = c.total_duration_ms >= 1000 ? `${(c.total_duration_ms / 1000).toFixed(1)}s` : `${c.total_duration_ms || 0}ms`;
+                                        return (
+                                            <div key={c.id}>
+                                                <div onClick={() => expandConvo(c.id)}
+                                                    className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer transition text-[10px] font-mono ${isExpanded ? "bg-primary/10 border border-primary/20" : "hover:bg-white/5"}`}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.status === "active" ? "bg-green-400 animate-pulse" : "bg-text-muted/30"}`} />
+                                                    <span className="text-text-muted w-14 shrink-0">
+                                                        {c.created_at ? new Date(c.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                                                    </span>
+                                                    <span className={`text-[8px] font-bold uppercase px-1 py-0 rounded border shrink-0 ${provBadge}`}>{c.provider || "?"}</span>
+                                                    <span className="text-white flex-1 truncate">{c.title || c.agent_step || "—"}</span>
+                                                    <span className="text-amber-400 shrink-0">{(c.total_tokens || 0).toLocaleString()}</span>
+                                                    <span className="text-green-400 shrink-0">{duration}</span>
+                                                    <span className="material-symbols-outlined text-[12px] text-text-muted">{isExpanded ? "expand_less" : "expand_more"}</span>
+                                                </div>
+                                                {isExpanded && expandedConvoData && (
+                                                    <div className="ml-3 mt-1 mb-2 p-2 bg-black/40 rounded-lg border border-primary/20 animate-fadeIn">
+                                                        <div className="grid grid-cols-3 gap-1.5 mb-2">
+                                                            {[
+                                                                { label: "Model", value: expandedConvoData.model || "?", color: "text-blue-300" },
+                                                                { label: "Tokens", value: (expandedConvoData.total_tokens || 0).toLocaleString(), color: "text-amber-400" },
+                                                                { label: "Duration", value: expandedConvoData.total_duration_ms >= 1000 ? `${(expandedConvoData.total_duration_ms / 1000).toFixed(1)}s` : `${expandedConvoData.total_duration_ms || 0}ms`, color: "text-green-400" },
+                                                            ].map(s => (
+                                                                <div key={s.label} className="bg-black/30 rounded px-2 py-1">
+                                                                    <div className="text-[8px] text-text-muted uppercase">{s.label}</div>
+                                                                    <div className={`text-[10px] font-mono font-bold ${s.color}`}>{s.value}</div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        {expandedConvoData.messages && expandedConvoData.messages.length > 0 && (
+                                                            <div>
+                                                                <span className="text-[9px] text-text-muted uppercase mb-1 block">Messages ({expandedConvoData.messages.length})</span>
+                                                                <div className="space-y-1">
+                                                                    {expandedConvoData.messages.map((msg, idx) => (
+                                                                        <div key={idx} className="bg-black/30 rounded p-1.5 border border-border-dark/30">
+                                                                            <div className="flex items-center gap-1.5 mb-1">
+                                                                                <span className="text-[9px] text-primary font-bold">{msg.agent_step || "—"}</span>
+                                                                                <span className="text-[9px] text-amber-400 font-mono">{(msg.tokens_used || 0).toLocaleString()} tok</span>
+                                                                                <span className="text-[9px] text-green-400 font-mono">{msg.execution_time_ms >= 1000 ? `${(msg.execution_time_ms / 1000).toFixed(1)}s` : `${msg.execution_time_ms}ms`}</span>
+                                                                            </div>
+                                                                            {msg.reasoning_content && (
+                                                                                <details className="mb-1">
+                                                                                    <summary className="text-[9px] text-purple-400 cursor-pointer">💭 Thinking ({msg.reasoning_content.length.toLocaleString()} chars)</summary>
+                                                                                    <pre className="text-[9px] text-purple-300/70 font-mono bg-black/50 rounded p-1.5 mt-1 max-h-[30vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.reasoning_content}</pre>
+                                                                                </details>
+                                                                            )}
+                                                                            <pre className="text-[9px] text-text-secondary font-mono bg-black/50 rounded p-1.5 max-h-[30vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.raw_response || ""}</pre>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            </div>
+                            </div>
+                            </div>
                         </>)}
 
                         {/* ═══════════════ PIPELINE TAB ═══════════════ */}
                         {diagTab === "pipeline" && (
+                            <div className="space-y-4">
+                            {/* ── Pipeline Architecture Overview ── */}
+                            <div className="glass-card p-4" style={{ borderLeft: "3px solid #8b5cf6" }}>
+                                <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
+                                    <span className="material-symbols-outlined text-purple-400 text-[16px]">hub</span>
+                                    Pipeline Architecture
+                                    <span className="text-[9px] text-text-muted font-normal ml-2">Trading Bot Data Flow</span>
+                                </h3>
+                                <div className="relative overflow-x-auto" style={{ scrollbarWidth: "thin" }}>
+                                    {(() => {
+                                        const pNodes = [
+                                            { id: "reddit", label: "Reddit", x: 20, y: 10, color: "#f97316", phase: "Sources" },
+                                            { id: "youtube", label: "YouTube", x: 20, y: 60, color: "#ef4444", phase: "Sources" },
+                                            { id: "rss", label: "RSS News", x: 20, y: 110, color: "#3b82f6", phase: "Sources" },
+                                            { id: "sec", label: "SEC 13F", x: 20, y: 160, color: "#6366f1", phase: "Sources" },
+                                            { id: "congress", label: "Congress", x: 20, y: 210, color: "#8b5cf6", phase: "Sources" },
+                                            { id: "discovery", label: "Discovery", x: 200, y: 110, color: "#22c55e", phase: "Phase 1" },
+                                            { id: "watchlist", label: "Watchlist", x: 370, y: 110, color: "#14b8a6", phase: "Phase 2" },
+                                            { id: "yfinance", label: "yFinance", x: 530, y: 50, color: "#3b82f6", phase: "Phase 3" },
+                                            { id: "technical", label: "Technical", x: 530, y: 170, color: "#06b6d4", phase: "Phase 3" },
+                                            { id: "distiller", label: "Distiller", x: 690, y: 110, color: "#f59e0b", phase: "Phase 3" },
+                                            { id: "embedding", label: "RAG / Embed", x: 860, y: 110, color: "#ec4899", phase: "Phase 4" },
+                                            { id: "quant", label: "Quant Engine", x: 1020, y: 30, color: "#10b981", phase: "Phase 5" },
+                                            { id: "deep_analysis", label: "Deep Analysis", x: 1020, y: 110, color: "#f59e0b", phase: "Phase 5" },
+                                            { id: "llm", label: "LLM Service", x: 1020, y: 190, color: "#8b5cf6", phase: "Phase 5" },
+                                            { id: "risk", label: "Risk", x: 1200, y: 80, color: "#ef4444", phase: "Phase 6" },
+                                            { id: "execution", label: "Execution", x: 1200, y: 170, color: "#22c55e", phase: "Phase 6" },
+                                            { id: "trader", label: "Paper Trader", x: 1370, y: 125, color: "#f59e0b", phase: "Phase 6" },
+                                        ];
+                                        const pEdges = [
+                                            ["reddit", "discovery"], ["youtube", "discovery"], ["rss", "discovery"], ["sec", "discovery"], ["congress", "discovery"],
+                                            ["discovery", "watchlist"],
+                                            ["watchlist", "yfinance"], ["watchlist", "technical"],
+                                            ["yfinance", "distiller"], ["technical", "distiller"],
+                                            ["distiller", "embedding"],
+                                            ["embedding", "deep_analysis"], ["embedding", "llm"],
+                                            ["quant", "deep_analysis"],
+                                            ["deep_analysis", "risk"],
+                                            ["llm", "execution"], ["risk", "execution"],
+                                            ["execution", "trader"],
+                                        ];
+                                        const nodeW = 120, nodeH = 36;
+                                        const nMap = {};
+                                        pNodes.forEach(n => nMap[n.id] = n);
+                                        return (
+                                            <svg width="1520" height="260" className="block min-w-[1520px]">
+                                                <defs>
+                                                    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                                                        <polygon points="0 0, 8 3, 0 6" fill="rgba(255,255,255,0.3)" />
+                                                    </marker>
+                                                </defs>
+                                                {pEdges.map(([src, tgt], i) => {
+                                                    const s = nMap[src], t = nMap[tgt];
+                                                    if (!s || !t) return null;
+                                                    const x1 = s.x + nodeW, y1 = s.y + nodeH / 2;
+                                                    const x2 = t.x, y2 = t.y + nodeH / 2;
+                                                    const mx = (x1 + x2) / 2;
+                                                    return <path key={i} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                                                        stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" fill="none" markerEnd="url(#arrowhead)">
+                                                        <animate attributeName="stroke-dashoffset" from="20" to="0" dur="1.5s" repeatCount="indefinite" />
+                                                    </path>;
+                                                })}
+                                                {pNodes.map(n => (
+                                                    <g key={n.id}>
+                                                        <rect x={n.x} y={n.y} width={nodeW} height={nodeH} rx="6"
+                                                            fill="rgba(0,0,0,0.5)" stroke={n.color} strokeWidth="1.5" />
+                                                        <text x={n.x + nodeW / 2} y={n.y + nodeH / 2 + 1} textAnchor="middle"
+                                                            dominantBaseline="middle" fill="white" fontSize="10" fontFamily="monospace" fontWeight="bold">
+                                                            {n.label}
+                                                        </text>
+                                                        <circle cx={n.x + 8} cy={n.y + 8} r="3" fill={n.color} opacity="0.7" />
+                                                    </g>
+                                                ))}
+                                                {/* Phase labels */}
+                                                {[
+                                                    { label: "DATA SOURCES", x: 20, y: 250, color: "#f97316" },
+                                                    { label: "DISCOVERY", x: 200, y: 250, color: "#22c55e" },
+                                                    { label: "IMPORT", x: 370, y: 250, color: "#14b8a6" },
+                                                    { label: "COLLECTION", x: 580, y: 250, color: "#3b82f6" },
+                                                    { label: "RAG", x: 860, y: 250, color: "#ec4899" },
+                                                    { label: "ANALYSIS", x: 1020, y: 250, color: "#f59e0b" },
+                                                    { label: "TRADING", x: 1280, y: 250, color: "#22c55e" },
+                                                ].map(p => (
+                                                    <text key={p.label} x={p.x} y={p.y} fill={p.color} fontSize="8" fontFamily="monospace"
+                                                        fontWeight="bold" opacity="0.6">{p.label}</text>
+                                                ))}
+                                            </svg>
+                                        );
+                                    })()}
+                                </div>
+                            </div>
+                            {/* ── Workflow Runs ── */}
                             <div className="flex gap-4" style={{ minHeight: "600px" }}>
                                 {/* ── Workflow List Sidebar ── */}
                                 <div className="w-64 shrink-0 glass-card p-3 overflow-y-auto" style={{ maxHeight: "700px", scrollbarWidth: "thin" }}>
@@ -6797,281 +6976,11 @@ const DiagnosticsPage = () => {
                                     })()}
                                 </div>
                             </div>
+                            </div>
                         )}
 
-                        {/* ═══════════════ SYSTEM TAB ═══════════════ */}
-                        {diagTab === "system" && (<>
-                        {/* ── Database Table Sizes (compact) ────────────── */}
-                        <div className="glass-card p-4">
-                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
-                                <span className="material-symbols-outlined text-primary text-[16px]">database</span>
-                                Database Table Sizes
-                            </h3>
-                            <div className="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 gap-2">
-                                {Object.entries(stats.counts || {}).map(([table, count]) => (
-                                    <div key={table} className="bg-black/30 rounded px-2 py-1.5 text-center border border-border-dark/50">
-                                        <div className={`text-sm font-bold font-mono ${count > 0 ? "text-green-400" : count < 0 ? "text-red-400" : "text-text-muted"}`}>
-                                            {count >= 0 ? count.toLocaleString() : "N/A"}
-                                        </div>
-                                        <div className="text-[9px] text-text-muted uppercase leading-tight mt-0.5 truncate" title={table.replace(/_/g, " ")}>
-                                            {table.replace(/_/g, " ")}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
 
-                        {/* ── Pipeline Events (parse/repair/tool log) ──── */}
-                        <div className="glass-card p-4">
-                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
-                                <span className="material-symbols-outlined text-primary text-[16px]">terminal</span>
-                                Pipeline Events (Parse / Repair / Tools)
-                            </h3>
-                            {eventsLoading ? (
-                                <div className="text-text-muted text-xs text-center py-3">Loading...</div>
-                            ) : pipelineEvents.length === 0 ? (
-                                <div className="text-center py-4 text-text-muted">
-                                    <div className="text-xs">No pipeline events yet. Run bots to generate data.</div>
-                                </div>
-                            ) : (
-                                <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
-                                    {pipelineEvents.map((evt, idx) => {
-                                        const t = evt.event_type || "";
-                                        const d = typeof evt.event_data === "string" ? JSON.parse(evt.event_data || "{}") : (evt.event_data || {});
-                                        const icon = t.includes("failed") || t.includes("forced_hold") ? "❌"
-                                            : t.includes("succeeded") || t.includes("parse_ok") ? "✅"
-                                            : t.includes("no_tools") ? "⚠️" : "🔧";
-                                        const color = t.includes("failed") || t.includes("forced_hold") ? "text-red-400"
-                                            : t.includes("succeeded") || t.includes("parse_ok") ? "text-green-400"
-                                            : t.includes("no_tools") ? "text-yellow-400" : "text-blue-400";
-                                        return (
-                                            <div key={idx} className="bg-black/30 rounded px-3 py-2 border border-border-dark/50 flex items-start gap-2">
-                                                <span className="text-sm shrink-0 mt-0.5">{icon}</span>
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center justify-between">
-                                                        <span className={`text-[10px] font-bold font-mono ${color}`}>
-                                                            {t.replace("trade_parse:", "").replace("trading_agent:", "")}
-                                                        </span>
-                                                        <span className="text-[9px] text-text-muted shrink-0">
-                                                            {evt.created_at ? new Date(evt.created_at).toLocaleTimeString() : ""}
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-[10px] text-text-muted mt-0.5">
-                                                        {d.symbol && <span className="text-white font-semibold mr-2">{d.symbol}</span>}
-                                                        {evt.bot_id && <span className="mr-2">bot: {renderBotName(evt.bot_id)}</span>}
-                                                        {d.action && <span className="text-primary mr-2">{d.action}</span>}
-                                                        {d.confidence !== undefined && <span className="mr-2">conf={d.confidence}</span>}
-                                                        {d.tools_count !== undefined && <span className="mr-2">tools={d.tools_count}</span>}
-                                                        {d.tools_used && d.tools_used.length > 0 && <span className="text-blue-300">{d.tools_used.join(", ")}</span>}
-                                                    </div>
-                                                    {d.error && (
-                                                        <div className="text-[9px] text-red-400/70 mt-1 font-mono break-all">
-                                                            {d.error.length > 200 ? d.error.substring(0, 200) + "..." : d.error}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
 
-                        <div className="glass-card p-4">
-                            <div className="flex items-center justify-between mb-3">
-                                <h3 className="text-xs font-bold text-white flex items-center gap-2 uppercase tracking-wider">
-                                    <span className="material-symbols-outlined text-primary text-[16px]">verified</span>
-                                    Cross-Bot Audit Reports
-                                </h3>
-                                <button
-                                    onClick={toggleAudit}
-                                    className={`px-3 py-1 text-[10px] font-bold rounded transition ${
-                                        auditEnabled
-                                            ? "bg-green-500/20 text-green-400 hover:bg-green-500/30"
-                                            : "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                                    }`}
-                                >
-                                    {auditEnabled ? "✓ ENABLED" : "✕ DISABLED"}
-                                </button>
-                            </div>
-
-                            {auditsLoading ? (
-                                <div className="text-text-muted text-xs text-center py-4">Loading audits...</div>
-                            ) : audits.length === 0 ? (
-                                <div className="text-center py-6 text-text-muted">
-                                    <span className="material-symbols-outlined text-[32px] block mb-2 opacity-40">search_off</span>
-                                    <div className="text-xs">No audit reports yet.</div>
-                                    <div className="text-[10px] mt-1">Run All bots to generate cross-audits.</div>
-                                </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    {audits.map((audit, idx) => (
-                                        <div key={idx} className="bg-black/30 rounded-lg border border-border-dark/50 p-3">
-                                            <div className="flex items-center justify-between mb-2">
-                                                <div className="flex items-center gap-2">
-                                                    <span className={`text-lg font-bold font-mono ${scoreColor(audit.overall_score || 0)}`}>
-                                                        {(audit.overall_score || 0).toFixed(1)}
-                                                    </span>
-                                                    <span className="text-text-muted text-[10px]">/10</span>
-                                                </div>
-                                                <div className="text-[10px] text-text-muted">
-                                                    {audit.created_at ? new Date(audit.created_at).toLocaleString() : ""}
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-1.5 text-[11px] text-text-muted mb-3 bg-black/40 p-2 rounded-md border border-border-dark/30">
-                                                {renderBotName(audit.audited_bot_id)}
-                                                <span className="italic opacity-60">audited by</span>
-                                                {renderBotName(audit.auditor_bot_id)}
-                                            </div>
-
-                                            {/* Category scores */}
-                                            {audit.categories && (() => {
-                                                let cats = audit.categories;
-                                                if (typeof cats === "string") try { cats = JSON.parse(cats); } catch(e) { cats = {}; }
-                                                return Object.keys(cats).length > 0 ? (
-                                                    <div className="grid grid-cols-3 gap-1.5 mb-2">
-                                                        {Object.entries(cats).map(([cat, data]) => {
-                                                            const s = typeof data === "object" ? data.score : data;
-                                                            const reason = typeof data === "object" ? data.reason : "";
-                                                            return (
-                                                                <div key={cat} className="bg-black/40 rounded px-2 py-1" title={reason}>
-                                                                    <div className={`text-xs font-bold font-mono ${scoreColor(s || 0)}`}>{s || 0}</div>
-                                                                    <div className="text-[8px] text-text-muted uppercase truncate">{cat.replace(/_/g, " ")}</div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                ) : null;
-                                            })()}
-
-                                            {/* Recommendations */}
-                                            {audit.recommendations && (() => {
-                                                let recs = audit.recommendations;
-                                                if (typeof recs === "string") try { recs = JSON.parse(recs); } catch(e) { recs = []; }
-                                                return recs.length > 0 ? (
-                                                    <div className="mt-1">
-                                                        <div className="text-[9px] text-text-muted uppercase mb-1">Recommendations</div>
-                                                        {recs.slice(0, 3).map((r, i) => (
-                                                            <div key={i} className="text-[10px] text-yellow-300/70 flex items-start gap-1">
-                                                                <span className="shrink-0">→</span>
-                                                                <span>{r}</span>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                ) : null;
-                                            })()}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                        </>)}
-
-                        {/* ═══════════════ CONVERSATIONS TAB ═══════════════ */}
-                        {diagTab === "conversations" && (<>
-                        <div className="glass-card p-4">
-                            <h3 className="text-xs font-bold text-white mb-3 flex items-center gap-2 uppercase tracking-wider">
-                                <span className="material-symbols-outlined text-primary text-[16px]">forum</span>
-                                LLM Conversations
-                                <span className="text-[9px] text-text-muted font-normal ml-auto">{convos.length} total</span>
-                            </h3>
-                            {convosLoading ? (
-                                <div className="text-text-muted text-xs text-center py-4">Loading conversations...</div>
-                            ) : convos.length === 0 ? (
-                                <div className="text-center py-8 text-text-muted text-xs">
-                                    <span className="material-symbols-outlined text-[32px] text-text-muted/30 block mb-2">forum</span>
-                                    No conversations recorded yet. Run a trading cycle to see LLM conversations here.
-                                </div>
-                            ) : (
-                                <div className="space-y-1">
-                                    {convos.map(c => {
-                                        const isExpanded = expandedConvoId === c.id;
-                                        const provBadge = c.provider === "vllm" ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-                                            : c.provider === "prism" ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
-                                            : "bg-amber-500/20 text-amber-400 border-amber-500/30";
-                                        const statusColor = c.status === "active" ? "text-green-400" : "text-text-muted";
-                                        const tokPerSec = c.tokens_per_second ? c.tokens_per_second.toFixed(1) : "—";
-                                        const duration = c.total_duration_ms >= 1000 ? `${(c.total_duration_ms / 1000).toFixed(1)}s` : `${c.total_duration_ms || 0}ms`;
-                                        return (
-                                            <div key={c.id}>
-                                                <div onClick={() => expandConvo(c.id)}
-                                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-[10px] font-mono ${isExpanded ? "bg-primary/10 border border-primary/20" : "hover:bg-white/5"}`}>
-                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.status === "active" ? "bg-green-400 animate-pulse" : "bg-text-muted/30"}`} />
-                                                    <span className="text-text-muted w-16 shrink-0">
-                                                        {c.created_at ? new Date(c.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
-                                                    </span>
-                                                    <span className={`text-[8px] font-bold uppercase px-1.5 py-0 rounded border shrink-0 ${provBadge}`}>{c.provider || "?"}</span>
-                                                    <span className="text-blue-300 w-28 truncate shrink-0" title={c.model}>{c.model || "?"}</span>
-                                                    {c.ticker && <span className="text-primary font-bold w-12 shrink-0">${c.ticker}</span>}
-                                                    <span className="text-white flex-1 truncate">{c.title || c.agent_step || "—"}</span>
-                                                    <span className="text-amber-400 w-16 text-right shrink-0">{(c.total_tokens || 0).toLocaleString()} tok</span>
-                                                    <span className="text-cyan-400 w-16 text-right shrink-0">{tokPerSec} t/s</span>
-                                                    <span className="text-green-400 w-14 text-right shrink-0">{duration}</span>
-                                                    <span className={`w-4 text-right ${statusColor}`}>
-                                                        <span className="material-symbols-outlined text-[12px]">{isExpanded ? "expand_less" : "expand_more"}</span>
-                                                    </span>
-                                                </div>
-                                                {isExpanded && expandedConvoData && (
-                                                    <div className="ml-6 mt-1 mb-2 p-3 bg-black/40 rounded-lg border border-primary/20 animate-fadeIn">
-                                                        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 mb-3">
-                                                            {[
-                                                                { label: "Provider", value: expandedConvoData.provider || "?", color: expandedConvoData.provider === "vllm" ? "text-cyan-400" : "text-purple-400" },
-                                                                { label: "Model", value: expandedConvoData.model || "?", color: "text-blue-300" },
-                                                                { label: "Ticker", value: expandedConvoData.ticker || "—", color: "text-primary" },
-                                                                { label: "Tokens", value: (expandedConvoData.total_tokens || 0).toLocaleString(), color: "text-amber-400" },
-                                                                { label: "Tok/s", value: expandedConvoData.tokens_per_second ? expandedConvoData.tokens_per_second.toFixed(1) : "—", color: "text-cyan-400" },
-                                                                { label: "Duration", value: expandedConvoData.total_duration_ms >= 1000 ? `${(expandedConvoData.total_duration_ms / 1000).toFixed(1)}s` : `${expandedConvoData.total_duration_ms || 0}ms`, color: "text-green-400" },
-                                                            ].map(s => (
-                                                                <div key={s.label} className="bg-black/30 rounded px-2 py-1.5">
-                                                                    <div className="text-[8px] text-text-muted uppercase">{s.label}</div>
-                                                                    <div className={`text-[11px] font-mono font-bold ${s.color}`}>{s.value}</div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                        {expandedConvoData.system_prompt && (
-                                                            <div className="mb-2">
-                                                                <div className="flex items-center justify-between mb-1">
-                                                                    <span className="text-[9px] text-text-muted uppercase">System Prompt</span>
-                                                                    <button className="text-[9px] text-primary/60 hover:text-primary flex items-center gap-0.5" onClick={() => navigator.clipboard.writeText(expandedConvoData.system_prompt)}>
-                                                                        <span className="material-symbols-outlined text-[10px]">content_copy</span> Copy
-                                                                    </button>
-                                                                </div>
-                                                                <pre className="text-[10px] text-text-secondary font-mono bg-black/50 rounded p-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{expandedConvoData.system_prompt}</pre>
-                                                            </div>
-                                                        )}
-                                                        {expandedConvoData.messages && expandedConvoData.messages.length > 0 && (
-                                                            <div>
-                                                                <span className="text-[9px] text-text-muted uppercase mb-1 block">Audit Log Messages ({expandedConvoData.messages.length})</span>
-                                                                <div className="space-y-1">
-                                                                    {expandedConvoData.messages.map((msg, idx) => (
-                                                                        <div key={idx} className="bg-black/30 rounded p-2 border border-border-dark/30">
-                                                                            <div className="flex items-center gap-2 mb-1">
-                                                                                <span className="text-[9px] text-primary font-bold">{msg.agent_step || "—"}</span>
-                                                                                <span className="text-[9px] text-amber-400 font-mono">{(msg.tokens_used || 0).toLocaleString()} tok</span>
-                                                                                <span className="text-[9px] text-green-400 font-mono">{msg.execution_time_ms >= 1000 ? `${(msg.execution_time_ms / 1000).toFixed(1)}s` : `${msg.execution_time_ms}ms`}</span>
-                                                                                <span className="text-[9px] text-text-muted ml-auto">{msg.created_at ? new Date(msg.created_at).toLocaleString() : ""}</span>
-                                                                            </div>
-                                                                            {msg.reasoning_content && (
-                                                                                <details className="mb-1">
-                                                                                    <summary className="text-[9px] text-purple-400 cursor-pointer">💭 Thinking ({msg.reasoning_content.length.toLocaleString()} chars)</summary>
-                                                                                    <pre className="text-[9px] text-purple-300/70 font-mono bg-black/50 rounded p-1.5 mt-1 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.reasoning_content}</pre>
-                                                                                </details>
-                                                                            )}
-                                                                            <pre className="text-[9px] text-text-secondary font-mono bg-black/50 rounded p-1.5 max-h-[50vh] overflow-y-auto whitespace-pre-wrap" style={{ scrollbarWidth: "thin" }}>{msg.raw_response || ""}</pre>
-                                                                        </div>
-                                                                    ))}
-                                                                </div>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-                        </>)}
 
                         {/* ═══════════════ DASHBOARD TAB ═══════════════ */}
                         {diagTab === "dashboard" && (<>
