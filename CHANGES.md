@@ -35,3 +35,10 @@
 
 ## Frontend Bug Fixes
 - **Autobot Monitor Type Error:** Fixed an `Uncaught TypeError` in `terminal_app.js` (`(portfolio.positions || []).flatMap is not a function`) by parsing `portfolio.positions` safely to handle both legacy array formats and new dictionary (object) formats.
+- **Python Service Lock Fix:** Terminated a hung, detached Python process preventing subsequent Uvicorn restarts from acquiring the DuckDB connection lock.
+- **Telemetry Import Missing Error:** Fixed a runtime crash during autonomous discovery execution by adding a missing `track_class_telemetry` import statement on `symbol_filter.py` referencing `unified_logger`.
+
+## Ticker Data Tab Endpoint Fixes
+- **ChartWidget**: Changed price data source from `/api/dashboard/prices/` (empty MongoDB) to `/api/python/prices/` (DuckDB via proxy) so stock charts actually render.
+- **fetchReddit**: Changed from `/api/dashboard/reddit/` to `/api/python/reddit/` and fixed response field mapping from `data.mentions` to `data.posts || data.mentions`.
+- **fetchDossier**: Changed from `/api/dossiers/` (returns error on Node) to `/api/python/dossier/` (proxied to Python backend which has the actual dossier data).

@@ -588,7 +588,7 @@ const ChartWidget = ({ symbol, height = 400, days = 365 }) => {
 
         const loadChart = async () => {
             try {
-                const res = await fetch(`/api/dashboard/prices/${symbol}?days=${days}`);
+                const res = await fetch(`/api/python/prices/${symbol}?days=${days}`);
                 const json = await res.json();
                 const prices = json.prices || [];
                 if (prices.length === 0) return;
@@ -847,10 +847,10 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchReddit = async () => {
         try {
-            const res = await fetch(`/api/dashboard/reddit/${ticker}`);
+            const res = await fetch(`/api/python/reddit/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
-                setRedditMentions(data.mentions || []);
+                setRedditMentions(data.posts || data.mentions || []);
             }
         } catch (e) { console.error(e); } finally { setLoadingReddit(false); }
     };
@@ -4349,7 +4349,7 @@ const useMonitorData = () => {
     const fetchDossier = async (ticker) => {
         setDossierLoading(true);
         try {
-            const res = await fetch(`/api/dossiers/${ticker}`);
+            const res = await fetch(`/api/python/dossier/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setDossierData(data);

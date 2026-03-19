@@ -20,6 +20,7 @@ from typing import Any, NamedTuple
 
 from app.database import get_db
 from app.utils.logger import logger
+from app.services.unified_logger import track_class_telemetry
 
 
 # ── Result type returned by every filter ─────────────────────────
