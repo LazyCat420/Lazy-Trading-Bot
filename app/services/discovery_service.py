@@ -5,6 +5,7 @@ Runs all collectors IN PARALLEL, merges scores, persists to DuckDB.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import time
 from datetime import datetime
@@ -21,6 +22,7 @@ from app.services.youtube_service import YouTubeCollector
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class DiscoveryService:
     """Orchestrates ticker discovery from all sources."""
 

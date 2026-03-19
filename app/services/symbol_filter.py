@@ -4,6 +4,7 @@ Every ticker must pass through this pipeline before entering the DB.
 Filters run in order; first failure short-circuits.
 
 Usage:
+from app.services.unified_logger import track_class_telemetry, track_telemetry
     from app.services.symbol_filter import get_filter_pipeline
     pipeline = get_filter_pipeline()
     result = pipeline.run("$READ", {"source": "discovery"})
@@ -22,6 +23,7 @@ from app.utils.logger import logger
 
 
 # ── Result type returned by every filter ─────────────────────────
+@track_class_telemetry
 class FilterResult(NamedTuple):
     passed: bool
     reason: str   # e.g. "exclusion_list", "format", "user_excluded"
@@ -30,6 +32,7 @@ class FilterResult(NamedTuple):
 
 # ── Individual Filters ───────────────────────────────────────────
 
+@track_class_telemetry
 class NormalizeFilter:
     """Strip '$', trim, uppercase, collapse whitespace."""
 
@@ -42,6 +45,7 @@ class NormalizeFilter:
         return FilterResult(True, "", sym)
 
 
+@track_class_telemetry
 class FormatFilter:
     """Regex: 1–10 uppercase alphanumerics, dots, hyphens."""
 
@@ -55,6 +59,7 @@ class FormatFilter:
         return FilterResult(True, "", symbol)
 
 
+@track_class_telemetry
 class ExclusionListFilter:
     """Reuse TickerValidator.EXCLUSION_LIST — instant O(1) lookup."""
 
@@ -68,6 +73,7 @@ class ExclusionListFilter:
         return FilterResult(True, "", symbol)
 
 
+@track_class_telemetry
 class ForeignExchangeFilter:
     """Reject non-US exchange suffixes (.MX, .L, .TO, etc)."""
 
@@ -85,6 +91,7 @@ class ForeignExchangeFilter:
         return FilterResult(True, "", symbol)
 
 
+@track_class_telemetry
 class UserExclusionFilter:
     """Check user_exclusions table (bot-scoped)."""
 
@@ -96,6 +103,7 @@ class UserExclusionFilter:
         return FilterResult(True, "", symbol)
 
 
+@track_class_telemetry
 class AssetCheckFilter:
     """yFinance fast_info — has price > 0?
 
@@ -138,6 +146,7 @@ class AssetCheckFilter:
             )
 
 
+@track_class_telemetry
 class BlacklistFilter:
     """Check the persistent ticker_blacklist table — O(1) via in-memory cache.
 
@@ -178,6 +187,7 @@ class BlacklistFilter:
 
 # ── Pipeline ─────────────────────────────────────────────────────
 
+@track_class_telemetry
 class FilterPipeline:
     """Run filters in sequence; first failure short-circuits."""
 
@@ -304,6 +314,7 @@ def _log_rejection(
 
 # ── User Exclusions Service ──────────────────────────────────────
 
+@track_class_telemetry
 class UserExclusionsService:
     """CRUD for the user_exclusions table."""
 
@@ -391,6 +402,7 @@ class UserExclusionsService:
 
 # ── Blacklist Service ────────────────────────────────────────────
 
+@track_class_telemetry
 class BlacklistService:
     """Manages the persistent ticker_blacklist table."""
 

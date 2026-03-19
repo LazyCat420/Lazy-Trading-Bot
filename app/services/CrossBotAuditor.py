@@ -11,6 +11,7 @@ Key design:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import random
 from datetime import datetime
@@ -76,6 +77,7 @@ Return JSON:
 }}"""
 
 
+@track_class_telemetry
 class CrossBotAuditor:
   """Randomly selects a different bot to audit another bot's work."""
 

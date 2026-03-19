@@ -10,6 +10,7 @@ Non-ambiguous tickers (e.g. NVDA, AAPL) pass through untouched.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 from typing import Any
 
@@ -116,6 +117,7 @@ Return ONLY a JSON object mapping each ticker to true (confirmed stock) or false
 {{"AI": false, "NVDA": true}}"""
 
 
+@track_class_telemetry
 class ContextDisambiguator:
   """Validates ambiguous tickers against their source text using LLM."""
 

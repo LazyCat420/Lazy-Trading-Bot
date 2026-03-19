@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import json
 from datetime import datetime
@@ -22,6 +23,7 @@ from app.services.youtube_service import YouTubeCollector
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class PipelineResult:
     """Result of a data collection pipeline run."""
 
@@ -39,6 +41,7 @@ class PipelineResult:
         }
 
 
+@track_class_telemetry
 class PipelineService:
     """Orchestrates the full trading analysis pipeline for a single ticker.
 

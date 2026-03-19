@@ -13,6 +13,7 @@ Strategy (mirrors the proven Youtube-News-Extracter approach):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import re
 import subprocess
@@ -26,6 +27,7 @@ from app.models.market_data import YouTubeTranscript
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class YouTubeCollector:
     """Collects YouTube transcripts for stock analysis videos.
 

@@ -11,6 +11,7 @@ assistant to identify exactly what needs fixing in the pipeline.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.utils.logger import logger
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 
 
+@track_class_telemetry
 class ImprovementFeed:
   """Aggregates pipeline diagnostics into an AI-readable improvement feed."""
 

@@ -325,7 +325,7 @@ const useTerminalData = () => {
     // Fetch overview for each ticker
     const fetchOverview = useCallback(async (ticker) => {
         try {
-            const res = await fetch(`/api/dashboard/overview/${ticker}`);
+            const res = await fetch(`/api/python/overview/${ticker}`);
             const data = await res.json();
             setOverviewCache(prev => {
                 const existing = prev[ticker] || {};
@@ -514,7 +514,7 @@ const useTerminalData = () => {
     // ── Load cached analysis from disk (instant, no LLM) ──
     const loadCachedAnalysis = useCallback(async (ticker) => {
         try {
-            const res = await fetch(`/api/dashboard/analysis/${encodeURIComponent(ticker)}`);
+            const res = await fetch(`/api/python/analysis/${encodeURIComponent(ticker)}`);
             const data = await res.json();
             if (data.cached && data.agents) {
                 setStreamAgents(data.agents);
@@ -779,7 +779,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchOverview = async () => {
         try {
-            const res = await fetch(`/api/dashboard/overview/${ticker}`);
+            const res = await fetch(`/api/python/overview/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setOverview(data);
@@ -789,7 +789,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchNews = async () => {
         try {
-            const res = await fetch(`/api/dashboard/news/${ticker}`);
+            const res = await fetch(`/api/python/news/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setNews(data.articles || []);
@@ -799,7 +799,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchYouTube = async () => {
         try {
-            const res = await fetch(`/api/dashboard/youtube/${ticker}`);
+            const res = await fetch(`/api/python/youtube/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setVideos(data.videos || []);
@@ -809,7 +809,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchTechnicals = async () => {
         try {
-            const res = await fetch(`/api/dashboard/technicals/${ticker}`);
+            const res = await fetch(`/api/python/technicals/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setTechnicals(data.technicals?.[0] || null);
@@ -819,7 +819,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchFinancials = async () => {
         try {
-            const res = await fetch(`/api/dashboard/financials/${ticker}`);
+            const res = await fetch(`/api/python/financials/${ticker}`);
             if (res.ok) {
                 setFinancials(await res.json());
             }
@@ -828,7 +828,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchRisk = async () => {
         try {
-            const res = await fetch(`/api/dashboard/risk/${ticker}`);
+            const res = await fetch(`/api/python/risk/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setRiskData(data.metrics || {});
@@ -838,7 +838,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchAnalyst = async () => {
         try {
-            const res = await fetch(`/api/dashboard/analyst/${ticker}`);
+            const res = await fetch(`/api/python/analyst/${ticker}`);
             if (res.ok) {
                 setAnalystData(await res.json());
             }
@@ -5561,7 +5561,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                         ),
                         // Open Positions Count
                         React.createElement("div", { className: "glass-card p-4 text-center" },
-                            React.createElement("div", { className: "text-2xl font-bold font-mono text-blue-400" }, portfolio.positions_count),
+                            React.createElement("div", { className: "text-2xl font-bold font-mono text-blue-400" }, portfolio.positions_count ?? (portfolio.positions ? Object.keys(portfolio.positions).length : 0)),
                             React.createElement("div", { className: "text-[10px] text-text-muted uppercase mt-1" }, "Open Positions")
                         ),
                         // Realized PnL
@@ -5601,9 +5601,9 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     portfolio && React.createElement("div", { className: "glass-card overflow-hidden" },
                         React.createElement("div", { className: "px-4 py-3 border-b border-border-dark bg-onyx-panel flex items-center gap-2" },
                             React.createElement("span", { className: "material-symbols-outlined text-[16px] text-blue-400" }, "trending_up"),
-                            React.createElement("h3", { className: "text-sm font-bold text-white" }, `Open Positions (${portfolio.positions_count})`)
+                            React.createElement("h3", { className: "text-sm font-bold text-white" }, `Open Positions (${portfolio.positions_count ?? (portfolio.positions ? Object.keys(portfolio.positions).length : 0)})`)
                         ),
-                        portfolio.positions_count === 0
+                        (portfolio.positions_count ?? (portfolio.positions ? Object.keys(portfolio.positions).length : 0)) === 0
                             ? React.createElement("div", { className: "p-8 text-center" },
                                 React.createElement("span", { className: "material-symbols-outlined text-4xl text-text-muted mb-2 block" }, "inbox"),
                                 React.createElement("p", { className: "text-sm text-text-muted" }, "No open positions"),
@@ -5623,7 +5623,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
                                     )
                                 ),
                                 React.createElement("tbody", null,
-                                    ...(portfolio.positions || []).flatMap((pos, i) => [
+                                    ...(Array.isArray(portfolio.positions) ? portfolio.positions : Object.values(portfolio.positions || {})).flatMap((pos, i) => [
                                         React.createElement("tr", {
                                             key: pos.ticker,
                                             className: `border-b border-border-dark/50 hover:bg-onyx-surface cursor-pointer transition-colors ${i % 2 === 0 ? "" : "bg-white/[0.01]"} ${expandedPosTicker === pos.ticker ? "bg-onyx-surface" : ""}`,

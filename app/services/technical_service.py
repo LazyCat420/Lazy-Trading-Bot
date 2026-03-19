@@ -7,9 +7,11 @@ Computes ALL 154 pandas-ta indicators using the 'All' strategy, storing:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 
 import pandas as pd
+import numpy as np
 import pandas_ta as ta
 
 from app.database import get_db
@@ -17,6 +19,7 @@ from app.models.market_data import TechnicalRow
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class TechnicalComputer:
     """Computes technical indicators from stored price history.
 
@@ -85,6 +88,23 @@ class TechnicalComputer:
         df = pd.DataFrame(raw, columns=cols)
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date").sort_index()
+
+        # --- Sanitize dataframe to prevent pandas-ta C-level segfaults ---
+        # 1. Forward-fill and back-fill NaNs
+        df.ffill(inplace=True)
+        df.bfill(inplace=True)
+        
+        # 2. Ensure volume is strictly > 0 (log10(0) causes issues in some TA libs)
+        # We use a small positive number instead of 0 to avoid -inf
+        df["volume"] = df["volume"].replace(0, 1)
+        
+        # 3. Prevent zero-variance flatlines (which cause divide-by-zero in normalizations/Z-scores)
+        for col in ["open", "high", "low", "close"]:
+            if df[col].std() == 0:
+                # Add microscopic noise to break zero variance without affecting real calculations
+                noise = np.random.normal(0, 1e-6, len(df))
+                df[col] = df[col] + noise
+        # -----------------------------------------------------------------
 
         # ================================================================
         # Run ALL pandas-ta indicators via the "All" study

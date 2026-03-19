@@ -16,6 +16,7 @@ Performance architecture (P0–P6 audit fixes):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ from app.config import settings
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class EmbeddingService:
     """Embeds text chunks via Ollama and stores them in DuckDB."""
 

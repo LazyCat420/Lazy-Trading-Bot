@@ -7,6 +7,7 @@ Requires SPY data for beta/alpha/correlation calculations.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from dataclasses import dataclass
 from datetime import date
 
@@ -18,6 +19,7 @@ from app.utils.logger import logger
 
 
 @dataclass
+@track_class_telemetry
 class RiskMetrics:
     """Container for all computed risk metrics."""
 
@@ -69,6 +71,7 @@ class RiskMetrics:
         return {k: v for k, v in self.__dict__.items()}
 
 
+@track_class_telemetry
 class RiskComputer:
     """Computes quantitative risk metrics from stored price history.
 

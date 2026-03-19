@@ -8,6 +8,7 @@ Pure math — no LLM calls.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from datetime import datetime, timedelta
 
 from app.utils.logger import logger
@@ -23,6 +24,7 @@ def _get_conn():
     return get_db()
 
 
+@track_class_telemetry
 class CircuitBreaker:
     """Daily drawdown circuit breaker.
 

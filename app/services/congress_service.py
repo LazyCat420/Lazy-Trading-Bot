@@ -13,6 +13,7 @@ Auth: CSRF token + session cookie (no API key needed).
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import hashlib
 import time
 from datetime import datetime, timedelta
@@ -42,6 +43,7 @@ REPORT_TYPE_PTR = "[11]"
 MAX_FILING_AGE_DAYS = 90
 
 
+@track_class_telemetry
 class CongressCollector:
     """Collects congressional stock trading data from Senate eFD."""
 

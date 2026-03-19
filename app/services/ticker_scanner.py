@@ -8,6 +8,7 @@ transcripts (every common English word matched as a 'ticker').
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import time
 from datetime import datetime
@@ -100,6 +101,7 @@ Return a JSON object with this structure. FILL IN EVERY FIELD — do not leave a
 If genuinely no trading data in the transcript, set trading_data to null."""
 
 
+@track_class_telemetry
 class TickerScanner:
     """Extracts ticker mentions from YouTube transcripts using LLM."""
 

@@ -4,6 +4,7 @@ and SEC EDGAR filings.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import hashlib
 import re
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from app.models.market_data import NewsArticle
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class NewsCollector:
     """Collects news articles for a ticker from multiple sources."""
 

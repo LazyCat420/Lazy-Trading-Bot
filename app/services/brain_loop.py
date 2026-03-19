@@ -19,6 +19,7 @@ Proof Techniques Applied:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import time
 from typing import Any
@@ -47,6 +48,7 @@ _MIN_VALID_MEMOS = 3
 # Lemma Cache — Technique 4: reusable verified sub-claims
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class LemmaCache:
     """Accumulates verified factual claims across analysis phases.
 
@@ -150,6 +152,7 @@ class LemmaCache:
 # Consistency Validator — Technique 5: post-LLM rule checker
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class ConsistencyValidator:
     """Post-LLM validation layer that checks logic-conclusion consistency.
 
@@ -286,6 +289,7 @@ class ConsistencyValidator:
 # Phase 1: Analyst Agent — domain-specific data digestion
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class AnalystAgent:
     """Runs focused LLM analysis on one data domain at a time."""
 
@@ -403,34 +407,29 @@ class AnalystAgent:
 
     @staticmethod
     async def run_all_domains(
-        domain_data: dict[str, str],
+        master_data: str,
+        domains_to_run: list[str],
         symbol: str,
         lemma_cache: LemmaCache | None = None,
     ) -> list[dict]:
-        """Run all analyst domains sequentially, accumulating lemmas.
+        """Run all analyst domains sequentially, accumulating lemmas using identical shared APC string.
 
         Args:
-            domain_data: mapping of domain name → formatted data string
+            master_data: combined string of all data.
+            domains_to_run: list of domains to run.
             symbol: Ticker symbol
             lemma_cache: Optional lemma cache — creates one if None
 
         Returns:
-            List of memo dicts (one per domain that had data).
+            List of memo dicts (one per domain).
         """
         if lemma_cache is None:
             lemma_cache = LemmaCache()
 
         memos = []
-        for domain, data in domain_data.items():
-            if not data or data.strip() == "":
-                logger.info(
-                    "[BrainLoop] Skipping %s — no data for %s",
-                    domain, symbol,
-                )
-                memos.append(_fallback_memo(domain, "No data available"))
-                continue
+        for domain in domains_to_run:
             memo = await AnalystAgent.analyze_domain(
-                domain, data, symbol, lemma_cache=lemma_cache,
+                domain, master_data, symbol, lemma_cache=lemma_cache,
             )
             memos.append(memo)
 
@@ -445,6 +444,7 @@ class AnalystAgent:
 # Phase 2: Thesis Constructor — inductive synthesis
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class ThesisConstructor:
     """Synthesize analyst memos inductively, gate on prior phase quality."""
 
@@ -637,6 +637,7 @@ class ThesisConstructor:
 # Contradiction Pass — Technique 2: adversarial proof by contradiction
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class ContradictionPass:
     """Run a proof-by-contradiction check on the final decision."""
 
@@ -716,6 +717,7 @@ class ContradictionPass:
 # Phase 3: Decision Agent — thesis → TradeAction JSON
 # ══════════════════════════════════════════════════════════════════
 
+@track_class_telemetry
 class DecisionAgent:
     """Convert a thesis into a final TradeAction decision."""
 
@@ -1254,12 +1256,12 @@ def validate_data_coverage(symbol: str) -> dict:
 
 def validate_memo_citations(
     memos: list[dict],
-    domain_data: dict[str, str],
+    master_data: str,
 ) -> list[dict]:
-    """Cross-check LLM-cited data points against actual input data.
+    """Cross-check LLM-cited data points against actual input data in the master string.
 
     For each memo, verify that the values in `data_cited` actually appear
-    in the raw data that was fed to that domain. Catches hallucinations.
+    in the raw master data. Catches hallucinations.
 
     Returns a list of validation results per memo.
     """
@@ -1267,7 +1269,7 @@ def validate_memo_citations(
     for memo in memos:
         domain = memo.get("domain", "?")
         cited = memo.get("data_cited", [])
-        raw_input = domain_data.get(domain, "")
+        raw_input = master_data
 
         if not cited or not raw_input:
             results.append({

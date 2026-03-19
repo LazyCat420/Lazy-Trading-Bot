@@ -11,6 +11,7 @@ Optimisations (Feb 2026):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import json
 from collections.abc import Callable
@@ -77,6 +78,7 @@ def _retry_on_rate_limit(max_retries: int = 3, base_delay: float = 2.0):
     return decorator
 
 
+@track_class_telemetry
 class YFinanceCollector:
     """Collects all data available from yfinance for a single ticker."""
 

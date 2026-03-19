@@ -14,6 +14,7 @@ Auth: User-Agent header only (required by SEC).
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import re
 import time
@@ -74,6 +75,7 @@ DEFAULT_FILERS: list[dict[str, str]] = [
 ]
 
 
+@track_class_telemetry
 class SEC13FCollector:
     """Collects 13F-HR institutional holdings from SEC EDGAR."""
 

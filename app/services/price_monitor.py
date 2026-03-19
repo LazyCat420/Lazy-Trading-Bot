@@ -6,10 +6,12 @@ when stop-loss, take-profit, or trailing-stop conditions are met.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from app.database import get_db
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class PriceMonitor:
     """Check all active price triggers and fire sells when conditions met."""
 

@@ -1,5 +1,6 @@
 """Service to fetch industry peers using the LLM and yfinance data."""
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 
 from app.models.market_data import FundamentalSnapshot
@@ -8,6 +9,7 @@ from app.services.ticker_validator import TickerValidator
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class PeerFetcher:
     """Uses LLM to identify 3 industry peers for a given stock, validated via yfinance."""
 

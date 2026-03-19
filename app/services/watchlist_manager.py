@@ -11,6 +11,7 @@ Usage (from main.py):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import time
 from datetime import datetime
@@ -22,6 +23,7 @@ from app.services.pipeline_service import PipelineService
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class WatchlistManager:
     """Manages the watchlist — adding, removing, and analyzing tickers."""
 

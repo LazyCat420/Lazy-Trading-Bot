@@ -11,6 +11,7 @@ Architecture (Brain Loop V2 — proof-logic enhanced):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import time
 from datetime import datetime
@@ -52,6 +53,7 @@ def _log_tool_usage(
 
 
 
+@track_class_telemetry
 class TradingAgent:
     """3-phase recursive brain loop per ticker → TradeAction.
 
@@ -138,9 +140,16 @@ class TradingAgent:
 
             # ── Phase 1: Run analyst passes with Lemma Cache ──
             lemma_cache = LemmaCache()
-            logger.info("[BrainLoop] Phase 1: Running %d analyst passes...", len(domain_data))
+            
+            # Construct APC Master String for identical LLM Prefix Caching
+            master_parts = [f"[TICKER UNIFIED CONTEXT - {symbol}]"]
+            for d in domains_found:
+                master_parts.append(f"=== {d.upper()} ===\n{domain_data[d]}")
+            master_string = "\n\n".join(master_parts)
+            
+            logger.info("[BrainLoop] Phase 1: Running %d analyst passes...", len(domains_found))
             memos = await AnalystAgent.run_all_domains(
-                domain_data, symbol, lemma_cache=lemma_cache,
+                master_string, domains_found, symbol, lemma_cache=lemma_cache,
             )
             for m in memos:
                 n_steps = len(m.get("reasoning_steps", []))
@@ -166,7 +175,7 @@ class TradingAgent:
             )
 
             # ── Citation accuracy check ───────────────────────
-            citation_results = validate_memo_citations(memos, domain_data)
+            citation_results = validate_memo_citations(memos, master_string)
             for cr in citation_results:
                 if cr["total_cited"] > 0:
                     logger.info(

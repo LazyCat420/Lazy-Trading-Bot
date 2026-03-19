@@ -9,6 +9,7 @@ Wraps the existing AutonomousLoop in a time-aware schedule:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import uuid
 from datetime import datetime, timedelta
 
@@ -26,6 +27,7 @@ from app.utils.market_hours import is_market_open, market_status
 _ET = "America/New_York"
 
 
+@track_class_telemetry
 class TradingScheduler:
     """Manages the full daily automation schedule."""
 

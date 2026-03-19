@@ -20,6 +20,7 @@ PhD-Level additions (Phase 1A):
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import uuid
 from datetime import datetime
@@ -497,6 +498,7 @@ def generate_flags(
 # Main engine class
 # ---------------------------------------------------------------------------
 
+@track_class_telemetry
 class QuantSignalEngine:
     """Compute a QuantScorecard for a ticker from Phase-1 DuckDB data."""
 

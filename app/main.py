@@ -197,7 +197,7 @@ async def get_improvement_feed(
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest) -> dict:
     """Run the full analysis pipeline for a ticker."""
-    ticker = req.ticker.upper().strip()
+    ticker = req.ticker.upper().strip().lstrip('$')
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker is required")
 
@@ -217,7 +217,7 @@ async def analyze_stream(
     mode: str = Query(default="full"),
 ) -> StreamingResponse:
     """SSE endpoint — streams pipeline progress events in real-time."""
-    ticker = ticker.upper().strip()
+    ticker = ticker.upper().strip().lstrip('$')
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker is required")
 
@@ -283,6 +283,44 @@ async def get_pipeline_snapshot() -> dict:
     """Get the current state of the pipeline nodes."""
     from app.services.autonomous_loop import autonomous_loop
     return autonomous_loop.get_status()
+
+
+@app.get("/api/pipeline/telemetry/latest")
+async def get_latest_telemetry() -> dict:
+    """Get the pipeline node graph execution traces for the run."""
+    db = get_db()
+    
+    # 1) Get the most recent cycle_id
+    recent_cycle = db.execute(
+        "SELECT cycle_id, MAX(timestamp) as ts FROM pipeline_telemetry GROUP BY cycle_id ORDER BY ts DESC LIMIT 1"
+    ).fetchone()
+    
+    if not recent_cycle:
+        return {"cycle_id": None, "steps": []}
+        
+    cycle_id = recent_cycle[0]
+    
+    # 2) Get all steps for this cycle
+    rows = db.execute(
+        "SELECT step_name, status, duration_ms, input_size, output_size, fail_reason, timestamp "
+        "FROM pipeline_telemetry WHERE cycle_id = ? ORDER BY timestamp ASC",
+        [cycle_id]
+    ).fetchall()
+    
+    steps = [
+        {
+            "step_name": r[0],
+            "status": r[1],
+            "duration_ms": r[2],
+            "input_size": r[3],
+            "output_size": r[4],
+            "fail_reason": r[5],
+            "timestamp": r[6].isoformat() if r[6] else None
+        }
+        for r in rows
+    ]
+    
+    return {"cycle_id": cycle_id, "steps": steps}
 
 
 @app.get("/api/watchlist")
@@ -3749,6 +3787,19 @@ async def get_llm_stats() -> dict:
     except Exception:
         overall_tps = 0.0
 
+    # ── Average TTFB ──
+    try:
+        ttfb_row = db.execute("""
+            SELECT AVG(ttfb_ms), PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ttfb_ms)
+            FROM llm_audit_logs
+            WHERE ttfb_ms IS NOT NULL AND ttfb_ms > 0
+        """).fetchone()
+        avg_ttfb_ms = round(ttfb_row[0], 1) if ttfb_row and ttfb_row[0] else None
+        p95_ttfb_ms = round(ttfb_row[1], 1) if ttfb_row and ttfb_row[1] else None
+    except Exception:
+        avg_ttfb_ms = None
+        p95_ttfb_ms = None
+
     # ── Conversation summary from llm_conversations table ──
     try:
         from app.services.ConversationTracker import ConversationTracker
@@ -3766,6 +3817,8 @@ async def get_llm_stats() -> dict:
             "first_request": str(summary[5]) if summary[5] else None,
             "latest_request": str(summary[6]) if summary[6] else None,
             "avg_tok_per_sec": overall_tps,
+            "avg_ttfb_ms": avg_ttfb_ms,
+            "p95_ttfb_ms": p95_ttfb_ms,
         },
         "today": {
             "requests": today_row[0],
@@ -3862,7 +3915,7 @@ async def get_llm_live(
             SELECT id, cycle_id, ticker, agent_step,
                    system_prompt, user_context, raw_response,
                    tokens_used, execution_time_ms, model, provider,
-                   created_at
+                   ttfb_ms, created_at
             FROM llm_audit_logs
             WHERE created_at >= ?
             ORDER BY created_at DESC
@@ -3874,7 +3927,7 @@ async def get_llm_live(
         "id", "cycle_id", "ticker", "agent_step",
         "system_prompt", "user_context", "raw_response",
         "tokens_used", "execution_time_ms", "model", "provider",
-        "created_at",
+        "ttfb_ms", "created_at",
     ]
     requests = []
     for r in rows:

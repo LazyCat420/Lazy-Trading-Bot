@@ -15,6 +15,7 @@ Pipeline:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import json
 import re
@@ -32,6 +33,7 @@ from app.services.ticker_validator import TickerValidator
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class RedditCollector:
     """Scrapes financial subreddits for trending ticker mentions."""
 

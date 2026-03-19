@@ -12,6 +12,7 @@ If no custom prompts exist for a bot, seed defaults are used and stored.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 from typing import Any
 
@@ -86,6 +87,7 @@ SEED_PROMPTS: dict[str, str] = {
 }
 
 
+@track_class_telemetry
 class AgenticExtractor:
   """Multi-step agentic extraction with per-model prompt evolution."""
 

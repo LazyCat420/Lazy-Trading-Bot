@@ -40,6 +40,7 @@ class LLMAuditLogger:
         model: str = "",
         provider: str = "",
         conversation_id: str = "",
+        ttfb_ms: int | None = None,
     ) -> str:
         """Insert a single audit row. Returns the log ID."""
         log_id = str(uuid.uuid4())
@@ -52,8 +53,8 @@ class LLMAuditLogger:
                     system_prompt, user_context, raw_response,
                     reasoning_content, parsed_json, tokens_used,
                     execution_time_ms, model, provider,
-                    conversation_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    conversation_id, ttfb_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     log_id,
@@ -70,13 +71,15 @@ class LLMAuditLogger:
                     model,
                     provider,
                     conversation_id,
+                    ttfb_ms,
                     datetime.now(),
                 ],
             )
             logger.debug(
-                "[LLMAudit] Logged %s: %s/%s (%s %dms, %d tokens%s)",
+                "[LLMAudit] Logged %s: %s/%s (%s %dms, %d tokens, ttfb=%s%s)",
                 log_id[:8], ticker or "global", agent_step, provider or "?",
                 execution_time_ms, tokens_used,
+                f"{ttfb_ms}ms" if ttfb_ms is not None else "N/A",
                 f", reasoning={len(reasoning_content)} chars" if reasoning_content else "",
             )
         except Exception as exc:

@@ -7,6 +7,7 @@ rankings across all bots.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import uuid
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.database import get_db
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class BotRegistry:
     """CRUD and analytics for the bots table."""
 

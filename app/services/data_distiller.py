@@ -12,6 +12,7 @@ instead of trying to parse thousands of numbers.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from typing import Any
 
 import numpy as np
@@ -30,6 +31,7 @@ def _val(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+@track_class_telemetry
 class DataDistiller:
     """Transform raw data into structured LLM-ready analysis packets."""
 

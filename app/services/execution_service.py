@@ -6,6 +6,7 @@ via PaperTrader. Every gate is deterministic and testable.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from datetime import datetime, timedelta
 
 from app.models.trade_action import TradeAction
@@ -22,6 +23,7 @@ _DUPLICATE_WINDOW_MIN = 5  # Block same symbol+side within N minutes
 _recent_trades: list[dict] = []
 
 
+@track_class_telemetry
 class ExecutionService:
     """Deterministic execution with safety gates."""
 

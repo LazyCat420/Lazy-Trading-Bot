@@ -9,6 +9,7 @@ All queries filter by bot_id so multiple bots have isolated portfolios.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import uuid
 from datetime import date, datetime
@@ -19,6 +20,7 @@ from app.models.trading import Order, PortfolioSnapshot
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class PaperTrader:
     """Simulated trading engine — buys/sells are recorded but never real."""
 

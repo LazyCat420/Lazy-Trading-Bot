@@ -1108,6 +1108,8 @@ def _migrate_columns(conn: duckdb.DuckDBPyConnection) -> None:
     # ---- llm_audit_logs: provider + conversation tracking ----
     _add_col("llm_audit_logs", "provider", "VARCHAR DEFAULT ''")
     _add_col("llm_audit_logs", "conversation_id", "VARCHAR DEFAULT ''")
+    # ---- llm_audit_logs: TTFB (time to first token) from Prism ----
+    _add_col("llm_audit_logs", "ttfb_ms", "INTEGER")
     # ---- bots: queue ordering for Run All ----
     _add_col("bots", "queue_order", "INTEGER DEFAULT 0")
 

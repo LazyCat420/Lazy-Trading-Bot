@@ -9,6 +9,7 @@ Creates a per-run audit trail that records:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ _REQUIRED_SCORECARD_FIELDS = [
 ]
 
 
+@track_class_telemetry
 class StrategistAudit:
     """Accumulates audit data during a Portfolio Strategist run."""
 

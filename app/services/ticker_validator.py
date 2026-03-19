@@ -5,11 +5,13 @@ Ensures only real, actively traded stock tickers enter the watchlist.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import yfinance as yf
 
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class TickerValidator:
     """Three-layer validation: exclusion list → yfinance → LLM logic check."""
 

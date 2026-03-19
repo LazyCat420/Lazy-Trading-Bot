@@ -15,6 +15,7 @@ Rate limit: 1s between article extractions (respectful crawling).
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import hashlib
 import re
 import time
@@ -69,6 +70,7 @@ MIN_CONTENT_LENGTH = 100  # Lowered to accept RSS summaries as fallback
 MIN_SUMMARY_LENGTH = 80  # Minimum RSS summary to use as fallback content
 
 
+@track_class_telemetry
 class RSSNewsCollector:
     """Collects full news articles from financial RSS feeds using newspaper3k."""
 

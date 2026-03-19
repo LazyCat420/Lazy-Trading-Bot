@@ -5,6 +5,7 @@ token counting, and duration tracking. This replaces Prism-dependent
 conversation logging so diagnostics are fully self-contained.
 
 Usage (called automatically from LLMService.chat()):
+from app.services.unified_logger import track_class_telemetry, track_telemetry
     from app.services.ConversationTracker import ConversationTracker
 
     conv_id = ConversationTracker.start_conversation(
@@ -38,6 +39,7 @@ def _get_conn():
   return get_db()
 
 
+@track_class_telemetry
 class ConversationTracker:
   """Local conversation tracking — mirrors Prism's conversation model."""
 

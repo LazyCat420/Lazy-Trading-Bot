@@ -11,6 +11,7 @@ Replaces the multi-step PortfolioStrategist loop with:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import contextlib
 import time
 import uuid
@@ -29,6 +30,7 @@ from app.services.trading_agent import TradingAgent
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class TradingPipelineService:
     """One-shot trading pipeline: symbols → decisions → execution."""
 

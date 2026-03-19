@@ -6,6 +6,7 @@ Uses ATR/volatility-based sizing for consistent, testable execution.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import math
 
 from app.utils.logger import logger
@@ -19,6 +20,7 @@ _MIN_QTY = 1                   # Never buy less than 1 share
 _RISK_SCALE = {"LOW": 0.5, "MED": 1.0, "HIGH": 1.5}
 
 
+@track_class_telemetry
 class RiskRules:
     """Deterministic position sizing and risk management."""
 

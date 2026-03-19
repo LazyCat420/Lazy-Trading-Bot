@@ -7,6 +7,7 @@ independently — prompts are NEVER shared between models.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 from typing import Any
 
@@ -46,6 +47,7 @@ TASK: Improve the prompt above based on the performance data.
 - Return ONLY the improved prompt text, nothing else."""
 
 
+@track_class_telemetry
 class PromptEvolver:
   """Evaluates and evolves per-model system prompts."""
 

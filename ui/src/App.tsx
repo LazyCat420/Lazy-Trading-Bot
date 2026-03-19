@@ -9,6 +9,7 @@ import { initialNodes } from './data/initialNodes';
 import { initialEdges } from './data/initialEdges';
 import PipelineNode from './components/nodes/PipelineNode';
 import ChatPanel from './components/chat/ChatPanel';
+import TelemetryPanel from './components/TelemetryPanel';
 import styles from './App.module.scss';
 import { Activity, BotMessageSquare } from 'lucide-react';
 
@@ -72,6 +73,8 @@ function App() {
           </div>
         )}
       </div>
+
+      <TelemetryPanel />
       
       <div className={styles.sidebar}>
         <div className={styles.statusBar}>

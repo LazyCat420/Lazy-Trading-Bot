@@ -5,6 +5,7 @@ Chains:  Discovery → Auto-Import → Data Collection → Deep Analysis → Tra
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -27,6 +28,7 @@ from app.utils.logger import logger
 _ANALYSIS_CACHE_TTL = timedelta(hours=24)
 
 
+@track_class_telemetry
 class AutonomousLoop:
     """Run every phase of the bot in one call."""
 
@@ -108,6 +110,8 @@ class AutonomousLoop:
         self._reset_state()
         t0 = time.time()
         loop_id = start_loop()
+        from app.services.unified_logger import current_cycle_id
+        current_cycle_id.set(loop_id)
         set_bot_context(self.bot_id, self.model_name)
 
         # ── Health tracker for this run ──
@@ -379,6 +383,8 @@ class AutonomousLoop:
         self._reset_state()
         t0 = time.time()
         loop_id = start_loop()
+        from app.services.unified_logger import current_cycle_id
+        current_cycle_id.set(loop_id)
         set_bot_context(self.bot_id, self.model_name or "data-scraper")
 
         self._health = HealthTracker(loop_id=loop_id)
@@ -492,6 +498,8 @@ class AutonomousLoop:
         self._reset_state()
         t0 = time.time()
         loop_id = start_loop()
+        from app.services.unified_logger import current_cycle_id
+        current_cycle_id.set(loop_id)
         set_bot_context(self.bot_id, self.model_name)
 
         self._health = HealthTracker(loop_id=loop_id)

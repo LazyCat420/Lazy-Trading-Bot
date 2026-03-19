@@ -6,6 +6,7 @@ Consumed by the frontend for display in the scheduler panel.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 import uuid
 from datetime import date
@@ -15,6 +16,7 @@ from app.utils.logger import logger
 from app.utils.market_hours import now_et
 
 
+@track_class_telemetry
 class ReportGenerator:
     """Generate pre-market and EOD reports from trading data."""
 

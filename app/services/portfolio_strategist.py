@@ -15,6 +15,7 @@ Uses a structured JSON action loop:
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import json
 
 from app.config import settings
@@ -169,6 +170,7 @@ ACTION_SCHEMA = {
 }
 
 
+@track_class_telemetry
 class PortfolioStrategist:
     """LLM-driven portfolio manager with tool-calling autonomy."""
 

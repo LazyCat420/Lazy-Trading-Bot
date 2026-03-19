@@ -6,6 +6,7 @@ relevant chunks via cosine similarity, and formats them for the LLM prompt.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 from typing import Any
 
 from app.config import settings
@@ -13,6 +14,7 @@ from app.services.embedding_service import EmbeddingService
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class RetrievalService:
     """Retrieve relevant context from embedded data for trading decisions."""
 

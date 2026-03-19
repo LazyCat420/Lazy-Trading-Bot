@@ -47,6 +47,10 @@ RULES:
 
 # ── Domain 1A: Technical Analysis ─────────────────────────────────
 TECHNICAL_PROMPT = """\
+<STATIC_CONTEXT>
+{data}
+</STATIC_CONTEXT>
+
 You are a technical analysis specialist using step-by-step proof reasoning.
 
 PROOF METHOD: Direct proof with step justification.
@@ -61,13 +65,14 @@ support/resistance levels, and any divergences.
 {memo_schema}
 
 {confirmed_lemmas}
-
-DATA:
-{data}
 """
 
 # ── Domain 1B: Fundamental Analysis ───────────────────────────────
 FUNDAMENTAL_PROMPT = """\
+<STATIC_CONTEXT>
+{data}
+</STATIC_CONTEXT>
+
 You are a fundamental analysis specialist using step-by-step proof reasoning.
 
 PROOF METHOD: Direct proof with step justification.
@@ -84,13 +89,14 @@ balance sheet health (debt/equity, cash vs debt), growth trajectory
 {memo_schema}
 
 {confirmed_lemmas}
-
-DATA:
-{data}
 """
 
 # ── Domain 1C: Sentiment & News Analysis ──────────────────────────
 SENTIMENT_PROMPT = """\
+<STATIC_CONTEXT>
+{data}
+</STATIC_CONTEXT>
+
 You are a market sentiment analyst using step-by-step proof reasoning.
 
 PROOF METHOD: Direct proof with step justification.
@@ -105,13 +111,14 @@ community conviction level, and information quality (are sources credible?).
 {memo_schema}
 
 {confirmed_lemmas}
-
-DATA:
-{data}
 """
 
 # ── Domain 1D: Smart Money Tracking ───────────────────────────────
 SMART_MONEY_PROMPT = """\
+<STATIC_CONTEXT>
+{data}
+</STATIC_CONTEXT>
+
 You are an institutional flow analyst using step-by-step proof reasoning.
 
 PROOF METHOD: Direct proof with step justification.
@@ -127,13 +134,14 @@ and the size/significance of the transactions.
 {memo_schema}
 
 {confirmed_lemmas}
-
-DATA:
-{data}
 """
 
 # ── Domain 1E: Risk Assessment ────────────────────────────────────
 RISK_PROMPT = """\
+<STATIC_CONTEXT>
+{data}
+</STATIC_CONTEXT>
+
 You are a risk management specialist using step-by-step proof reasoning.
 
 PROOF METHOD: Direct proof with step justification.
@@ -149,9 +157,6 @@ and any red flags that should cap confidence.
 {memo_schema}
 
 {confirmed_lemmas}
-
-DATA:
-{data}
 """
 
 

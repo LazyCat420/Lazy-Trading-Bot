@@ -14,6 +14,7 @@ Uses a module-level shared httpx.AsyncClient for connection pooling.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import contextlib
 import re
@@ -95,6 +96,7 @@ async def _get_shared_client() -> httpx.AsyncClient:
     return _shared_client
 
 
+@track_class_telemetry
 class LLMService:
     """Sends chat completion requests to Ollama.
 
@@ -106,6 +108,7 @@ class LLMService:
     def __init__(self, *, model_override: str = "") -> None:
         self._model_override = model_override
         self._last_reasoning: str = ""  # Carries thinking from vLLM to audit
+        self._last_prism_usage: dict | None = None  # Carries usage/TTFB from Prism done event
 
     @property
     def base_url(self) -> str:
@@ -242,6 +245,10 @@ class LLMService:
             reasoning_text = self._last_reasoning
             self._last_reasoning = ""  # Reset for next call
 
+            # Capture Prism usage metrics (actual tokens, TTFB, tok/s)
+            prism_usage = self._last_prism_usage
+            self._last_prism_usage = None  # Reset for next call
+
             # Start a conversation record
             conv_title = f"${audit_ticker} — {audit_step}" if audit_ticker else audit_step or "LLM Call"
             conv_id = ConversationTracker.start_conversation(
@@ -254,8 +261,18 @@ class LLMService:
                 agent_step=audit_step,
             )
 
-            # Add the response message to the conversation
-            est_tokens = self.estimate_tokens(content)
+            # Use actual token count from Prism/vLLM if available,
+            # otherwise fall back to rough estimate
+            est_tokens = (
+                prism_usage.get("outputTokens", self.estimate_tokens(content))
+                if prism_usage
+                else self.estimate_tokens(content)
+            )
+            ttfb_ms = (
+                int(prism_usage["timeToGeneration"] * 1000)
+                if prism_usage and prism_usage.get("timeToGeneration") is not None
+                else None
+            )
             ConversationTracker.add_message(
                 conv_id,
                 role="assistant",
@@ -291,6 +308,7 @@ class LLMService:
                 model=self.model,
                 provider=provider,
                 conversation_id=conv_id,
+                ttfb_ms=ttfb_ms,
             )
         except Exception:
             pass  # Audit logging must never block trading
@@ -554,12 +572,34 @@ class LLMService:
         import json as _json
 
         url = f"{settings.VLLM_URL.rstrip('/')}/v1/chat/completions"
+        _via_prism = False
+        _prism_headers: dict = {}
 
         # ── Route through Prism/Retina gateway if configured ──
-        # Prism proxies requests to the vLLM backend and provides
-        # logging, monitoring, and request tracking.
+        # Prism expects { provider, model, messages, options } format
+        # and emits SSE events as { type: "chunk", content: "..." }
         if getattr(settings, "PRISM_URL", None):
             url = f"{settings.PRISM_URL.rstrip('/')}/chat"
+            _via_prism = True
+            # Prism auth headers
+            _prism_secret = getattr(settings, "PRISM_SECRET", "") or ""
+            _prism_project = getattr(settings, "PRISM_PROJECT", "") or "lazy-trading-bot"
+            if not _prism_secret:
+                # Try to read from llm_config.json
+                try:
+                    cfg_path = getattr(settings, "LLM_CONFIG_PATH", None)
+                    if cfg_path and cfg_path.exists():
+                        _cfg_data = _json.loads(cfg_path.read_text())
+                        _prism_secret = _cfg_data.get("prism_secret", "")
+                        _prism_project = _cfg_data.get("prism_project", "lazy-trading-bot")
+                except Exception:
+                    pass
+            _prism_headers = {
+                "x-api-secret": _prism_secret,
+                "x-project": _prism_project,
+                "x-username": "trading-bot",
+                "Content-Type": "application/json",
+            }
             logger.debug(
                 "[LLM] Routing vLLM request through Prism: %s", url,
             )
@@ -582,18 +622,34 @@ class LLMService:
                     "content": effective_msgs[0]["content"] + json_instruction,
                 }
 
-        # Build OpenAI-compatible payload — STREAMING enabled
-        payload: dict = {
-            "model": self.model,
-            "messages": effective_msgs,
-            "temperature": temperature,
-            "max_tokens": max_tokens or 4096,
-            "stream": True,  # ← streaming enabled
-        }
+        # Build payload — format depends on whether we go through Prism
+        if _via_prism:
+            # Prism expects: { provider, model, messages, options }
+            payload: dict = {
+                "provider": "vllm",
+                "model": self.model,
+                "messages": effective_msgs,
+                "options": {
+                    "temperature": temperature,
+                    "maxTokens": max_tokens or 4096,
+                },
+            }
+        else:
+            # Direct vLLM: OpenAI-compatible payload
+            payload: dict = {
+                "model": self.model,
+                "messages": effective_msgs,
+                "temperature": temperature,
+                "max_tokens": max_tokens or 4096,
+                "stream": True,
+            }
 
         # JSON mode
         if schema is not None or response_format == "json":
-            payload["response_format"] = {"type": "json_object"}
+            if _via_prism:
+                payload["options"]["responseFormat"] = {"type": "json_object"}
+            else:
+                payload["response_format"] = {"type": "json_object"}
 
         # Derive context label
         _ctx = messages[0].get("content", "")[:60] if messages else "unknown"
@@ -622,6 +678,7 @@ class LLMService:
         thinking_chunks: list[str] = []
         chunk_count = 0
         last_progress_log = 0  # Track when we last logged progress
+        prism_usage: dict | None = None  # Captured from Prism done event
 
         try:
             client = await _get_shared_client()
@@ -639,8 +696,9 @@ class LLMService:
                 limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
             )
             try:
+                _req_headers = _prism_headers if _via_prism else {}
                 resp = await _stream_client.send(
-                    _stream_client.build_request("POST", url, json=payload),
+                    _stream_client.build_request("POST", url, json=payload, headers=_req_headers),
                     stream=True,
                 )
                 resp.raise_for_status()
@@ -708,21 +766,60 @@ class LLMService:
                     except _json.JSONDecodeError:
                         continue
 
-                    choices = chunk_data.get("choices", [])
-                    if not choices:
-                        continue
+                    # ── Dual SSE format parsing ──
+                    # Prism format: { type: "chunk", content: "..." }
+                    # OpenAI format: { choices: [{ delta: { content: "..." } }] }
+                    chunk_type = chunk_data.get("type")
 
-                    delta = choices[0].get("delta", {})
+                    if chunk_type == "chunk" and "content" in chunk_data:
+                        # Prism SSE format
+                        if chunk_data["content"]:
+                            content_chunks.append(chunk_data["content"])
+                            chunk_count += 1
+                    elif chunk_type == "thinking" and "content" in chunk_data:
+                        # Prism thinking format
+                        if chunk_data["content"]:
+                            thinking_chunks.append(chunk_data["content"])
+                            chunk_count += 1
+                    elif chunk_type == "done":
+                        # Prism done event — extract usage metrics
+                        _done_usage = chunk_data.get("usage")
+                        if _done_usage:
+                            prism_usage = {
+                                "outputTokens": _done_usage.get("outputTokens", 0),
+                                "inputTokens": _done_usage.get("inputTokens", 0),
+                            }
+                        _done_tps = chunk_data.get("tokensPerSec")
+                        if _done_tps:
+                            prism_usage = prism_usage or {}
+                            prism_usage["tokensPerSec"] = _done_tps
+                        _done_ttg = chunk_data.get("timeToGeneration")
+                        if _done_ttg is not None:
+                            prism_usage = prism_usage or {}
+                            prism_usage["timeToGeneration"] = _done_ttg
+                        break
+                    elif chunk_type == "error":
+                        # Prism error event
+                        err_msg = chunk_data.get("message", "Unknown Prism error")
+                        logger.error("[vLLM/Prism] Error event: %s", err_msg)
+                        break
+                    else:
+                        # OpenAI SSE format fallback
+                        choices = chunk_data.get("choices", [])
+                        if not choices:
+                            continue
 
-                    # Content tokens
-                    if delta.get("content"):
-                        content_chunks.append(delta["content"])
-                        chunk_count += 1
+                        delta = choices[0].get("delta", {})
 
-                    # Reasoning/thinking tokens (Qwen3)
-                    if delta.get("reasoning_content"):
-                        thinking_chunks.append(delta["reasoning_content"])
-                        chunk_count += 1
+                        # Content tokens
+                        if delta.get("content"):
+                            content_chunks.append(delta["content"])
+                            chunk_count += 1
+
+                        # Reasoning/thinking tokens (Qwen3)
+                        if delta.get("reasoning_content"):
+                            thinking_chunks.append(delta["reasoning_content"])
+                            chunk_count += 1
 
                     # Log progress every 30s
                     elapsed_now = time.perf_counter() - t0
@@ -808,7 +905,13 @@ class LLMService:
         # ── Assemble final response ──
         content = "".join(content_chunks)
         thinking = "".join(thinking_chunks)
-        tokens = chunk_count
+        # Use actual token count from Prism/vLLM usage if available,
+        # otherwise fall back to chunk_count
+        tokens = (
+            prism_usage.get("outputTokens", chunk_count)
+            if prism_usage
+            else chunk_count
+        )
 
         # ── Thinking-model fallback (same as Prism path) ──
         if not content.strip() and thinking.strip():
@@ -841,6 +944,8 @@ class LLMService:
 
         # ── Store reasoning for audit logger in chat() ──
         self._last_reasoning = thinking
+        # ── Store Prism usage metrics for chat() ──
+        self._last_prism_usage = prism_usage
 
         if thinking:
             logger.info(

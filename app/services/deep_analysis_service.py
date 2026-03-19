@@ -11,6 +11,7 @@ Now uses zero LLM calls — pure math + pure Python pre-analysis.
 
 from __future__ import annotations
 
+from app.services.unified_logger import track_class_telemetry, track_telemetry
 import asyncio
 import json
 import uuid
@@ -25,6 +26,7 @@ from app.services.quant_engine import QuantSignalEngine
 from app.utils.logger import logger
 
 
+@track_class_telemetry
 class DeepAnalysisService:
     """Run quant scoring + data distillation for ticker analysis.
 
