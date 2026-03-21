@@ -8,7 +8,6 @@ Usage:
     python scripts/run_pipeline_audit.py --phase all
 
 Runs against TEST database. Seed first: python scripts/seed_test_db.py
-Model forced to gemma3:4b for initial debugging.
 """
 
 from __future__ import annotations
@@ -31,10 +30,6 @@ os.environ["DB_PROFILE"] = "test"
 
 from app.config import settings
 settings.DB_PROFILE = "test"
-
-# Force model to gemma3:4b for consistent testing
-TEST_MODEL = "gemma3:4b"
-settings.LLM_MODEL = TEST_MODEL
 
 # ══════════════════════════════════════════════════════════════
 # Formatting
@@ -439,7 +434,7 @@ async def audit_analysis(conn) -> dict:
 # PHASE: TRADING
 # ══════════════════════════════════════════════════════════════
 async def audit_trading(conn) -> dict:
-    header("TRADING", f"LLM trade decision via TradingPipelineService (model={TEST_MODEL})")
+    header("TRADING", f"LLM trade decision via TradingPipelineService (model={settings.LLM_MODEL})")
     from app.services.paper_trader import PaperTrader
     from app.services.trading_pipeline_service import TradingPipelineService
 
@@ -531,7 +526,7 @@ async def audit_trading(conn) -> dict:
         info(f"  {r['source_type']}: {r['cnt']} chunks, {r['total_chars']} chars")
 
     # Step 4: Run trading pipeline
-    section(f"Step 4: Running TradingPipelineService (model={TEST_MODEL}, dry_run=True)")
+    section(f"Step 4: Running TradingPipelineService (model={settings.LLM_MODEL}, dry_run=True)")
 
     pipeline = TradingPipelineService(
         paper_trader=paper_trader,
@@ -610,7 +605,7 @@ async def main() -> None:
 
     data("DB Profile", settings.DB_PROFILE)
     data("DB Path", settings.DB_PATH)
-    data("LLM Model (forced)", TEST_MODEL)
+    data("LLM Model", settings.LLM_MODEL)
     data("Ollama URL", settings.OLLAMA_URL)
     data("Prism URL", settings.PRISM_URL)
     data("Time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

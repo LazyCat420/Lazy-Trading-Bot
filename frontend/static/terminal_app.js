@@ -325,7 +325,7 @@ const useTerminalData = () => {
     // Fetch overview for each ticker
     const fetchOverview = useCallback(async (ticker) => {
         try {
-            const res = await fetch(`/api/python/overview/${ticker}`);
+            const res = await fetch(`/api/data/overview/${ticker}`);
             const data = await res.json();
             setOverviewCache(prev => {
                 const existing = prev[ticker] || {};
@@ -514,7 +514,7 @@ const useTerminalData = () => {
     // ── Load cached analysis from disk (instant, no LLM) ──
     const loadCachedAnalysis = useCallback(async (ticker) => {
         try {
-            const res = await fetch(`/api/python/analysis/${encodeURIComponent(ticker)}`);
+            const res = await fetch(`/api/data/analysis/${encodeURIComponent(ticker)}`);
             const data = await res.json();
             if (data.cached && data.agents) {
                 setStreamAgents(data.agents);
@@ -588,7 +588,7 @@ const ChartWidget = ({ symbol, height = 400, days = 365 }) => {
 
         const loadChart = async () => {
             try {
-                const res = await fetch(`/api/python/prices/${symbol}?days=${days}`);
+                const res = await fetch(`/api/data/prices/${symbol}?days=${days}`);
                 const json = await res.json();
                 const prices = json.prices || [];
                 if (prices.length === 0) return;
@@ -779,7 +779,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchOverview = async () => {
         try {
-            const res = await fetch(`/api/python/overview/${ticker}`);
+            const res = await fetch(`/api/data/overview/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setOverview(data);
@@ -789,7 +789,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchNews = async () => {
         try {
-            const res = await fetch(`/api/python/news/${ticker}`);
+            const res = await fetch(`/api/data/news/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setNews(data.articles || []);
@@ -799,7 +799,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchYouTube = async () => {
         try {
-            const res = await fetch(`/api/python/youtube/${ticker}`);
+            const res = await fetch(`/api/data/youtube/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setVideos(data.videos || []);
@@ -809,7 +809,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchTechnicals = async () => {
         try {
-            const res = await fetch(`/api/python/technicals/${ticker}`);
+            const res = await fetch(`/api/data/technicals/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setTechnicals(data.technicals?.[0] || null);
@@ -819,7 +819,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchFinancials = async () => {
         try {
-            const res = await fetch(`/api/python/financials/${ticker}`);
+            const res = await fetch(`/api/data/financials/${ticker}`);
             if (res.ok) {
                 setFinancials(await res.json());
             }
@@ -828,7 +828,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchRisk = async () => {
         try {
-            const res = await fetch(`/api/python/risk/${ticker}`);
+            const res = await fetch(`/api/data/risk/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setRiskData(data.metrics || {});
@@ -838,7 +838,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchAnalyst = async () => {
         try {
-            const res = await fetch(`/api/python/analyst/${ticker}`);
+            const res = await fetch(`/api/data/analyst/${ticker}`);
             if (res.ok) {
                 setAnalystData(await res.json());
             }
@@ -847,7 +847,7 @@ const TickerDetailPanel = ({ ticker, streamSignals = {} }) => {
 
     const fetchReddit = async () => {
         try {
-            const res = await fetch(`/api/python/reddit/${ticker}`);
+            const res = await fetch(`/api/data/reddit/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setRedditMentions(data.posts || data.mentions || []);
@@ -4349,7 +4349,7 @@ const useMonitorData = () => {
     const fetchDossier = async (ticker) => {
         setDossierLoading(true);
         try {
-            const res = await fetch(`/api/python/dossier/${ticker}`);
+            const res = await fetch(`/api/data/dossier/${ticker}`);
             if (res.ok) {
                 const data = await res.json();
                 setDossierData(data);

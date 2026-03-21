@@ -370,6 +370,10 @@ class AnalystAgent:
                 )
                 return _fallback_memo(domain, f"Parse failed: {cleaned[:100]}")
 
+        if not isinstance(memo, dict):
+            logger.warning("[BrainLoop] %s memo parsed as %s, falling back", domain, type(memo).__name__)
+            return _fallback_memo(domain, f"LLM returned {type(memo).__name__}")
+
         # Validate required fields
         memo.setdefault("signal", "NEUTRAL")
         memo.setdefault("confidence", 0.5)
@@ -407,15 +411,15 @@ class AnalystAgent:
 
     @staticmethod
     async def run_all_domains(
-        master_data: str,
+        domain_data_map: dict[str, str],
         domains_to_run: list[str],
         symbol: str,
         lemma_cache: LemmaCache | None = None,
     ) -> list[dict]:
-        """Run all analyst domains sequentially, accumulating lemmas using identical shared APC string.
+        """Run all analyst domains sequentially, passing only relevant chucked data.
 
         Args:
-            master_data: combined string of all data.
+            domain_data_map: map of domain to chunked data string.
             domains_to_run: list of domains to run.
             symbol: Ticker symbol
             lemma_cache: Optional lemma cache — creates one if None
@@ -428,8 +432,9 @@ class AnalystAgent:
 
         memos = []
         for domain in domains_to_run:
+            domain_specific_data = domain_data_map.get(domain, "No data available.")
             memo = await AnalystAgent.analyze_domain(
-                domain, master_data, symbol, lemma_cache=lemma_cache,
+                domain, domain_specific_data, symbol, lemma_cache=lemma_cache,
             )
             memos.append(memo)
 
@@ -548,6 +553,10 @@ class ThesisConstructor:
             except Exception:
                 logger.warning("[BrainLoop] Failed to parse thesis: %s", cleaned[:200])
                 return _fallback_thesis(memos, f"Parse failed: {cleaned[:100]}")
+
+        if not isinstance(thesis, dict):
+            logger.warning("[BrainLoop] Thesis parsed as %s, falling back", type(thesis).__name__)
+            return _fallback_thesis(memos, f"LLM returned {type(thesis).__name__}")
 
         thesis.setdefault("direction", "NEUTRAL")
         thesis.setdefault("thesis", "")
@@ -705,6 +714,10 @@ class ContradictionPass:
             except Exception:
                 result = {"verdict": "CONFIRMED", "parse_error": cleaned[:200]}
 
+        if not isinstance(result, dict):
+            logger.warning("[BrainLoop] Contradiction result parsed as %s, defaulting", type(result).__name__)
+            result = {"verdict": "CONFIRMED", "parse_error": f"LLM returned {type(result).__name__}"}
+
         result.setdefault("verdict", "CONFIRMED")
         result.setdefault("attack_vectors", [])
         result.setdefault("reasoning_steps", [])
@@ -832,6 +845,16 @@ class DecisionAgent:
                     "risk_level": "HIGH",
                     "time_horizon": "SWING",
                 }
+
+        if not isinstance(decision, dict):
+            logger.warning("[BrainLoop] Decision parsed as %s, defaulting", type(decision).__name__)
+            decision = {
+                "action": "HOLD",
+                "symbol": symbol,
+                "confidence": 0.30,
+                "rationale": f"LLM returned {type(decision).__name__}",
+                "risk_notes": "LLM output unparseable",
+            }
 
         decision.setdefault("action", "HOLD")
         decision.setdefault("symbol", symbol)

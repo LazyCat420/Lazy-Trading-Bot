@@ -46,7 +46,7 @@ class Settings:
 
     # ── LLM Provider ───────────────────────────────────────────────
     # Provider selection: "ollama" or "vllm"
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "vllm")
 
     # Ollama direct URL
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -125,10 +125,10 @@ class Settings:
     # ── Data Collection Limits ──────────────────────────────────
     # How many items to fetch per source per ticker during collection.
     # Lower these for faster debugging, raise for production.
-    YOUTUBE_MAX_VIDEOS: int = int(os.getenv("YOUTUBE_MAX_VIDEOS", "3"))
-    REDDIT_MAX_POSTS_PER_SUB: int = int(os.getenv("REDDIT_MAX_POSTS_PER_SUB", "3"))
-    NEWS_FETCH_LIMIT: int = int(os.getenv("NEWS_FETCH_LIMIT", "3"))
-    SEC_13F_MAX_FILERS: int = int(os.getenv("SEC_13F_MAX_FILERS", "3"))
+    YOUTUBE_MAX_VIDEOS: int = int(os.getenv("YOUTUBE_MAX_VIDEOS", "1"))       # DEBUG: was 3
+    REDDIT_MAX_POSTS_PER_SUB: int = int(os.getenv("REDDIT_MAX_POSTS_PER_SUB", "1"))  # DEBUG: was 3
+    NEWS_FETCH_LIMIT: int = int(os.getenv("NEWS_FETCH_LIMIT", "1"))          # DEBUG: was 3
+    SEC_13F_MAX_FILERS: int = int(os.getenv("SEC_13F_MAX_FILERS", "1"))      # DEBUG: was 3
 
     # Server
     HOST: str = os.getenv("HOST", "0.0.0.0")

@@ -405,7 +405,12 @@ class LLMService:
                             "explanations — pure JSON."
                         ),
                     }
-                content = await self._send_ollama_request(
+                # Retry with the SAME provider — just format=text
+                _retry_method = (
+                    self._send_vllm_request if provider == "vllm"
+                    else self._send_ollama_request
+                )
+                content = await _retry_method(
                     retry_msgs,
                     "text",
                     max_tokens,

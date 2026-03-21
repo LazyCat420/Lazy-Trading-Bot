@@ -86,33 +86,12 @@ def log_event(
     """
     effective_bot_id = bot_id if bot_id is not None else _current_bot_id
     effective_model = model_name if model_name is not None else _current_model_name
-    try:
-        db = get_db()
-        db.execute(
-            """
-            INSERT INTO pipeline_events
-                (id, timestamp, phase, event_type, ticker,
-                 detail, metadata, loop_id, status,
-                 bot_id, model_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                uuid.uuid4().hex,
-                datetime.now().isoformat(),
-                phase,
-                event_type,
-                ticker,
-                detail,
-                json.dumps(metadata or {}),
-                _current_loop_id,
-                status,
-                effective_bot_id,
-                effective_model,
-            ],
-        )
-    except Exception as exc:
-        # Never let logging failures break the pipeline
-        logger.warning("[EventLogger] Failed to log event: %s", exc)
+    # DISABLED: pipeline_events now lives in MongoDB only (tradingbackend writes)
+    # DuckDB insert removed — WebSocket broadcast below still feeds the Activity tab
+    logger.debug(
+        "[EventLogger] %s/%s: %s (ticker=%s, bot=%s)",
+        phase, event_type, detail, ticker, effective_bot_id,
+    )
 
     # ── Emit to Websocket Broadcaster ──
     broadcaster.broadcast_sync({

@@ -10,6 +10,7 @@ from typing import Any
 
 from app.config import settings
 from app.services.congress_service import CongressCollector
+from app.services.event_logger import log_event
 from app.services.llm_service import LLMService
 from app.services.news_service import NewsCollector
 from app.services.peer_fetcher import PeerFetcher
@@ -125,6 +126,30 @@ class PipelineService:
             except Exception as exc:
                 return name, None, exc
 
+        # Helper to emit pipeline events per-step
+        def _emit_step_event(name: str, data, exc, ticker_=ticker):
+            if exc:
+                log_event(
+                    phase="collection", event_type=f"{name}_error",
+                    detail=f"{name} failed: {str(exc)[:120]}",
+                    ticker=ticker_, status="error",
+                    metadata={"error": str(exc)[:200]},
+                )
+            else:
+                detail_parts = [f"{name}: ok"]
+                meta = {}
+                if isinstance(data, list):
+                    detail_parts = [f"{name}: {len(data)} rows"]
+                    meta["count"] = len(data)
+                elif data is not None:
+                    detail_parts = [f"{name}: collected"]
+                log_event(
+                    phase="collection", event_type=f"{name}_ok",
+                    detail=" | ".join(detail_parts),
+                    ticker=ticker_, status="success",
+                    metadata=meta,
+                )
+
         # ----------------------------------------------------------
         # Parallel batch: Steps 1–9 run concurrently when possible
         # (Steps 4 & 10 depend on price data — they run after)
@@ -149,6 +174,7 @@ class PipelineService:
 
             # Unpack results
             for name, data, exc in results_batch:
+                _emit_step_event(name, data, exc)
                 if exc:
                     result.status[name] = {"status": "error", "error": str(exc)}
                     result.errors.append(f"{name}: {exc}")
@@ -308,9 +334,20 @@ class PipelineService:
                     "status": "ok",
                     "rows": len(technicals),
                 }
+                log_event(
+                    phase="collection", event_type="technicals_ok",
+                    detail=f"technicals: {len(technicals)} rows computed",
+                    ticker=ticker, status="success",
+                    metadata={"rows": len(technicals)},
+                )
             except Exception as e:
                 result.status["technicals"] = {"status": "error", "error": str(e)}
                 result.errors.append(f"Technicals: {e}")
+                log_event(
+                    phase="collection", event_type="technicals_error",
+                    detail=f"technicals failed: {str(e)[:120]}",
+                    ticker=ticker, status="error",
+                )
                 logger.error("Step 4 (Technicals) failed: %s", e)
 
         # ----------------------------------------------------------
@@ -392,6 +429,12 @@ class PipelineService:
             else:
                 news = n_data or []
                 result.status["news"] = {"status": "ok", "articles": len(news)}
+                log_event(
+                    phase="collection", event_type="news_ok",
+                    detail=f"news: {len(news)} articles",
+                    ticker=ticker, status="success",
+                    metadata={"articles": len(news)},
+                )
             # Unpack YouTube
             y_name, y_data, y_exc = yt_result
             if y_exc:
@@ -401,6 +444,12 @@ class PipelineService:
             else:
                 yt_transcripts = y_data or []
                 result.status["youtube"] = {"status": "ok", "total_transcripts": len(yt_transcripts)}
+                log_event(
+                    phase="collection", event_type="youtube_ok",
+                    detail=f"youtube: {len(yt_transcripts)} transcripts",
+                    ticker=ticker, status="success",
+                    metadata={"transcripts": len(yt_transcripts)},
+                )
 
         # Step 13: Fetch Industry Peers and their Fundamentals
         if mode in ("full", "data"):
@@ -441,14 +490,32 @@ class PipelineService:
                         institutional_holders = sm_data or []
                         result.status[sm_name] = {"status": "ok", "holders": len(institutional_holders)}
                         logger.info("Step 14a: %d institutional holders for %s", len(institutional_holders), ticker)
+                        log_event(
+                            phase="collection", event_type="sec_13f_ok",
+                            detail=f"SEC 13F: {len(institutional_holders)} holders",
+                            ticker=ticker, status="success",
+                            metadata={"holders": len(institutional_holders)},
+                        )
                     elif sm_name == "congress_trades":
                         congress_trades = sm_data or []
                         result.status[sm_name] = {"status": "ok", "trades": len(congress_trades)}
                         logger.info("Step 14b: %d congressional trades for %s", len(congress_trades), ticker)
+                        log_event(
+                            phase="collection", event_type="congress_ok",
+                            detail=f"Congressional: {len(congress_trades)} trades",
+                            ticker=ticker, status="success",
+                            metadata={"trades": len(congress_trades)},
+                        )
                     elif sm_name == "news_articles":
                         news_articles = sm_data or []
                         result.status[sm_name] = {"status": "ok", "articles": len(news_articles)}
                         logger.info("Step 14c: %d news articles for %s", len(news_articles), ticker)
+                        log_event(
+                            phase="collection", event_type="rss_news_ok",
+                            detail=f"RSS News: {len(news_articles)} articles",
+                            ticker=ticker, status="success",
+                            metadata={"articles": len(news_articles)},
+                        )
 
         # Clear the ticker cache after data collection
         YFinanceCollector.clear_cache(ticker)

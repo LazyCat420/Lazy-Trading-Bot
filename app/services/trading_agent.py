@@ -1,8 +1,9 @@
-"""Trading Agent — V2 proof-logic brain loop per ticker → TradeAction JSON.
+"""Trading Agent — V3 seed-driven multi-layered brain loop → TradeAction JSON.
 
-Architecture (Brain Loop V2 — proof-logic enhanced):
-  Phase 1: AnalystAgent — 5 domain-specific analysis passes → step-justified memos
-           + LemmaCache accumulates verified claims across domains
+Architecture (Brain Loop V3 — seed-driven investigation):
+  Phase 0: SignalRanker — pure-Python anomaly scanner → top-N research seeds
+  Phase 1: InvestigationAgent — ReAct loop per seed → evidence-backed memos
+           Each seed: iterate (pick 2-3 tools → call → write finding → repeat)
   Phase 2: ThesisConstructor — inductive synthesis with lemma-aware contradiction detection
   Phase 3: DecisionAgent — thesis + portfolio → TradeAction with adversarial self-check
            + ConsistencyValidator (post-LLM rule checker)
@@ -55,9 +56,10 @@ def _log_tool_usage(
 
 @track_class_telemetry
 class TradingAgent:
-    """3-phase recursive brain loop per ticker → TradeAction.
+    """Seed-driven multi-layered brain loop per ticker → TradeAction.
 
-    Phase 1: AnalystAgent — 5 domain-specific analysis passes
+    Phase 0: SignalRanker — pure Python anomaly scan → top 3 seeds
+    Phase 1: InvestigationAgent — ReAct loop per seed (2-3 tools/iteration)
     Phase 2: ThesisConstructor — synthesize + resolve contradictions
     Phase 3: DecisionAgent — thesis → final TradeAction
     """
@@ -80,9 +82,8 @@ class TradingAgent:
         )
 
         try:
-            # ── Phase 1: Extract domain data from DB ──────────
+            # ── Phase 0 + 1: Seed-driven investigation ────────
             from app.services.brain_loop import (
-                AnalystAgent,
                 ConsistencyValidator,
                 ContradictionPass,
                 DecisionAgent,
@@ -91,14 +92,15 @@ class TradingAgent:
                 extract_domain_data,
                 validate_data_coverage,
                 validate_data_integrity,
-                validate_memo_citations,
             )
+            from app.services.signal_ranker import SignalRanker
+            from app.services.investigation_agent import InvestigationAgent
 
-            logger.info("[BrainLoop] Phase 1: Extracting domain data for %s", symbol)
+            logger.info("[BrainLoop] Phase 0: Extracting domain data for %s", symbol)
             domain_data = extract_domain_data(context, symbol)
             domains_found = [d for d, v in domain_data.items() if v.strip()]
             logger.info(
-                "[BrainLoop] Phase 1: %d domains have data: %s",
+                "[BrainLoop] Phase 0: %d domains have data: %s",
                 len(domains_found), ", ".join(domains_found),
             )
 
@@ -138,57 +140,53 @@ class TradingAgent:
                     info["newest"][:10] if info.get("newest") else "N/A",
                 )
 
-            # ── Phase 1: Run analyst passes with Lemma Cache ──
-            lemma_cache = LemmaCache()
-            
-            # Construct APC Master String for identical LLM Prefix Caching
-            master_parts = [f"[TICKER UNIFIED CONTEXT - {symbol}]"]
-            for d in domains_found:
-                master_parts.append(f"=== {d.upper()} ===\n{domain_data[d]}")
-            master_string = "\n\n".join(master_parts)
-            
-            logger.info("[BrainLoop] Phase 1: Running %d analyst passes...", len(domains_found))
-            memos = await AnalystAgent.run_all_domains(
-                master_string, domains_found, symbol, lemma_cache=lemma_cache,
+            # ── Phase 0: Signal Ranking (no LLM) ─────────────
+            ranker = SignalRanker()
+            seeds = ranker.rank(domain_data, symbol, max_seeds=3)
+            logger.info(
+                "[BrainLoop] Phase 0: %d seeds generated: %s",
+                len(seeds),
+                [(s.category, round(s.score, 2)) for s in seeds],
             )
-            for m in memos:
-                n_steps = len(m.get("reasoning_steps", []))
-                n_claims = len(m.get("verified_claims", []))
+
+            # ── Phase 1: Investigate each seed (ReAct loop) ──
+            investigator = InvestigationAgent()
+            lemma_cache = LemmaCache()
+            memos: list[dict] = []
+            total_tool_calls = 0
+            total_llm_calls = 0
+
+            for i, seed in enumerate(seeds, 1):
                 logger.info(
-                    "[BrainLoop]   📝 %s: %s (conf=%.2f) — %s [%.1fs] "
-                    "[%d reasoning steps, %d claims]",
-                    m.get("label", "?"),
-                    m.get("signal", "?"),
-                    m.get("confidence", 0),
-                    m.get("key_finding", "?")[:80],
-                    m.get("elapsed_s", 0),
-                    n_steps,
-                    n_claims,
+                    "[BrainLoop] Phase 1: Investigating seed %d/%d: %s (score=%.2f)",
+                    i, len(seeds), seed.category, seed.score,
                 )
-                if m.get("lemma_conflicts"):
-                    for lc in m["lemma_conflicts"]:
-                        logger.warning("[BrainLoop]     ⚡ Lemma conflict: %s", lc)
+                inv_result = await investigator.investigate(seed, symbol)
+                total_tool_calls += inv_result.total_tool_calls
+                total_llm_calls += inv_result.total_llm_calls
+
+                memo = inv_result.memo
+                memos.append(memo)
+
+                # Extract lemmas from investigation memo
+                lemma_cache.extract_from_memo(memo)
+
+                logger.info(
+                    "[BrainLoop]   🔬 %s: %s (conf=%.2f) — %s [%.1fs, %d tools, %d LLM calls]",
+                    memo.get("label", "?"),
+                    memo.get("signal", "?"),
+                    memo.get("confidence", 0),
+                    memo.get("key_finding", "?")[:80],
+                    inv_result.elapsed_s,
+                    inv_result.total_tool_calls,
+                    inv_result.total_llm_calls,
+                )
 
             logger.info(
-                "[BrainLoop]   📚 Lemma cache: %d verified claims, %d conflicts",
-                lemma_cache.count, len(lemma_cache.conflicts),
+                "[BrainLoop] Phase 1 complete: %d memos, %d total tool calls, "
+                "%d total LLM calls, %d lemmas",
+                len(memos), total_tool_calls, total_llm_calls, lemma_cache.count,
             )
-
-            # ── Citation accuracy check ───────────────────────
-            citation_results = validate_memo_citations(memos, master_string)
-            for cr in citation_results:
-                if cr["total_cited"] > 0:
-                    logger.info(
-                        "[BrainLoop]   🔍 %s citations: %d/%d verified (%.0f%% accuracy)",
-                        cr["domain"], cr["verified"], cr["total_cited"],
-                        cr["score"] * 100,
-                    )
-                    for detail in cr.get("details", []):
-                        if "not found" in detail.get("status", ""):
-                            logger.warning(
-                                "[BrainLoop]     ⚠️  %s — %s",
-                                detail["cite"], detail["status"],
-                            )
 
             # ── Phase 2: Synthesize thesis (inductive) ────────
             portfolio = {
@@ -336,7 +334,11 @@ class TradingAgent:
                     "domains_found": domains_found,
                     "data_integrity": integrity,
                     "data_coverage": coverage_report,
-                    "citation_accuracy": citation_results,
+                    "investigation": {
+                        "seeds": [(s.category, round(s.score, 2)) for s in seeds],
+                        "total_tool_calls": total_tool_calls,
+                        "total_llm_calls": total_llm_calls,
+                    },
                     "proof_logic": {
                         "lemma_count": lemma_cache.count,
                         "lemma_conflicts": len(lemma_cache.conflicts),

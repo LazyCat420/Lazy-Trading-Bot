@@ -62,10 +62,28 @@ class TechnicalComputer:
         """Read price_history from DuckDB, compute ALL indicators, store results.
 
         Returns list of TechnicalRow objects with key indicators populated.
+        Skips re-computation if technicals were already computed today.
         """
-        logger.info("Computing comprehensive technicals for %s", ticker)
-
+        # ── Skip if already computed today ────────────────────
         db = get_db()
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        existing = db.execute(
+            "SELECT COUNT(*) FROM technicals WHERE ticker = ? AND date = ?",
+            [ticker, today],
+        ).fetchone()
+        if existing and existing[0] > 0:
+            total = db.execute(
+                "SELECT COUNT(*) FROM technicals WHERE ticker = ?",
+                [ticker],
+            ).fetchone()[0]
+            logger.info(
+                "Technicals for %s already computed today (%d rows), skipping",
+                ticker, total,
+            )
+            return []
+
+        logger.info("Computing comprehensive technicals for %s", ticker)
         raw = db.execute(
             """
             SELECT date, open, high, low, close, volume

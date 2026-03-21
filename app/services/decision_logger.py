@@ -25,43 +25,19 @@ class DecisionLogger:
         status: str = "pending",
         rejection_reason: str = "",
     ) -> str:
-        """Insert a TradeAction into trade_decisions. Returns decision_id."""
+        """Log a TradeAction. Returns decision_id.
+        
+        DISABLED: DuckDB insert removed — trade_decisions now in MongoDB only.
+        """
         decision_id = str(uuid.uuid4())
-        db = get_db()
-        try:
-            db.execute(
-                """
-                INSERT INTO trade_decisions
-                    (id, bot_id, symbol, ts, action, confidence,
-                     rationale, risk_level, risk_notes, time_horizon,
-                     raw_llm_response, status, rejection_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    decision_id,
-                    action.bot_id,
-                    action.symbol,
-                    datetime.now(),
-                    action.action,
-                    action.confidence,
-                    action.rationale,
-                    action.risk_level,
-                    action.risk_notes,
-                    action.time_horizon,
-                    raw_llm[:5000],  # Cap raw LLM text to prevent DB bloat
-                    status,
-                    rejection_reason,
-                ],
-            )
-            logger.info(
-                "[DecisionLogger] Logged decision %s: %s %s (confidence=%.2f)",
-                decision_id[:8],
-                action.action,
-                action.symbol,
-                action.confidence,
-            )
-        except Exception as exc:
-            logger.error("[DecisionLogger] Failed to log decision: %s", exc)
+        logger.info(
+            "[DecisionLogger] Decision %s: %s %s (confidence=%.2f, status=%s)",
+            decision_id[:8],
+            action.action,
+            action.symbol,
+            action.confidence,
+            status,
+        )
         return decision_id
 
     @staticmethod
@@ -73,36 +49,19 @@ class DecisionLogger:
         status: str = "pending",
         broker_error: str = "",
     ) -> str:
-        """Insert into trade_executions. Returns execution_id."""
+        """Log trade execution. Returns execution_id.
+        
+        DISABLED: DuckDB insert removed — trade_executions now in MongoDB only.
+        """
         execution_id = str(uuid.uuid4())
-        db = get_db()
-        try:
-            db.execute(
-                """
-                INSERT INTO trade_executions
-                    (id, decision_id, order_id, ts, filled_qty,
-                     avg_price, status, broker_error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    execution_id,
-                    decision_id,
-                    order_id,
-                    datetime.now(),
-                    filled_qty,
-                    avg_price,
-                    status,
-                    broker_error,
-                ],
-            )
-            logger.info(
-                "[DecisionLogger] Logged execution %s for decision %s (status=%s)",
-                execution_id[:8],
-                decision_id[:8],
-                status,
-            )
-        except Exception as exc:
-            logger.error("[DecisionLogger] Failed to log execution: %s", exc)
+        logger.info(
+            "[DecisionLogger] Execution %s for decision %s (status=%s, qty=%d, price=%.2f)",
+            execution_id[:8],
+            decision_id[:8],
+            status,
+            filled_qty,
+            avg_price,
+        )
         return execution_id
 
     @staticmethod

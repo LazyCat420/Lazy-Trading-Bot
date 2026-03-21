@@ -154,6 +154,8 @@ npm run dev                        # Starts on port 3000
 
 ### 3. Start Lazy Trading Bot
 
+You can start the bot using the included launcher script:
+
 ```bash
 bash run.sh
 ```
@@ -165,6 +167,21 @@ The `run.sh` script handles everything:
 - Installs Python dependencies
 - Pre-pulls the embedding model for RAG
 - Starts the FastAPI server on port 8000
+
+#### Running Manually
+
+If you prefer to run the server manually, you first need to activate the virtual environment and then start the server:
+
+```bash
+# 1. Activate the virtual environment
+source venv/bin/activate
+
+# 2. Start the server (this script filters out spammy polling logs)
+python server.py
+
+# Alternatively, run uvicorn manually:
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
 ### 4. Configure LLM Connection
 
