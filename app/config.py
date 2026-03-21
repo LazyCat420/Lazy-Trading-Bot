@@ -122,6 +122,10 @@ class Settings:
         "LazyTradingBot/1.0 (contact@example.com)",
     )
 
+    # Finnhub API — real-time quotes, earnings, insider sentiment
+    FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
+    FINNHUB_RATE_LIMIT: int = int(os.getenv("FINNHUB_RATE_LIMIT", "60"))
+
     # ── Data Collection Limits ──────────────────────────────────
     # How many items to fetch per source per ticker during collection.
     # Lower these for faster debugging, raise for production.

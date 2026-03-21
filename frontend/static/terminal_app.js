@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useCallback } = React;
 const { createRoot } = ReactDOM;
-const { HashRouter, Routes, Route, Link, useNavigate, useParams } = ReactRouterDOM;
+const { HashRouter, Routes, Route, Link, useNavigate, useParams, useLocation } = ReactRouterDOM;
 
 const MonitorDataContext = React.createContext(null);
 // UTILITIES
@@ -307,7 +307,7 @@ const useTerminalData = () => {
                 const data = await res.json();
                 const raw = data.tickers || [];
                 // Normalize: DuckDB returns objects {ticker, signal, ...}, legacy returns strings
-                const tickers = raw.map(t => typeof t === "string" ? t : t.ticker);
+                const tickers = [...new Set(raw.map(t => typeof t === "string" ? t : t.ticker))];
                 setWatchlist(tickers);
                 if (tickers.length > 0 && !tickers.includes(selectedTicker)) {
                     setSelectedTicker(tickers[0]);
@@ -327,18 +327,31 @@ const useTerminalData = () => {
         try {
             const res = await fetch(`/api/data/overview/${ticker}`);
             const data = await res.json();
+            // Transform MongoDB market data into the shape watchlist rendering expects
+            const mkt = data.market || {};
+            const closes = mkt.closes || [];
+            const currentPrice = closes.length > 0 ? closes[closes.length - 1] : (mkt.currentPrice || null);
+            const prevClose = closes.length > 1 ? closes[closes.length - 2] : null;
+            const mapped = {
+                ticker: data.ticker || ticker,
+                price: { close: currentPrice },
+                prev_price: { close: prevClose },
+                fundamentals: { market_cap: mkt.marketCap || null },
+                technicals: { rsi_14: mkt.rsi || null },
+                _source: data._source,
+                _raw: data, // keep raw for detail panels
+            };
             setOverviewCache(prev => {
                 const existing = prev[ticker] || {};
-                // Deep merge: DuckDB overview data overrides live quotes
-                // but we keep live quote fields if DuckDB doesn't have them
                 return {
                     ...prev,
                     [ticker]: {
                         ...existing,
-                        ...data,
-                        price: { ...(existing.price || {}), ...(data.price || {}) },
-                        prev_price: { ...(existing.prev_price || {}), ...(data.prev_price || {}) },
-                        fundamentals: { ...(existing.fundamentals || {}), ...(data.fundamentals || {}) },
+                        ...mapped,
+                        price: { ...(existing.price || {}), ...mapped.price },
+                        prev_price: { ...(existing.prev_price || {}), ...mapped.prev_price },
+                        fundamentals: { ...(existing.fundamentals || {}), ...mapped.fundamentals },
+                        technicals: { ...(existing.technicals || {}), ...mapped.technicals },
                     },
                 };
             });
@@ -348,6 +361,7 @@ const useTerminalData = () => {
             return null;
         }
     }, []);
+
 
     // Fetch all overviews for watchlist + live quotes
     useEffect(() => {
@@ -1293,9 +1307,7 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
     );
 
     return (
-        <SidebarLayout active="dashboard" watchlist={watchlist} selectedTicker={selectedTicker}
-            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow} setExpandedRow={setExpandedRow}
-            overviewCache={overviewCache}>
+        <>
             <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
                 {/* Header */}
                 <div className="flex items-center justify-between">
@@ -1398,7 +1410,7 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
                                     </span>
                                     <span className="flex items-center gap-1">
                                         <span className="text-text-muted">Drawdown:</span>
-                                        <span className="text-amber-400 font-bold">{(bot.max_drawdown * 100).toFixed(1)}%</span>
+                                        <span className="text-amber-400 font-bold">{((bot.max_drawdown || 0) * 100).toFixed(1)}%</span>
                                     </span>
                                 </div>
 
@@ -1412,7 +1424,7 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
                                 </div>
 
                                 {/* Current Positions */}
-                                {bot.positions.length > 0 && (
+                                {bot.positions?.length > 0 && (
                                     <div>
                                         <div className="text-[10px] text-text-muted font-mono uppercase mb-1">Positions ({bot.positions.length})</div>
                                         <div className="flex flex-wrap gap-1.5">
@@ -1427,7 +1439,7 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
                                 )}
 
                                 {/* Recent Trades */}
-                                {bot.recent_trades.length > 0 && (
+                                {bot.recent_trades?.length > 0 && (
                                     <div>
                                         <div className="text-[10px] text-text-muted font-mono uppercase mb-1">Recent Trades</div>
                                         <div className="flex flex-col gap-1">
@@ -1576,7 +1588,7 @@ const DashboardPage = ({ watchlist, selectedTicker, setSelectedTicker, expandedR
                     </div>
                 )}
             </div>
-        </SidebarLayout>
+        </>
     );
 };
 
@@ -1601,9 +1613,7 @@ const WatchlistPage = ({
     };
 
     return (
-        <SidebarLayout active="watchlist" watchlist={watchlist} selectedTicker={selectedTicker}
-            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow} setExpandedRow={setExpandedRow}
-            overviewCache={overviewCache}>
+        <>
             {/*  Main Content */}
             {/* Header Bar */}
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
@@ -1639,15 +1649,15 @@ const WatchlistPage = ({
                         </tr>
                     </thead>
                     <tbody>
-                        {watchlist.map(ticker => {
+                        {watchlist.map((ticker, i) => {
                             const ov = overviewCache[ticker] || {};
                             const price = ov.price?.close;
                             const prevClose = ov.prev_price?.close;
-                            const change = price && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+                            const change = (price && prevClose && prevClose !== 0) ? ((price - prevClose) / prevClose) * 100 : (ov._raw?.market?.changePct ?? null);
                             const rsi = ov.technicals?.rsi_14 || ov.technicals?.RSI_14;
 
                             return (
-                                <React.Fragment key={ticker}>
+                                <React.Fragment key={`${ticker}-${i}`}>
                                     <tr onClick={() => { setSelectedTicker(ticker); setExpandedRow(expandedRow === ticker ? null : ticker); }}
                                         className={`border-b border-border-dark/50 hover:bg-onyx-surface cursor-pointer transition-colors ${selectedTicker === ticker ? "bg-onyx-surface" : ""
                                             }`}>
@@ -1660,14 +1670,14 @@ const WatchlistPage = ({
                                             </div>
                                         </td>
                                         <td className="text-right px-4 py-3">
-                                            <span className="text-white font-mono text-sm">{price ? fmt.usd(price) : <Skeleton w="60px" />}</span>
+                                            <span className="text-white font-mono text-sm">{price ? fmt.usd(price) : <span className="text-text-muted">-</span>}</span>
                                         </td>
                                         <td className="text-right px-4 py-3">
                                             {change != null ? (
                                                 <span className={`metric-pill ${change >= 0 ? "green" : "red"}`}>
-                                                    {change >= 0 ? "-2" : "-1/4"} {Math.abs(change).toFixed(2)}%
+                                                    {change >= 0 ? "\u25B2" : "\u25BC"} {Math.abs(change).toFixed(2)}%
                                                 </span>
-                                            ) : <Skeleton w="50px" />}
+                                            ) : <span className="text-text-muted">-</span>}
                                         </td>
                                         <td className="text-right px-4 py-3 text-text-secondary text-xs font-mono">
                                             {ov.fundamentals?.market_cap ? fmt.usdShort(ov.fundamentals.market_cap) : "-"}
@@ -1708,7 +1718,7 @@ const WatchlistPage = ({
                     </div>
                 )}
             </div>
-        </SidebarLayout>
+        </>
     );
 };
 
@@ -2034,9 +2044,22 @@ const InlineAmountInput = ({ onSubmit, defaultValue, label, icon, className, sub
 // ***************************************************************
 // SIDEBAR LAYOUT  Shared sidebar for inner pages
 // ***************************************************************
-const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
+const SidebarLayout = ({ children, watchlist, selectedTicker, setSelectedTicker, expandedRow, setExpandedRow, overviewCache }) => {
     const navigate = useNavigate();
+    const location = useLocation();
     const [sfxMuted, setSfxMuted] = useState(RetroSFX.isMuted());
+
+    // Derive active page from current hash route
+    const path = location.pathname;
+    const active = path === "/" || path === "" ? "watchlist"
+        : path.startsWith("/dashboard") ? "dashboard"
+        : path.startsWith("/data") ? "data"
+        : path.startsWith("/monitor") ? "monitor"
+        : path.startsWith("/settings") ? "settings"
+        : path.startsWith("/diagnostics") ? "diagnostics"
+        : path.startsWith("/ingest") ? "ingest"
+        : path.startsWith("/analysis") ? "analysis"
+        : "";
 
     // Poll module-level bot state so we can show a live indicator
     const [botsRunning, setBotsRunning] = useState(_runAllRunning || _loopRunning);
@@ -2058,7 +2081,7 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
     );
 
     return (
-        <div className="flex h-full w-full bg-onyx-black text-gray-200 font-display">
+        <div className="flex h-screen w-screen bg-onyx-black text-gray-200 font-display overflow-hidden">
             <aside className="w-64 bg-onyx-panel border-r border-border-dark flex flex-col shrink-0 h-full">
                 <div className="h-16 flex items-center px-4 border-b border-border-dark cursor-pointer" onClick={() => navigate("/")}>
                     <div className="flex items-center gap-2">
@@ -2067,7 +2090,7 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                         </div>
                         <div>
                             <h1 className="text-white text-base font-bold leading-none tracking-tight">LAZY BOT</h1>
-                            <p className="text-text-secondary text-[10px] font-mono mt-1">v1.0  Terminal</p>
+                            <p className="text-text-secondary text-[10px] font-mono mt-1">v2.0  Terminal</p>
                         </div>
                     </div>
                 </div>
@@ -2079,6 +2102,7 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                     <NavLink to="/monitor" icon="precision_manufacturing" label="Autobot Monitor" id="monitor" />
                     <NavLink to="/settings" icon="tune" label="Settings" id="settings" />
                     <NavLink to="/diagnostics" icon="bug_report" label="Diagnostics" id="diagnostics" />
+                    <NavLink to="/ingest" icon="upload_file" label="Data Ingestion" id="ingest" />
 
                     {/* Global bot-running indicator — visible on ALL pages */}
                     {botsRunning && (
@@ -2115,8 +2139,8 @@ const SidebarLayout = ({ children, active = "", watchlist, selectedTicker, setSe
                     {watchlist && watchlist.length > 0 && (
                         <div className="mt-6">
                             <h3 className="px-2 text-xs font-mono text-text-muted uppercase tracking-wider mb-2">Watchlist</h3>
-                            {watchlist.map(t => (
-                                <button key={t} onClick={() => { setSelectedTicker(t); setExpandedRow(expandedRow === t ? null : t); }}
+                            {watchlist.map((t, i) => (
+                                <button key={`${t}-${i}`} onClick={() => { setSelectedTicker(t); setExpandedRow(expandedRow === t ? null : t); }}
                                     className={`w-full flex items-center justify-between px-3 py-2 rounded transition-colors ${selectedTicker === t ? "bg-border-dark/50 text-primary" : "text-text-secondary hover:bg-border-dark/30 hover:text-white"
                                         }`}>
                                     <a href={`https://finviz.com/quote.ashx?t=${t}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-sm font-mono hover:text-primary transition-colors" title={`View ${t} on Finviz`}>{t}</a>
@@ -2841,7 +2865,7 @@ const AnalysisPage = ({
     ];
 
     return (
-        <SidebarLayout active="">
+        <>
             {/* Top Bar */}
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
                 <div className="flex items-center gap-3">
@@ -2964,7 +2988,7 @@ const AnalysisPage = ({
                 )}
 
             </div>
-        </SidebarLayout>
+        </>
     );
 };
 
@@ -3301,10 +3325,10 @@ const SettingsPage = () => {
         },
     };
 
-    if (loading) return <SidebarLayout active="settings"><Spinner /></SidebarLayout>;
+    if (loading) return <Spinner />;
 
     return (
-        <SidebarLayout active="settings">
+        <>
             <div className="h-14 flex items-center px-6 border-b border-border-dark bg-onyx-panel shrink-0">
                 <h2 className="text-white font-bold text-lg">Settings</h2>
                 {saveStatus && (
@@ -3785,7 +3809,7 @@ const SettingsPage = () => {
                     </div>
                 </div>
             </div>
-        </SidebarLayout>
+        </>
     );
 };
 
@@ -3991,7 +4015,16 @@ const useMonitorData = () => {
                 fetch("/api/watchlist").then(r => r.json()),
                 fetch("/api/watchlist/summary").then(r => r.json()),
             ]);
-            setWlEntries(entriesRes.tickers || []);
+            const raw = entriesRes.tickers || [];
+            // Deduplicate by ticker name (backend may return duplicates like MU)
+            const seen = new Set();
+            const deduped = raw.filter(t => {
+                const key = typeof t === "string" ? t : t.ticker;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            setWlEntries(deduped);
             setWlSummary(summaryRes);
         } catch (e) {
             console.error("Watchlist fetch error:", e);
@@ -4599,10 +4632,8 @@ const AutobotMonitorPage = ({ monitorData }) => {
         );
     };
 
-    if (loading) return React.createElement(SidebarLayout, { active: "monitor" },
-        React.createElement("div", { className: "flex-1 flex items-center justify-center" },
-            React.createElement("span", { className: "material-symbols-outlined text-primary animate-spin text-4xl" }, "progress_activity")
-        )
+    if (loading) return React.createElement("div", { className: "flex-1 flex items-center justify-center" },
+        React.createElement("span", { className: "material-symbols-outlined text-primary animate-spin text-4xl" }, "progress_activity")
     );
 
     const isRunning = status?.is_running || scanning;
@@ -4686,8 +4717,7 @@ const AutobotMonitorPage = ({ monitorData }) => {
         );
     };
 
-    return React.createElement(SidebarLayout, { active: "monitor" },
-        React.createElement("div", { className: "flex flex-col h-full" },
+    return React.createElement("div", { className: "flex flex-col h-full" },
 
             // ── Header
             React.createElement("div", { className: "h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0" },
@@ -6244,7 +6274,6 @@ const AutobotMonitorPage = ({ monitorData }) => {
                     )
                 )
             ),
-        )
     );
 };
 
@@ -6458,7 +6487,7 @@ const DiagnosticsPage = () => {
     };
 
     return (
-        <SidebarLayout active="diagnostics">
+        <>
             <div className="h-14 flex items-center justify-between px-6 border-b border-border-dark bg-onyx-panel shrink-0">
                 <div className="flex items-center gap-4">
                     <h2 className="text-white font-bold text-lg">Diagnostics</h2>
@@ -7118,7 +7147,7 @@ const DiagnosticsPage = () => {
                     </div>
                 )}
             </div>
-        </SidebarLayout>
+        </>
     );
 };
 
@@ -8361,9 +8390,7 @@ const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overvi
     const columns = DATA_COLUMNS[activeTab] || [];
 
     return (
-        <SidebarLayout active="data" watchlist={watchlist} selectedTicker={selectedTicker}
-            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow}
-            setExpandedRow={setExpandedRow} overviewCache={overviewCache}>
+        <>
 
             <div className="flex flex-col h-full overflow-hidden">
                 {/* Page Header */}
@@ -8574,13 +8601,318 @@ const DataExplorerPage = ({ watchlist, selectedTicker, setSelectedTicker, overvi
 
             {/* Detail Modal */}
             {modal && <DataDetailModal title={modal.title} content={modal.content} onClose={() => setModal(null)} />}
-        </SidebarLayout>
+        </>
     );
 };
 
 // ***************************************************************
-// APP  Root router
+// UNIVERSAL DROPZONE — Drag & drop files, paste URLs, submit text
 // ***************************************************************
+
+const UniversalDropzone = ({ onIngestComplete }) => {
+    const [dragging, setDragging] = useState(false);
+    const [textInput, setTextInput] = useState("");
+    const [uploading, setUploading] = useState(false);
+    const [results, setResults] = useState(null);
+    const fileInputRef = useRef(null);
+
+    const handleDrop = async (e) => {
+        e.preventDefault();
+        setDragging(false);
+        const files = [...e.dataTransfer.files];
+        if (files.length > 0) await uploadFiles(files);
+    };
+
+    const uploadFiles = async (files) => {
+        setUploading(true);
+        setResults(null);
+        try {
+            const formData = new FormData();
+            files.forEach(f => formData.append("files", f));
+            const res = await fetch("/api/ingest", { method: "POST", body: formData });
+            const data = await res.json();
+            setResults(data);
+            if (onIngestComplete) onIngestComplete(data);
+        } catch (e) {
+            setResults({ error: e.message });
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const submitText = async () => {
+        if (!textInput.trim()) return;
+        setUploading(true);
+        setResults(null);
+        try {
+            // Split by newlines to detect multiple URLs
+            const lines = textInput.split("\n").map(l => l.trim()).filter(Boolean);
+            const urls = lines.filter(l => /^https?:\/\//i.test(l));
+            const plainText = lines.filter(l => !/^https?:\/\//i.test(l)).join("\n");
+
+            const body = {};
+            if (urls.length > 0) body.urls = urls;
+            if (plainText) body.text = plainText;
+
+            const res = await fetch("/api/ingest", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            setResults(data);
+            setTextInput("");
+            if (onIngestComplete) onIngestComplete(data);
+        } catch (e) {
+            setResults({ error: e.message });
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    return (
+        <div className="glass-card p-4 mb-4">
+            <div className="flex items-center gap-2 mb-3">
+                <span className="material-symbols-outlined text-primary">upload_file</span>
+                <h3 className="text-sm font-bold text-white">Universal Data Ingestion</h3>
+                <span className="text-[10px] text-text-muted font-mono bg-onyx-black px-2 py-0.5 rounded">
+                    Drop files, paste URLs, or type text
+                </span>
+            </div>
+
+            {/* Drop zone */}
+            <div
+                onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-all ${
+                    dragging
+                        ? "border-primary bg-primary/10"
+                        : "border-border-dark hover:border-primary/50 hover:bg-primary/5"
+                }`}
+            >
+                <input ref={fileInputRef} type="file" multiple accept=".csv,.json,.txt,.md,.tsv"
+                    className="hidden" onChange={(e) => uploadFiles([...e.target.files])} />
+                <span className={`material-symbols-outlined text-3xl mb-2 ${dragging ? "text-primary" : "text-text-muted"}`}>
+                    {uploading ? "progress_activity" : "cloud_upload"}
+                </span>
+                <p className="text-sm text-text-secondary">
+                    {uploading ? "Processing..." : "Drop CSV, JSON, TXT files here"}
+                </p>
+                <p className="text-[10px] text-text-muted mt-1">
+                    Files auto-sort by type • YouTube URLs get transcribed
+                </p>
+            </div>
+
+            {/* Text/URL input */}
+            <div className="mt-3 flex gap-2">
+                <textarea
+                    value={textInput}
+                    onChange={(e) => setTextInput(e.target.value)}
+                    placeholder="Paste YouTube URLs, news article links, or raw text..."
+                    className="flex-1 bg-onyx-black border border-border-dark rounded-lg px-3 py-2 text-xs text-white font-mono resize-none focus:border-primary/50 focus:outline-none"
+                    rows={2}
+                />
+                <button
+                    onClick={submitText}
+                    disabled={uploading || !textInput.trim()}
+                    className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold hover:bg-primary/30 transition disabled:opacity-30 disabled:cursor-not-allowed self-end"
+                >
+                    <span className="material-symbols-outlined text-sm mr-1">send</span>
+                    Submit
+                </button>
+            </div>
+
+            {/* Results */}
+            {results && (
+                <div className={`mt-3 p-3 rounded-lg text-xs font-mono ${results.error ? "bg-red-500/10 border border-red-500/30 text-red-400" : "bg-green-500/10 border border-green-500/30 text-green-400"}`}>
+                    {results.error ? (
+                        <span>❌ {results.error}</span>
+                    ) : (
+                        <div>
+                            <span>✅ Ingested {results.ingested} item(s)</span>
+                            {results.results?.map((r, i) => (
+                                <div key={i} className="mt-1 pl-3 border-l border-green-500/20">
+                                    {r.filename || r.source}: {r.type} — {r.status} {r.count != null && `(${r.count} records)`}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ***************************************************************
+// LIVE FEED PANEL — Real-time WebSocket event stream
+// ***************************************************************
+
+const LiveFeedPanel = () => {
+    const [events, setEvents] = useState([]);
+    const [filter, setFilter] = useState("all");
+    const feedRef = useRef(null);
+    const wsRef = useRef(null);
+    const userScrolledRef = useRef(false);
+
+    useEffect(() => {
+        const proto = window.location.protocol === "https:" ? "wss" : "ws";
+        const ws = new WebSocket(`${proto}://${window.location.host}/ws/pipeline`);
+        wsRef.current = ws;
+
+        ws.onmessage = (msg) => {
+            try {
+                const data = JSON.parse(msg.data);
+                const entry = {
+                    time: new Date().toLocaleTimeString(),
+                    type: data.type || data.event || "info",
+                    source: data.source || data.node || "system",
+                    message: data.message || data.label || JSON.stringify(data).slice(0, 200),
+                    level: data.level || "info",
+                };
+                setEvents(prev => [...prev.slice(-500), entry]);
+            } catch (e) {
+                // non-JSON message
+            }
+        };
+
+        ws.onclose = () => {
+            setEvents(prev => [...prev, { time: new Date().toLocaleTimeString(), type: "system", source: "ws", message: "WebSocket disconnected", level: "warn" }]);
+        };
+
+        return () => ws.close();
+    }, []);
+
+    // Auto-scroll
+    useEffect(() => {
+        if (feedRef.current && !userScrolledRef.current) {
+            feedRef.current.scrollTop = feedRef.current.scrollHeight;
+        }
+    }, [events.length]);
+
+    const handleScroll = useCallback((e) => {
+        const el = e.target;
+        userScrolledRef.current = el.scrollHeight - el.scrollTop - el.clientHeight > 40;
+    }, []);
+
+    const filteredEvents = filter === "all" ? events : events.filter(e => e.level === filter);
+
+    const levelColors = {
+        info: "text-blue-300", success: "text-green-400",
+        warn: "text-amber-400", error: "text-red-400", system: "text-purple-400",
+    };
+
+    return (
+        <div className="flex flex-col h-full bg-onyx-black text-gray-200 font-display">
+            <div className="px-6 py-4 border-b border-border-dark bg-onyx-panel shrink-0">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-primary-blue/10 rounded-lg flex items-center justify-center">
+                            <span className="material-symbols-outlined text-primary-blue text-xl">cell_tower</span>
+                        </div>
+                        <div>
+                            <h2 className="text-lg font-bold text-white">Live Feed</h2>
+                            <p className="text-xs text-text-muted">{events.length} events • Real-time pipeline data</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {["all", "info", "success", "warn", "error"].map(f => (
+                            <button key={f} onClick={() => setFilter(f)}
+                                className={`px-2.5 py-1 rounded text-[10px] font-mono transition ${
+                                    filter === f ? "bg-white/10 text-white font-bold" : "hover:bg-white/5 text-text-muted"
+                                }`}>
+                                {f.charAt(0).toUpperCase() + f.slice(1)}
+                            </button>
+                        ))}
+                        <button onClick={() => setEvents([])}
+                            className="px-2.5 py-1 rounded text-[10px] font-mono text-text-muted hover:text-white hover:bg-white/5 transition">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div ref={feedRef} onScroll={handleScroll}
+                className="flex-1 overflow-y-auto font-mono text-[11px] leading-[20px]" style={{ scrollBehavior: "smooth" }}>
+                {filteredEvents.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-text-muted">
+                        <span className="material-symbols-outlined text-4xl mb-3">cell_tower</span>
+                        <p className="text-sm">Waiting for pipeline events...</p>
+                        <p className="text-[10px] mt-1">Events appear here as scrapers, analyzers, and bots run</p>
+                    </div>
+                ) : (
+                    filteredEvents.map((ev, i) => (
+                        <div key={i} className={`px-6 py-1 flex items-start gap-3 hover:bg-white/[0.02] border-b border-white/[0.03] ${ev.level === "error" ? "bg-red-500/[0.04]" : ""}`}>
+                            <span className="text-text-muted shrink-0 w-[56px]">{ev.time}</span>
+                            <span className={`px-1.5 py-[1px] rounded text-[9px] shrink-0 border border-white/10 bg-white/5`}>{ev.source}</span>
+                            <span className={`flex-1 break-words ${levelColors[ev.level] || "text-gray-300"}`}>{ev.message}</span>
+                        </div>
+                    ))
+                )}
+            </div>
+        </div>
+    );
+};
+
+// ***************************************************************
+// TOP BAR — 4-tab navigation header
+// ***************************************************************
+// ***************************************************************
+// INGEST PAGE — Standalone page for Universal Dropzone
+// ***************************************************************
+
+const IngestPage = () => (
+    <div className="flex flex-col h-full">
+        <div className="h-14 flex items-center px-6 border-b border-border-dark bg-onyx-panel shrink-0">
+            <h2 className="text-white font-bold text-lg">Data Ingestion</h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6">
+            <UniversalDropzone onIngestComplete={() => {
+                console.log("[Ingest] Complete, refreshing...");
+            }} />
+        </div>
+    </div>
+);
+
+// ***************************************************************
+// APP  Root — Unified sidebar navigation with HashRouter
+// ***************************************************************
+
+const AppRoutes = ({ terminalData, monitorData }) => {
+    const [expandedRow, setExpandedRow] = useState(null);
+    const { watchlist, selectedTicker, setSelectedTicker, overviewCache } = terminalData;
+
+    return (
+        <SidebarLayout watchlist={watchlist} selectedTicker={selectedTicker}
+            setSelectedTicker={setSelectedTicker} expandedRow={expandedRow}
+            setExpandedRow={setExpandedRow} overviewCache={overviewCache}>
+            <Routes>
+                <Route path="/" element={
+                    <WatchlistPage {...terminalData} monitorData={monitorData}
+                        expandedRow={expandedRow} setExpandedRow={setExpandedRow} />
+                } />
+                <Route path="/dashboard" element={
+                    <DashboardPage watchlist={watchlist} selectedTicker={selectedTicker}
+                        setSelectedTicker={setSelectedTicker} expandedRow={expandedRow}
+                        setExpandedRow={setExpandedRow} overviewCache={overviewCache} monitorData={monitorData} />
+                } />
+                <Route path="/data" element={
+                    <DataExplorerPage watchlist={watchlist} selectedTicker={selectedTicker}
+                        setSelectedTicker={setSelectedTicker} overviewCache={overviewCache} monitorData={monitorData} />
+                } />
+                <Route path="/monitor" element={
+                    <AutobotMonitorPage monitorData={monitorData} />
+                } />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/diagnostics" element={<DiagnosticsPage />} />
+                <Route path="/ingest" element={<IngestPage />} />
+                <Route path="/analysis/:ticker" element={
+                    <AnalysisPage {...terminalData} monitorData={monitorData} />
+                } />
+            </Routes>
+        </SidebarLayout>
+    );
+};
 
 const App = () => {
     const terminalData = useTerminalData();
@@ -8606,16 +8938,7 @@ const App = () => {
     return (
         <MonitorDataContext.Provider value={monitorData}>
             <HashRouter>
-                <Routes>
-                    <Route path="/dashboard" element={<DashboardPage {...terminalData} monitorData={monitorData} />} />
-                    <Route path="/" element={<WatchlistPage {...terminalData} monitorData={monitorData} />} />
-                    <Route path="/analysis/:ticker" element={<AnalysisPage {...terminalData} monitorData={monitorData} />} />
-                    <Route path="/data" element={<DataExplorerPage {...terminalData} monitorData={monitorData} />} />
-
-                    <Route path="/monitor" element={<AutobotMonitorPage monitorData={monitorData} />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/diagnostics" element={<DiagnosticsPage />} />
-                </Routes>
+                <AppRoutes terminalData={terminalData} monitorData={monitorData} />
             </HashRouter>
         </MonitorDataContext.Provider>
     );
@@ -8623,4 +8946,5 @@ const App = () => {
 
 const root = createRoot(document.getElementById("root"));
 root.render(<App />);
+
 

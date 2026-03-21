@@ -996,6 +996,66 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # ── Finnhub: Recommendation trends ─────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finnhub_recommendations (
+            id              VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
+            period          VARCHAR NOT NULL,
+            strong_buy      INTEGER DEFAULT 0,
+            buy             INTEGER DEFAULT 0,
+            hold            INTEGER DEFAULT 0,
+            sell            INTEGER DEFAULT 0,
+            strong_sell     INTEGER DEFAULT 0,
+            collected_date  DATE DEFAULT CURRENT_DATE
+        );
+    """)
+
+    # ── Finnhub: Earnings surprises ──────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finnhub_earnings (
+            id              VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
+            period          VARCHAR NOT NULL,
+            actual_eps      DOUBLE,
+            estimate_eps    DOUBLE,
+            surprise        DOUBLE,
+            surprise_pct    DOUBLE,
+            quarter         INTEGER,
+            year            INTEGER,
+            collected_date  DATE DEFAULT CURRENT_DATE
+        );
+    """)
+
+    # ── Finnhub: Insider sentiment (MSPR) ────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finnhub_insider_sentiment (
+            id              VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
+            avg_mspr        DOUBLE DEFAULT 0,
+            total_change    DOUBLE DEFAULT 0,
+            months_tracked  INTEGER DEFAULT 0,
+            sentiment       VARCHAR DEFAULT 'neutral',
+            collected_date  DATE DEFAULT CURRENT_DATE
+        );
+    """)
+
+    # ── Finnhub: Company news ────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finnhub_news (
+            id              VARCHAR PRIMARY KEY,
+            ticker          VARCHAR NOT NULL,
+            headline        VARCHAR NOT NULL,
+            summary         TEXT DEFAULT '',
+            source          VARCHAR DEFAULT '',
+            url             VARCHAR DEFAULT '',
+            category        VARCHAR DEFAULT '',
+            related         VARCHAR DEFAULT '',
+            published_at    TIMESTAMP,
+            collected_date  DATE DEFAULT CURRENT_DATE
+        );
+    """)
+
     logger.info("DuckDB tables initialized")
 
     # ---- Schema migrations for existing databases ----
