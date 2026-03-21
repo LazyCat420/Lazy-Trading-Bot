@@ -3955,7 +3955,7 @@ const useMonitorData = () => {
         if (runAllPollRef.current) clearInterval(runAllPollRef.current);
         const pollId = setInterval(async () => {
             try {
-                const sr = await fetch("/api/bots/run-all/status");
+                const sr = await fetch("/api/bot/loop-status");
                 const st = await sr.json();
                 setRunAllStatus(st);
                 // Refresh pipeline events so Activity Log stays alive
